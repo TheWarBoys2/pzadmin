@@ -48,6 +48,12 @@
 - Everything a key does is in the event log as `key:<name>`, and is announced
   in Discord the same as the same action from the web interface.
 - Per-key rate limits, and `/metrics` counts API requests per key.
+- Mod requests: a bot with a key that has the new **request** access can ask
+  for a Workshop mod on a server, by the server's ID or name. Requests wait in
+  a Requests section on the server's Mods tab; approving one adds it to the
+  load order through the same checks as Save. Duplicates and mods already on
+  the server are refused with a clear reason, and a staff webhook can be told
+  about new requests.
 
 ## 1.0.0
 

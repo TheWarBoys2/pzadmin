@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/TheWarBoys2/pzadmin/internal/config"
 	"github.com/TheWarBoys2/pzadmin/internal/pz"
 	"github.com/TheWarBoys2/pzadmin/internal/steam"
 	"github.com/TheWarBoys2/pzadmin/internal/store"
@@ -485,32 +486,38 @@ func (a *App) handleModApply(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "no such server")
 		return
 	}
-	if len(p.Mods) > 500 || len(p.WorkshopItems) > 500 {
-		httpError(w, http.StatusBadRequest, "that is more mods than PZAdmin will write in one go")
-		return
+	code, out := a.applyModList(r, srv, p.Mods, p.WorkshopItems, p.Map, p.Confirm)
+	writeStatusJSON(w, code, out)
+}
+
+// applyModList validates and writes a mod list for handleModApply and for an
+// approved mod request, so both go through the same checks, backup and audit.
+// It returns the status and body to send.
+func (a *App) applyModList(r *http.Request, srv config.Server, modsIn, workshopIn []string, mapLine *string, confirm bool) (int, map[string]any) {
+	fail := func(code int, msg string) (int, map[string]any) {
+		return code, map[string]any{"error": msg}
+	}
+	if len(modsIn) > 500 || len(workshopIn) > 500 {
+		return fail(http.StatusBadRequest, "that is more mods than PZAdmin will write in one go")
 	}
 
-	mods, err := cleanModIDs(p.Mods)
+	mods, err := cleanModIDs(modsIn)
 	if err != nil {
-		httpError(w, http.StatusBadRequest, err.Error())
-		return
+		return fail(http.StatusBadRequest, err.Error())
 	}
-	workshop, err := cleanWorkshopIDs(p.WorkshopItems)
+	workshop, err := cleanWorkshopIDs(workshopIn)
 	if err != nil {
-		httpError(w, http.StatusBadRequest, err.Error())
-		return
+		return fail(http.StatusBadRequest, err.Error())
 	}
 
 	layout := detectLayout(srv)
 	path, name, err := a.modConfigFile(layout)
 	if err != nil {
-		httpError(w, http.StatusBadRequest, err.Error())
-		return
+		return fail(http.StatusBadRequest, err.Error())
 	}
 	ini, err := pz.LoadINI(path)
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
-		return
+		return fail(http.StatusInternalServerError, err.Error())
 	}
 
 	before, _ := ini.Get("Mods")
@@ -525,35 +532,30 @@ func (a *App) handleModApply(w http.ResponseWriter, r *http.Request) {
 		AfterMods:      mods,
 		AfterWorkshop:  workshop,
 	})
-	if pz.Blocking(issues) && !p.Confirm {
-		writeStatusJSON(w, http.StatusConflict, map[string]any{
+	if pz.Blocking(issues) && !confirm {
+		return http.StatusConflict, map[string]any{
 			"ok":           false,
 			"needsConfirm": true,
 			"issues":       issues,
 			"message":      "This change breaks something. Review the findings, then apply again to go ahead.",
-		})
-		return
+		}
 	}
 
 	if err := ini.Set("Mods", strings.Join(mods, ";")); err != nil {
-		httpError(w, http.StatusBadRequest, err.Error())
-		return
+		return fail(http.StatusBadRequest, err.Error())
 	}
 	if err := ini.Set("WorkshopItems", strings.Join(workshop, ";")); err != nil {
-		httpError(w, http.StatusBadRequest, err.Error())
-		return
+		return fail(http.StatusBadRequest, err.Error())
 	}
-	if p.Map != nil {
-		if err := ini.Set("Map", strings.TrimSpace(*p.Map)); err != nil {
-			httpError(w, http.StatusBadRequest, err.Error())
-			return
+	if mapLine != nil {
+		if err := ini.Set("Map", strings.TrimSpace(*mapLine)); err != nil {
+			return fail(http.StatusBadRequest, err.Error())
 		}
 	}
 
 	backup, err := ini.Save(filepath.Join(a.backup.Dir(srv.ID), "config"))
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
-		return
+		return fail(http.StatusInternalServerError, err.Error())
 	}
 	a.scanner.Invalidate(layout.Base)
 
@@ -572,14 +574,14 @@ func (a *App) handleModApply(w http.ResponseWriter, r *http.Request) {
 		Message: "Mod list changed on " + srv.Name, Detail: detail,
 	})
 
-	writeJSON(w, map[string]any{
+	return http.StatusOK, map[string]any{
 		"ok": true, "file": name, "backup": backup,
 		"mods": len(mods), "workshopItems": len(workshop),
 		"added": added, "removed": removed,
 		"issues": issues,
 		"message": "Saved. Mods and Workshop items are only read when the server starts, " +
 			"so restart it to apply this.",
-	})
+	}
 }
 
 // cleanModIDs validates and de-duplicates a mod list.

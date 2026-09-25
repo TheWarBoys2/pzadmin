@@ -9,7 +9,9 @@ same container and port as the web interface; there is nothing extra to run.
 Create a key under **Settings → API keys**. Each key has:
 
 - **A name**, which the event log shows as `key:<name>` for everything it does.
-- **Access.** Every key can **read**. **Control** adds commands from the command
+- **Access.** Every key can **read**. **Request** adds asking for mods (see
+  [Mod requests](#mod-requests)); a request changes nothing until you approve
+  it. **Control** adds commands from the command
   list, restart, stop, start and backups. **Console** adds raw RCON commands;
   only give it to something you trust completely.
 - **Servers.** All servers (including ones added later) or a chosen few. A
@@ -44,7 +46,7 @@ Bodies are JSON. Unknown fields are refused. Errors look like
 | 401 | No key, or it is wrong, expired or revoked |
 | 403 | The key does not have the scope this needs |
 | 404 | No such server (or the key may not see it), or no such endpoint |
-| 409 | A restart, stop or start is already running for that server |
+| 409 | A restart, stop or start is already running for that server, or a mod request is a duplicate |
 | 429 | Rate limited; wait for `Retry-After` seconds |
 | 502 | The game server did not answer over RCON |
 
@@ -96,6 +98,10 @@ Times are RFC 3339, or `null` when there is none.
 ### `GET /api/v1/servers/{id}`
 
 One server, in the same shape.
+
+Wherever a path has `{id}`, the server's name works too, in any case
+(`/api/v1/servers/Riverside`), so a bot can use the name people know. Encode
+spaces as `%20`. The ID is checked first.
 
 ### `GET /api/v1/servers/{id}/players`
 
@@ -153,6 +159,62 @@ announcements. A restart or stop can take a few minutes to answer.
 ```
 
 Saves the world and takes a backup. The body may be empty.
+
+## Mod requests
+
+These let a bot take mod requests from players, for example a Discord command
+in a server's channel. A request waits in the **Requests** section of the
+server's Mods tab until you approve or reject it. Approving adds it to the end
+of the load order through the same checks and backup as **Save mod list**; as
+with any mod change, restart the server to load it.
+
+To hear about new requests in Discord, tick "Someone requests a mod" on a staff
+webhook. Approvals and rejections are in the event log as
+`mods.request.approved` and `mods.request.rejected`, so a bot can follow them
+with `GET /api/v1/events` or the stream and tell whoever asked.
+
+### `POST /api/v1/servers/{id}/mod-requests`
+
+Needs the **request** scope.
+
+```json
+{ "workshopId": "2169435993", "requestedBy": "rick#0001", "note": "For the dance party" }
+```
+
+`workshopId` is a numeric Workshop ID or a Workshop link. `requestedBy` is
+whoever asked, up to 100 characters; PZAdmin shows it as written and cannot
+check it. `note` is optional, up to 300 characters.
+
+PZAdmin looks the item up on Steam to fill in its title and mod IDs. If Steam
+cannot be reached the request is still taken, with an empty `title`.
+
+| Status | Meaning |
+|---|---|
+| 201 | Taken: `{"request": {...}}` |
+| 400 | Not a Workshop ID, no `requestedBy`, Steam has no such item, or it is not a Project Zomboid item |
+| 404 | No such server, or the key may not see it |
+| 409 | Refused, with `reason`: `duplicate` (already waiting; the existing request is in `request`), `installed` (already in the server's WorkshopItems) or `full` (50 already waiting) |
+
+A request looks like:
+
+```json
+{
+  "id": "a1b2c3d4", "serverId": "3f9c...", "workshopId": "2169435993",
+  "title": "True Actions Dancing", "modIds": ["TrueActionsDancing"], "mapFolders": [],
+  "requestedBy": "rick#0001", "note": "For the dance party", "via": "discord-cog",
+  "status": "pending", "created": "2026-09-25T21:00:00Z",
+  "decided": null, "decidedBy": "", "reason": ""
+}
+```
+
+`status` is `pending`, `approved` or `rejected`. `reason` is the note you gave
+when rejecting, if any. `via` is the name of the key that sent it.
+
+### `GET /api/v1/servers/{id}/mod-requests?status=`
+
+The server's requests, waiting ones first, then decided ones newest first.
+PZAdmin keeps the 200 most recent decisions. `status` filters to `pending`, `approved` or `rejected`.
+Needs only **read**.
 
 ## Console
 

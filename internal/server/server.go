@@ -120,9 +120,11 @@ type App struct {
 	lastScan stacks.Result
 	sess     *sessionStore
 	keys     *apiKeyStore
-	limiter  *loginLimiter
-	assets   fs.FS
-	dataDir  string
+	// modRequests are mods asked for through the API, waiting for approval.
+	modRequests *modRequestStore
+	limiter     *loginLimiter
+	assets      fs.FS
+	dataDir     string
 
 	// apiLimit, apiFail, apiInflight and apiStreams throttle /api/v1; see
 	// apiv1.go.
@@ -189,31 +191,32 @@ func New(opts Options) (*App, error) {
 	}
 
 	a := &App{
-		cfg:       cfgStore,
-		store:     st,
-		notify:    notify.New(),
-		backup:    pz.NewBackupper(filepath.Join(opts.DataDir, "backups")),
-		scanner:   pz.NewScanner(2 * time.Minute),
-		scripts:   pz.NewScriptScanner(30 * time.Minute),
-		custom:    loadCustomCatalogue(filepath.Join(opts.DataDir, "catalogue.json")),
-		sess:      newSessionStore(filepath.Join(opts.DataDir, "sessions.json")),
-		keys:      newAPIKeyStore(filepath.Join(opts.DataDir, "apikeys.json")),
-		apiLimit:  newRateLimiter(),
-		apiFail:   newLoginLimiter(),
-		limiter:   newLoginLimiter(),
-		assets:    opts.Assets,
-		dataDir:   opts.DataDir,
-		status:    map[string]*Status{},
-		clients:   map[string]*rcon.Client{},
-		tailers:   map[string]*pz.Tailer{},
-		monitors:  map[string]context.CancelFunc{},
-		caps:      map[string]*Capabilities{},
-		capTried:  map[string]time.Time{},
-		stop:      make(chan struct{}),
-		steamBase: opts.SteamBase,
-		gameRoot:  strings.TrimSpace(opts.GameRoot),
-		rconHost:  strings.TrimSpace(opts.RCONHost),
-		gameImage: strings.TrimSpace(opts.GameImage),
+		cfg:         cfgStore,
+		store:       st,
+		notify:      notify.New(),
+		backup:      pz.NewBackupper(filepath.Join(opts.DataDir, "backups")),
+		scanner:     pz.NewScanner(2 * time.Minute),
+		scripts:     pz.NewScriptScanner(30 * time.Minute),
+		custom:      loadCustomCatalogue(filepath.Join(opts.DataDir, "catalogue.json")),
+		sess:        newSessionStore(filepath.Join(opts.DataDir, "sessions.json")),
+		keys:        newAPIKeyStore(filepath.Join(opts.DataDir, "apikeys.json")),
+		modRequests: newModRequestStore(filepath.Join(opts.DataDir, "modrequests.json")),
+		apiLimit:    newRateLimiter(),
+		apiFail:     newLoginLimiter(),
+		limiter:     newLoginLimiter(),
+		assets:      opts.Assets,
+		dataDir:     opts.DataDir,
+		status:      map[string]*Status{},
+		clients:     map[string]*rcon.Client{},
+		tailers:     map[string]*pz.Tailer{},
+		monitors:    map[string]context.CancelFunc{},
+		caps:        map[string]*Capabilities{},
+		capTried:    map[string]time.Time{},
+		stop:        make(chan struct{}),
+		steamBase:   opts.SteamBase,
+		gameRoot:    strings.TrimSpace(opts.GameRoot),
+		rconHost:    strings.TrimSpace(opts.RCONHost),
+		gameImage:   strings.TrimSpace(opts.GameImage),
 	}
 	if a.rconHost == "" {
 		a.rconHost = "host.docker.internal"
@@ -477,6 +480,9 @@ func (a *App) Handler() http.Handler {
 	post("/api/mods/sort", a.handleModSort)
 	post("/api/mods/apply", a.handleModApply)
 	post("/api/mods/preflight", a.handleModPreflight)
+	get("/api/mods/requests", a.handleModRequests)
+	post("/api/mods/requests/approve", a.handleModRequestApprove)
+	post("/api/mods/requests/reject", a.handleModRequestReject)
 	post("/api/catalogue/add", a.handleCatalogueAdd)
 	post("/api/catalogue/remove", a.handleCatalogueRemove)
 	post("/api/action", a.handleAction)

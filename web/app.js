@@ -2107,6 +2107,14 @@ async function tabMods(host, server) {
     host.append(el('div', { class: 'notice bad', text: err.message }));
     return;
   }
+  // Requests come from bots with a request key. A failure to load them must
+  // not stop the mod list itself from working.
+  let requests = [];
+  try {
+    requests = (await api.get('/api/mods/requests?id=' + encodeURIComponent(server.id))).requests || [];
+  } catch (err) {
+    requests = [];
+  }
   clear(host);
 
   // Working copies. Nothing is written until Save is pressed.
@@ -2389,6 +2397,7 @@ async function tabMods(host, server) {
       el('span', { text: 'Load order matters: a mod that builds on another has to come after it. ' +
         'Changes here need a server restart, because both lines are read only at startup.' })),
     issuesHost,
+    modRequestsPanel(server, data.file, requests, dirty),
     el('div', { class: 'panel' },
       el('div', { class: 'panel-head' },
         el('h3', { text: 'Load order' }),
@@ -2408,6 +2417,97 @@ async function tabMods(host, server) {
         save)));
 
   refresh();
+}
+
+/* modRequestsPanel lists mods people have asked for through a bot. Approving
+   one adds it to the end of the saved load order and writes it straight away,
+   through the same checks as Save; rejecting one just records the decision so
+   the bot can tell whoever asked. */
+function modRequestsPanel(server, file, requests, isDirty) {
+  const pending = requests.filter((r) => r.status === 'pending');
+  const decided = requests.filter((r) => r.status !== 'pending').slice(0, 5);
+  const reload = () => go('/servers/' + server.id + '/mods');
+
+  const approve = async (req) => {
+    const confirmed = await confirmDialog({
+      title: 'Add ' + modRequestTitle(req) + '?',
+      message: 'It goes on the end of the load order and is saved now. Restart ' + server.name +
+        ' to download and load it.',
+      detail: isDirty()
+        ? 'You have unsaved changes to the load order. They will be lost: approving saves on top of the list as it was last saved.'
+        : null,
+      confirmLabel: 'Approve',
+    });
+    if (!confirmed) return;
+    const send = (confirm) => api.post('/api/mods/requests/approve', { id: req.id, confirm: confirm });
+    try {
+      let result;
+      try {
+        result = await send(false);
+      } catch (err) {
+        if (err.status !== 409 || !err.payload || !err.payload.needsConfirm) throw err;
+        if (!(await confirmModChange(file, err.payload.issues))) return;
+        result = await send(true);
+      }
+      toast(result.message, 'good');
+      reload();
+    } catch (err) { toast(err.message, 'bad'); }
+  };
+
+  const reject = async (req) => {
+    const reason = await confirmDialog({
+      title: 'Reject ' + modRequestTitle(req) + '?',
+      message: 'Nothing on the server changes. The bot can see that it was turned down, and why.',
+      reason: { label: 'Reason (optional)', placeholder: 'Conflicts with another mod' },
+      confirmLabel: 'Reject', danger: true,
+    });
+    if (reason === false) return;
+    try {
+      await api.post('/api/mods/requests/reject', { id: req.id, reason: reason });
+      toast('Request rejected.', 'good');
+      reload();
+    } catch (err) { toast(err.message, 'bad'); }
+  };
+
+  const row = (req) => {
+    const ws = 'https://steamcommunity.com/sharedfiles/filedetails/?id=' + encodeURIComponent(req.workshopId);
+    return el('div', { class: 'list-row' },
+      el('div', { class: 'grow' },
+        el('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } },
+          el('a', { href: ws, target: '_blank', rel: 'noopener noreferrer', text: modRequestTitle(req) }),
+          req.status === 'approved' ? el('span', { class: 'pill on', text: 'Approved' }) : null,
+          req.status === 'rejected' ? el('span', { class: 'pill off', text: 'Rejected' }) : null),
+        el('div', { class: 'sub mono faint',
+          text: 'workshop ' + req.workshopId +
+            ((req.modIds || []).length ? '  ·  ' + req.modIds.join(', ') : '  ·  mod ID not listed on Steam') }),
+        el('div', { class: 'sub faint',
+          text: 'Asked for by ' + req.requestedBy + ' ' + fmtAgo(req.created) +
+            (req.via ? ' via ' + req.via : '') }),
+        req.note ? el('div', { class: 'sub', text: '\u201c' + req.note + '\u201d' }) : null,
+        (req.mapFolders || []).length
+          ? el('div', { class: 'sub warn', text: 'This adds a map: ' + req.mapFolders.join(', ') + '.' }) : null,
+        req.reason ? el('div', { class: 'sub faint', text: 'Reason: ' + req.reason }) : null),
+      req.status === 'pending'
+        ? el('div', { style: { display: 'flex', gap: '6px' } },
+            el('button', { class: 'btn small primary', type: 'button', text: 'Approve', onclick: () => approve(req) }),
+            el('button', { class: 'btn small danger', type: 'button', text: 'Reject', onclick: () => reject(req) }))
+        : null);
+  };
+
+  return el('div', { class: 'panel', style: { marginBottom: '16px' } },
+    el('div', { class: 'panel-head' },
+      el('h3', { text: 'Requests' }),
+      el('span', { class: 'muted', text: pending.length ? pending.length + ' waiting' : 'None waiting' })),
+    el('div', { class: 'panel-body flush' },
+      pending.length
+        ? pending.map(row)
+        : el('div', { class: 'empty' }, el('p', {
+            text: 'Mods asked for through the API, by a bot with a key that has Request access, wait here for you to approve.' })),
+      decided.map(row)));
+}
+
+function modRequestTitle(req) {
+  return req.title || ('Workshop item ' + req.workshopId);
 }
 
 /* bundlePrimary picks the mod that best names a multi-mod download: the one the
@@ -3866,6 +3966,7 @@ const STAFF_EVENT_LABELS = {
   'backup.done': 'A backup finishes',
   'backup.failed': 'A backup fails',
   'admin.action': 'An admin action is run',
+  'mods.request': 'Someone requests a mod',
 };
 
 const PLAYER_EVENT_LABELS = {
@@ -4532,7 +4633,7 @@ function settingsAccount() {
  * is shown once, when it is made; PZAdmin keeps only a hash. Keys are managed
  * here with the browser session only: a key cannot make or revoke keys. */
 
-const API_SCOPE_LABELS = { read: 'Read', control: 'Control', console: 'Console' };
+const API_SCOPE_LABELS = { read: 'Read', request: 'Request', control: 'Control', console: 'Console' };
 
 function settingsAPIKeys() {
   const body = el('div', { class: 'panel-body' }, el('p', { class: 'muted', text: 'Loading keys…' }));
@@ -4625,6 +4726,7 @@ function apiKeysBody(keys, reload) {
 
 function apiKeyCreateDialog(reload) {
   const name = el('input', { type: 'text', maxlength: '40', autocomplete: 'off', placeholder: 'Discord bot' });
+  const requestScope = el('input', { type: 'checkbox' });
   const control = el('input', { type: 'checkbox' });
   const consoleScope = el('input', { type: 'checkbox' });
   const allServers = el('input', { type: 'checkbox', checked: true });
@@ -4644,6 +4746,7 @@ function apiKeyCreateDialog(reload) {
   save.addEventListener('click', async () => {
     error.textContent = '';
     const scopes = ['read'];
+    if (requestScope.checked) scopes.push('request');
     if (control.checked) scopes.push('control');
     if (consoleScope.checked) scopes.push('console');
     const chosen = allServers.checked ? [] : picks.filter((p) => p.box.checked).map((p) => p.id);
@@ -4668,6 +4771,8 @@ function apiKeyCreateDialog(reload) {
         el('label', { text: 'Access' }),
         el('label', { class: 'check' }, el('input', { type: 'checkbox', checked: true, disabled: true }),
           el('span', null, 'Read', el('span', { class: 'hint', text: 'Server status, players and the event log. Every key has this.' }))),
+        el('label', { class: 'check' }, requestScope,
+          el('span', null, 'Request', el('span', { class: 'hint', text: 'Ask for Workshop mods to be added. Requests wait on the Mods tab for you to approve.' }))),
         el('label', { class: 'check' }, control,
           el('span', null, 'Control', el('span', { class: 'hint', text: 'Run commands from the command list, restart, stop, start and take backups.' }))),
         el('label', { class: 'check' }, consoleScope,
