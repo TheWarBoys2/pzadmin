@@ -41,6 +41,7 @@ image, one Compose stack per server, managed through [Arcane](https://getarcane.
 - Backups with retention, download and restore
 - Discord: staff alerts, player announcements when a server restarts and comes back, a status message per server, and Discord posts from scheduled jobs
 - Prometheus metrics and an audit log of every action
+- An HTTP API with its own keys, for bots and scripts ([docs/api.md](docs/api.md))
 
 ---
 
@@ -254,6 +255,13 @@ Project Zomboid also has its own Discord bot, which relays in-game chat. It's se
 relays chat, and PZAdmin announces restarts. Anyone who can post in the command channel can run admin commands, so
 keep that channel to staff.
 
+## API
+
+Bots and scripts can read server status, players and the event log, and run
+commands, restarts and backups, through the API at `/api/v1`. Make a key under
+**Settings → API keys**, choosing what it may do and which servers it covers.
+The key is shown once. See [docs/api.md](docs/api.md) for every endpoint.
+
 ## Security
 
 - **No Docker socket.** PZAdmin controls containers only through Arcane, only
@@ -263,6 +271,7 @@ keep that channel to staff.
 - **Secrets stay on the server.** RCON passwords, webhook URLs and tokens are
   never sent to the browser or included in exports.
 - **One admin account**, with rate-limited sign-in, CSRF protection and an audit log.
+- **API keys are scoped and hashed.** A key only reaches `/api/v1`, never settings, the password or other keys, and PZAdmin keeps only a hash of it.
 
 Keep it on your LAN or behind Tailscale or a VPN. **Don't port-forward it to
 the internet.** To make it reachable from the host only, publish it as

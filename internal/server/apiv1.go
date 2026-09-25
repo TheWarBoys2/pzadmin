@@ -501,7 +501,7 @@ func (a *App) apiStream(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-statusTick.C:
-			if !pushStatus() {
+			if !a.keys.active(k.ID) || !pushStatus() {
 				return
 			}
 		case <-keepalive.C:

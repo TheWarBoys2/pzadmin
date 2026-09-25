@@ -292,3 +292,42 @@ func TestRateLimiterRefills(t *testing.T) {
 		t.Fatal("the bucket should refill")
 	}
 }
+
+func TestAPIv1StreamEndsWhenKeyIsRevoked(t *testing.T) {
+	app, handler, c, _, _ := apiTestApp(t)
+	key, id := createKey(t, c, map[string]any{"name": "streamer"})
+
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/stream", nil)
+	req.Header.Set("Authorization", "Bearer "+key)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+		t.Fatalf("stream: %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+	buf := make([]byte, 4096)
+	n, _ := resp.Body.Read(buf)
+	if !strings.Contains(string(buf[:n]), "event: status") {
+		t.Fatalf("the stream should open with status, got %q", buf[:n])
+	}
+
+	app.keys.revoke(id)
+	done := make(chan struct{})
+	go func() {
+		for {
+			if _, err := resp.Body.Read(buf); err != nil {
+				close(done)
+				return
+			}
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stream stayed open after its key was revoked")
+	}
+}

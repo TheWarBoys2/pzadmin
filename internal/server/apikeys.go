@@ -263,6 +263,20 @@ func (s *apiKeyStore) flush() {
 	}
 }
 
+// active reports whether a key still exists and has not expired, so a long
+// open stream stops when its key is revoked.
+func (s *apiKeyStore) active(id string) bool {
+	now := time.Now()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, v := range s.byHash {
+		if v.ID == id {
+			return !v.expired(now)
+		}
+	}
+	return false
+}
+
 // revoke removes a key by its public id, returning what was removed.
 func (s *apiKeyStore) revoke(id string) (apiKey, bool) {
 	s.mu.Lock()
