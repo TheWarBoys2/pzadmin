@@ -125,6 +125,22 @@ var iniMeta = map[string]meta{
 	"Faction":                     {group: "Safehouses", help: "Allow players to form factions.", applies: AppliesOnReload, typ: FieldBool},
 	"FactionDaySurvivedToCreate":  {group: "Safehouses", help: "Days a player must survive before creating a faction.", applies: AppliesOnReload, typ: FieldInt},
 
+	// --- Project Zomboid's own Discord bot, separate from PZAdmin's webhooks ---
+	"DiscordEnable": {group: "Discord", help: "Run the game's own Discord bot, which relays chat between the game and a Discord channel. " +
+		"This is separate from PZAdmin's webhooks, which announce restarts.", applies: AppliesOnRestart, typ: FieldBool},
+	"DiscordToken": {group: "Discord", help: "The bot's token from the Discord developer portal. Turn on the Message Content " +
+		"intent for the bot, or messages from Discord will not reach the game.", applies: AppliesOnRestart, secret: true},
+	"DiscordChatChannel": {group: "Discord", help: "Build 42: the channel name that in-game chat is relayed to and from.",
+		applies: AppliesOnRestart, typ: FieldText},
+	"DiscordLogChannel": {group: "Discord", help: "Build 42: the channel name the server posts its log messages to. Keep it to staff.",
+		applies: AppliesOnRestart, typ: FieldText},
+	"DiscordCommandChannel": {group: "Discord", help: "Build 42: the channel name for admin commands. Anyone who can post there " +
+		"can run commands on the server, so keep it to staff.", applies: AppliesOnRestart, typ: FieldText},
+	"DiscordChannel": {group: "Discord", help: "Build 41: the channel name that in-game chat is relayed to and from.",
+		applies: AppliesOnRestart, typ: FieldText},
+	"DiscordChannelID": {group: "Discord", help: "Build 41: the channel's numeric ID. Used instead of the name when set.",
+		applies: AppliesOnRestart, typ: FieldText},
+
 	// --- anti-cheat and logging ---
 	"AntiCheatProtectionType1": {group: "Anti-cheat", help: "Anti-cheat check. Turn individual checks off only if a mod is triggering false positives.", applies: AppliesOnRestart, typ: FieldBool},
 	"DoLuaChecksum":            {group: "Anti-cheat", help: "Kick clients whose Lua files do not match the server's.", applies: AppliesOnRestart, typ: FieldBool},
@@ -148,6 +164,7 @@ var groupPrefixes = []struct {
 	{"RCON", "Network"},
 	{"Server", "Network"},
 	{"UDP", "Network"},
+	{"Discord", "Discord"},
 	{"Voice", "Gameplay"},
 	{"Chat", "Gameplay"},
 	{"Map", "World"},
@@ -231,7 +248,7 @@ func (i *INI) Fields() []Field {
 
 var groupOrder = []string{
 	"Identity", "Access", "Gameplay", "Mods", "World", "Saving",
-	"Safehouses", "Network", "Anti-cheat", "Logging", "Other",
+	"Safehouses", "Network", "Discord", "Anti-cheat", "Logging", "Other",
 }
 
 func groupRank(name string) int {

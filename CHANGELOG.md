@@ -1,5 +1,43 @@
 # Changelog
 
+## Unreleased
+
+### Discord
+- Any number of webhooks, each written for staff or for players, with its own
+  events and servers. An existing webhook carries over as a staff webhook.
+- Player announcements in plain words: when a server actually goes down for a
+  restart (and why: scheduled, mod updates, not responding) and when it is
+  back. Not every countdown warning. The wording can be changed per event,
+  including a role ping.
+- A status message per server, edited only when something changes (it goes
+  online, restarts or goes down, or the player count moves), with the
+  server's description and join address and optionally who is playing.
+- A Discord page in the sidebar, organised by server: set up a server's own
+  channel by pasting one webhook link, and see where each server is
+  announced. Staff and shared channels sit alongside.
+- Messages are posted under a name and picture set in PZAdmin, so a webhook
+  needs no setting up in Discord. A server's own channel uses the server's
+  name; any channel can have its own name and picture.
+- An optional Discord bot, alongside webhooks: connect it once and pick
+  each channel from a list instead of pasting a webhook. An existing bot
+  works. PZAdmin keeps no connection open; it brings a new bot online once
+  when it is connected, which Discord requires before a bot can post.
+- With the bot, a server's channel can show 🟢 or 🔴 in its name. Renames
+  follow the server's settled state and stay within Discord's limit of two
+  per ten minutes; turning it off restores the plain name.
+- Restart and Stop ask for an optional reason, which players see in the
+  announcement.
+- Each server has public info (description, join address and port) typed in
+  by hand, since PZAdmin cannot see the address players use.
+- Scheduled jobs can post to a chosen Discord channel. A channel a job uses
+  cannot be removed until the job is changed.
+- Stopping and starting a server are now their own events instead of being
+  reported as restarts, and a mod-update restart is announced once, not twice.
+- Alerts can no longer ping @everyone through a player's name.
+- The settings form knows Project Zomboid's own Discord bot keys
+  (`DiscordEnable`, `DiscordToken`, and the Build 42 chat, log and command
+  channels). The bot token is treated as a secret, like the RCON password.
+
 ## 1.0.0
 
 First public release.

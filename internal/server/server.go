@@ -99,6 +99,10 @@ type App struct {
 	custom  *customCatalogue
 	// steamBase is overridden by tests; empty means the public Steam API.
 	steamBase string
+	// discordAPI and discordGateway are overridden by tests; empty means
+	// Discord itself.
+	discordAPI     string
+	discordGateway string
 	// gameRoot is a Project Zomboid installation shared by every server, used
 	// only when a server has no installation of its own. It comes from
 	// PZADMIN_GAME_ROOT.
@@ -237,11 +241,12 @@ func New(opts Options) (*App, error) {
 func (a *App) Start() {
 	a.rescan()
 	a.syncMonitors()
-	a.wg.Add(4)
+	a.wg.Add(5)
 	go a.discoveryLoop()
 	go a.schedulerLoop()
 	go a.housekeepingLoop()
 	go a.monitorSupervisor()
+	go a.liveStatusLoop()
 
 	a.event(store.Event{
 		Kind: "system.start", Severity: store.SevInfo, Source: "system",
@@ -277,25 +282,46 @@ func (a *App) Close() {
 }
 
 func (a *App) applyNotifyConfig(cfg config.Config) {
+	var dests []notify.Destination
+	for _, w := range cfg.Notify.Webhooks {
+		t := a.targetFor(cfg, w)
+		if !w.Enabled || !t.Valid() {
+			continue
+		}
+		name, avatar := postedAs(cfg, w)
+		dests = append(dests, notify.Destination{
+			ID: w.ID, URL: t.Webhook, ChannelID: t.ChannelID, BotToken: t.BotToken, API: t.API, Audience: w.Audience,
+			Events: w.Events, Servers: w.Servers, Messages: w.Messages,
+			Username: name, AvatarURL: avatar,
+		})
+	}
 	a.notify.Configure(notify.Config{
-		Enabled:     cfg.Notify.Enabled,
-		URL:         cfg.Notify.WebhookURL,
-		Events:      cfg.Notify.Events,
-		MinInterval: time.Duration(cfg.Notify.MinIntervalSeconds) * time.Second,
+		Destinations: dests,
+		MinInterval:  time.Duration(cfg.Notify.MinIntervalSeconds) * time.Second,
 	})
 }
 
-// event records an event and mirrors it to the webhook.
+// event records an event and mirrors it to the webhooks.
 func (a *App) event(e store.Event) {
 	a.store.Append(e)
 	sev := string(e.Severity)
 	if sev == "" {
 		sev = "info"
 	}
-	a.notify.Send(notify.Message{
+	m := notify.Message{
 		Kind: e.Kind, Title: e.Message, Body: e.Detail,
-		Server: e.Server, Severity: sev, At: e.At,
-	})
+		Server: e.Server, ServerID: e.ServerID, Severity: sev, At: e.At,
+	}
+	if reason, ok := e.Meta["reason"].(string); ok {
+		m.Reason = reason
+	}
+	if note, ok := e.Meta["note"].(string); ok {
+		m.Note = note
+	}
+	if minutes, ok := e.Meta["restartIn"].(int); ok {
+		m.Minutes = minutes
+	}
+	a.notify.Send(m)
 }
 
 // rconFor returns the pooled RCON client for a server, rebuilding it if the
@@ -453,6 +479,9 @@ func (a *App) Handler() http.Handler {
 	post("/api/player/note", a.handlePlayerNote)
 	post("/api/player/forget", a.handlePlayerForget)
 	post("/api/notify/test", a.handleNotifyTest)
+	post("/api/discord/bot", a.handleBotConnect)
+	post("/api/discord/bot/remove", a.handleBotRemove)
+	get("/api/discord/channels", a.handleBotChannels)
 	post("/api/import", a.handleImport)
 	post("/api/sessions/revoke", a.handleRevokeSessions)
 

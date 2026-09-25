@@ -3,6 +3,7 @@ package config
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -50,10 +51,12 @@ func TestRedactRemovesEverySecret(t *testing.T) {
 	c.PasswordSalt = "salt"
 	c.Servers = []Server{{ID: "a", RCONPassword: "rconsecret"}}
 	c.Notify.WebhookURL = "https://discord.example/hook"
+	c.Notify.Webhooks = []Webhook{{ID: "p", URL: "https://discord.example/players"}}
 	c.Metrics.Token = "metricsecret"
+	c.Notify.Bot.Token = "bottokensecret"
 
 	blob := marshalForTest(t, Redact(c))
-	for _, secret := range []string{"hash", "salt", "rconsecret", "discord.example", "metricsecret"} {
+	for _, secret := range []string{"hash", "salt", "rconsecret", "discord.example", "metricsecret", "bottokensecret"} {
 		if strings.Contains(blob, secret) {
 			t.Fatalf("redacted config still contains %q: %s", secret, blob)
 		}
@@ -187,5 +190,55 @@ func TestMultiStepTaskSurvivesNormalise(t *testing.T) {
 	}
 	if got.Schedules[0].Steps[1].Seconds != 60 {
 		t.Fatal("wait duration lost")
+	}
+}
+
+// A config written before webhooks became a list keeps its single webhook,
+// and anyone who asked to hear about restarts still hears about stops and
+// starts, which used to be reported as restarts.
+func TestLegacyWebhookIsFoldedIntoTheList(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	legacy := `{"version":8,"notify":{"enabled":true,"webhookUrl":"https://discord.com/api/webhooks/1/a",
+	  "events":["server.down","server.restart"],"minIntervalSeconds":120}}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := s.Get().Notify
+	if n.WebhookURL != "" || n.Events != nil || n.Enabled {
+		t.Fatalf("the old fields should be emptied: %#v", n)
+	}
+	if len(n.Webhooks) != 1 {
+		t.Fatalf("expected one webhook, got %#v", n.Webhooks)
+	}
+	h := n.Webhooks[0]
+	if !h.Enabled || h.URL != "https://discord.com/api/webhooks/1/a" || h.Audience != AudienceStaff || h.ID == "" {
+		t.Fatalf("webhook not carried over: %#v", h)
+	}
+	for _, want := range []string{"server.down", "server.restart", "server.stop", "server.start"} {
+		if !contains(h.Events, want) {
+			t.Fatalf("expected %s in %v", want, h.Events)
+		}
+	}
+	if n.MinIntervalSeconds != 120 {
+		t.Fatal("the throttle should be kept")
+	}
+
+	// Normalising again changes nothing.
+	again := Normalise(s.Get()).Notify
+	if len(again.Webhooks) != 1 || again.Webhooks[0].ID != h.ID {
+		t.Fatalf("migration should happen once: %#v", again.Webhooks)
+	}
+}
+
+func TestUnredactWebhooksMatchesByID(t *testing.T) {
+	prev := []Webhook{{ID: "a", URL: "https://one"}, {ID: "b", URL: "https://two"}}
+	next := []Webhook{{ID: "b", URL: Redacted}, {ID: "c", URL: Redacted}, {ID: "a", URL: "https://new"}}
+	UnredactWebhooks(next, prev)
+	if next[0].URL != "https://two" || next[1].URL != "" || next[2].URL != "https://new" {
+		t.Fatalf("got %#v", next)
 	}
 }

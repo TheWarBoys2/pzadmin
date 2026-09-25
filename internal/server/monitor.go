@@ -11,6 +11,7 @@ import (
 
 	"github.com/TheWarBoys2/pzadmin/internal/arcane"
 	"github.com/TheWarBoys2/pzadmin/internal/config"
+	"github.com/TheWarBoys2/pzadmin/internal/notify"
 	"github.com/TheWarBoys2/pzadmin/internal/pz"
 	"github.com/TheWarBoys2/pzadmin/internal/rcon"
 	"github.com/TheWarBoys2/pzadmin/internal/store"
@@ -364,6 +365,7 @@ func (a *App) maybeRecover(ctx context.Context, s config.Server, st Status) {
 		Message: "Restarting " + s.Name + " automatically",
 		Detail: fmt.Sprintf("Attempt %d after %d failed checks. Last error: %s",
 			attempt, st.ConsecutiveFailures, st.Error),
+		Meta: map[string]any{"reason": notify.ReasonCrash},
 	})
 
 	// The watchdog only fires when RCON has stopped answering, so the RCON
@@ -542,6 +544,7 @@ func (a *App) handleModUpdate(s config.Server, e pz.LogEntry) {
 		ServerID: s.ID, Server: s.Name,
 		Message: "Mod updates available for " + s.Name,
 		Detail:  fmt.Sprintf("%s Restarting automatically at %s.", detail, at.In(a.cfg.Location()).Format("15:04")),
+		Meta:    map[string]any{"restartIn": int(delay.Minutes())},
 	})
 	a.announce(s, fmt.Sprintf("Mods have updated. The server will restart in %d minutes.", int(delay.Minutes())))
 }
@@ -572,12 +575,8 @@ func (a *App) checkPendingRestart(ctx context.Context, s config.Server) {
 	if reason == "" {
 		reason = "scheduled"
 	}
-	a.event(store.Event{
-		Kind: "server.restart", Severity: store.SevWarn, Source: "monitor",
-		ServerID: s.ID, Server: s.Name,
-		Message: "Restarting " + s.Name, Detail: "Reason: " + reason,
-	})
-	if err := a.restartServer(ctx, s, "monitor", "auto ("+reason+")"); err != nil {
+	// restartServer records the restart itself, so it is not announced twice.
+	if err := a.restartServer(ctx, s, "monitor", "auto ("+reason+")", ""); err != nil {
 		a.event(store.Event{
 			Kind: "server.restart", Severity: store.SevError, Source: "monitor",
 			ServerID: s.ID, Server: s.Name,
@@ -636,7 +635,10 @@ func (a *App) clearRestarting(serverID string) {
 //
 // Without a restart policy that revives the container, quit is a stop, so
 // that case is refused rather than leaving the server down.
-func (a *App) restartServer(ctx context.Context, s config.Server, source, reason string) error {
+//
+// note is what the operator typed as the reason, if anything; players are
+// told it.
+func (a *App) restartServer(ctx context.Context, s config.Server, source, reason, note string) error {
 	if !restartPolicyRevives(s.RestartPolicy) {
 		return fmt.Errorf("%s has restart: %q in its compose file, so quitting would leave it down. "+
 			"Set restart: unless-stopped and recreate the container", s.Name, s.RestartPolicy)
@@ -664,8 +666,22 @@ func (a *App) restartServer(ctx context.Context, s config.Server, source, reason
 		ServerID: s.ID, Server: s.Name,
 		Message: s.Name + " restarting",
 		Detail:  "Saved and quit over RCON; Docker's restart policy brings it back. Reason: " + reason,
+		Meta:    map[string]any{"reason": restartReason(source, reason), "note": note},
 	})
 	return nil
+}
+
+// restartReason sorts a restart into the reasons players are told about.
+func restartReason(source, reason string) string {
+	switch {
+	case source == "schedule":
+		return notify.ReasonScheduled
+	case strings.Contains(reason, "mod update"):
+		return notify.ReasonMods
+	case source == "ui":
+		return notify.ReasonManual
+	}
+	return ""
 }
 
 // restartPolicyRevives reports whether Docker restarts a container that

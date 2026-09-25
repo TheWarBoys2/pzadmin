@@ -18,20 +18,18 @@ function assertList(actual, expected, message) {
 }
 
 const results = [];
-const pending = [];
+// Tests run one after another, async ones included. Started together, two
+// async tests interleave and swap each other's fake fetch mid-flight.
+let queue = Promise.resolve();
 function test(name, fn) {
-  try {
-    const out = fn();
-    if (out && typeof out.then === 'function') {
-      pending.push(out.then(
-        () => results.push(['pass', name]),
-        (err) => results.push(['FAIL', name, err.message])));
-    } else {
+  queue = queue.then(async () => {
+    try {
+      await fn();
       results.push(['pass', name]);
+    } catch (err) {
+      results.push(['FAIL', name, err.message]);
     }
-  } catch (err) {
-    results.push(['FAIL', name, err.message]);
-  }
+  });
 }
 
 // --- load app.js into a sandbox with the browser globals it expects ---------
@@ -85,7 +83,7 @@ const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8')
   'renderModIssues, confirmModChange, modIssueTone, ' +
   'stackStatusPanel, stackServersPanel, stackCreatePanel, paintPlan, buildControl, StackState, ' +
   'newWizard, applyWizardMods, settingsEditor, wizardRequest, ' +
-  'commandAvailability, isStopped, powerButton };\n';
+  'commandAvailability, isStopped, powerButton, editWebhook, viewDiscord, editServerChannel };\n';
 
 vm.createContext(sandbox);
 vm.runInContext(source, sandbox, { filename: 'app.js' });
@@ -98,7 +96,7 @@ const {
   renderModIssues, confirmModChange, modIssueTone,
   stackStatusPanel, stackServersPanel, stackCreatePanel, paintPlan, buildControl, StackState,
   newWizard, applyWizardMods, settingsEditor, wizardRequest,
-  commandAvailability, isStopped, powerButton,
+  commandAvailability, isStopped, powerButton, editWebhook, viewDiscord, editServerChannel,
 } = sandbox.__exports__;
 
 // The views read from S, so give it the shape a loaded page would have.
@@ -836,11 +834,185 @@ test('Start is offered for a stopped server and Stop for a running one', () => {
   assert.strictEqual(powerButton({ id: 'x', name: 'X' }, { online: true }, 'btn'), null);
 });
 
+// --- Discord ----------------------------------------------------------------
+
+const NOTIFY_OPTIONS = {
+  staffEvents: ['server.down', 'server.up'], playerEvents: ['server.restart', 'server.up', 'server.down'],
+  defaultStaffEvents: ['server.down'], defaultPlayerEvents: ['server.restart', 'server.up'],
+  playerTemplates: { 'server.restart': '{server} restarting', 'server.up': '{server} is back' },
+};
+
+function withDiscordState(webhooks, fn) {
+  const saved = S.state;
+  S.state = Object.assign({}, saved, {
+    servers: [{ id: 'a', name: 'Riverside', gamePort: 16261, public: { address: 'play.example.com' } },
+      { id: 'b', name: 'Louisville' }],
+    config: { notify: { minIntervalSeconds: 300, webhooks } },
+    notifyOptions: NOTIFY_OPTIONS,
+  });
+  const done = () => { S.state = saved; closeAllModals(); };
+  try {
+    const out = fn();
+    if (out && out.then) return out.finally(done);
+    done();
+    return out;
+  } catch (err) { done(); throw err; }
+}
+
+// A saved webhook address is never shown, and saving the dialog without
+// touching it must send the placeholder back so the server keeps it.
+test('a saved webhook address stays hidden and is kept on save', () => withDiscordState([{
+  id: 'p', name: 'Players', enabled: true, url: '__pzadmin_unchanged__', audience: 'players',
+  events: ['server.restart'], servers: [], liveStatus: true,
+}], async () => {
+  const sent = [];
+  const fetchBefore = sandbox.fetch;
+  sandbox.fetch = (path, opts) => {
+    if (opts.method === 'POST') {
+      sent.push({ path, body: JSON.parse(opts.body) });
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{"ok":true}') });
+    }
+    return Promise.reject(new Error('no state in tests'));
+  };
+  try {
+    closeAllModals();
+    editWebhook(0);
+    const modal = overlay().children[overlay().children.length - 1];
+    assert.ok(!modal.querySelectorAll('input').some((i) => i.value === '__pzadmin_unchanged__'),
+      'the placeholder must not be shown as an address');
+    modal.querySelectorAll('button').find((b) => b.textContent === 'Save').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.strictEqual(sent.length, 1, 'save should post once');
+    const hook = sent[0].body.notify.webhooks[0];
+    assert.strictEqual(hook.url, '__pzadmin_unchanged__', 'an untouched address is sent back as the placeholder');
+    assert.strictEqual(hook.id, 'p');
+    assert.strictEqual(hook.liveStatus, true);
+    assertList(hook.events, ['server.restart']);
+  } finally {
+    sandbox.fetch = fetchBefore;
+  }
+}));
+
+// Setting up a server's own channel is one paste: it is scoped to that
+// server, named after it, and starts with the useful announcements on.
+test('a server channel starts scoped, named and with a status message', () => withDiscordState([], async () => {
+  const sent = [];
+  const fetchBefore = sandbox.fetch;
+  sandbox.fetch = (path, opts) => {
+    if (opts.method === 'POST') {
+      sent.push(JSON.parse(opts.body));
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{"ok":true}') });
+    }
+    return Promise.reject(new Error('no state in tests'));
+  };
+  try {
+    closeAllModals();
+    editServerChannel(S.state.servers[0]);
+    const modal = overlay().children[overlay().children.length - 1];
+    const labels = modal.querySelectorAll('label.check')
+      .filter((l) => l.children[0] && l.children[0].checked)
+      .map((l) => l.textContent);
+    assert.ok(labels.includes('The server goes down for a restart'), labels.join(', '));
+    assert.ok(labels.includes('The server is back online'), labels.join(', '));
+    assert.ok(labels.some((t) => t.startsWith('Post a status message')), labels.join(', '));
+    assert.ok(!labels.includes('Every server'), 'a server channel has no server picker');
+
+    const address = modal.querySelectorAll('input').find((i) => (i.attributes.placeholder || '').startsWith('https://discord'));
+    address.value = 'https://discord.com/api/webhooks/1/x';
+    address.dispatch('input');
+    modal.querySelectorAll('button').find((b) => b.textContent === 'Save').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const hook = sent[0].notify.webhooks[0];
+    assert.strictEqual(hook.server, 'a');
+    assertList(hook.servers, ['a']);
+    assert.strictEqual(hook.name, 'Riverside');
+    assert.strictEqual(hook.url, 'https://discord.com/api/webhooks/1/x');
+  } finally {
+    sandbox.fetch = fetchBefore;
+  }
+}));
+
+// The page is organised by server: each says where it is announced.
+test('the Discord page shows where each server is announced', () => withDiscordState([
+  { id: 'r', name: 'Riverside', enabled: true, url: '__pzadmin_unchanged__', audience: 'players',
+    events: ['server.up'], servers: ['a'], server: 'a', liveStatus: true },
+  { id: 's', name: 'staff', enabled: true, url: '__pzadmin_unchanged__', audience: 'staff', events: ['server.down'], servers: [] },
+], () => {
+  const main = el('main');
+  viewDiscord(main);
+  const rows = main.querySelectorAll('.list-row').map((r) => r.textContent);
+  const riverside = rows.find((r) => r.startsWith('Riverside'));
+  assert.ok(riverside.includes('Own channel'), riverside);
+  assert.ok(riverside.includes('play.example.com:16261'), 'the join address should be shown: ' + riverside);
+  const louisville = rows.find((r) => r.startsWith('Louisville'));
+  assert.ok(louisville.includes('no channel yet') && louisville.includes('Set up channel'), louisville);
+  assert.ok(louisville.includes('Staff alerts in: staff'), louisville);
+  // A server's own channel is listed with its server, not among the shared ones.
+  assert.strictEqual(rows.filter((r) => r.startsWith('Riverside')).length, 1, rows.join(' / '));
+}));
+
+// With a bot, a server's channel is picked from a list and can show its
+// status in its name; what is saved is the channel ID, not a webhook.
+test('a server channel can go through the bot and show a status dot', () => withDiscordState([], async () => {
+  const sent = [];
+  const fetchBefore = sandbox.fetch;
+  S.state.config.notify.bot = { token: '__pzadmin_unchanged__', name: 'Knox Radio' };
+  S.botChannels = null;
+  sandbox.fetch = (path, opts) => {
+    if (opts.method === 'POST') {
+      sent.push(JSON.parse(opts.body));
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{"ok":true}') });
+    }
+    if (path === '/api/discord/channels') {
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ channels: [
+        { id: '111111111111111111', name: 'riverside', guild: 'Zomboid Crew', category: 'Servers' },
+      ] })) });
+    }
+    return Promise.reject(new Error('no state in tests'));
+  };
+  try {
+    closeAllModals();
+    editServerChannel(S.state.servers[0]);
+    const modal = overlay().children[overlay().children.length - 1];
+    const via = modal.querySelectorAll('select').find((sel) => sel.children.some((o) => o.attributes.value === 'bot'));
+    via.value = 'bot';
+    via.dispatch('change');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const picker = modal.querySelectorAll('select').find((sel) =>
+      sel.children.some((o) => o.textContent === 'Zomboid Crew › Servers › #riverside'));
+    assert.ok(picker, 'the bot’s channels should be listed');
+    picker.value = '111111111111111111';
+    picker.dispatch('change');
+    const dot = modal.querySelectorAll('label.check').find((l) => l.textContent.includes('in the channel’s name'));
+    dot.children[0].checked = true;
+    dot.children[0].dispatch('change');
+    modal.querySelectorAll('button').find((b) => b.textContent === 'Save').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.strictEqual(sent.length, 1, 'save should post: ' + modal.querySelector('.error').textContent);
+    const hook = sent[0].notify.webhooks[0];
+    assert.strictEqual(hook.channelId, '111111111111111111');
+    assert.strictEqual(hook.url, '');
+    assert.strictEqual(hook.renameChannel, true);
+    assert.strictEqual(hook.server, 'a');
+  } finally {
+    sandbox.fetch = fetchBefore;
+    S.botChannels = null;
+  }
+}));
+
+test('a Discord step names its channel', () => withDiscordState([
+  { id: 'r', name: 'riverside-chat', enabled: true, audience: 'players', events: [], servers: [] },
+], () => {
+  assert.strictEqual(describeStep({ kind: 'discord', webhook: 'r', message: 'hi' }), 'post to riverside-chat');
+  assert.strictEqual(describeStep({ kind: 'discord', webhook: 'gone', message: 'hi' }), 'post to a removed channel');
+}));
+
 // --- report -----------------------------------------------------------------
 
 
 (async () => {
-  await Promise.all(pending);
+  await queue;
   let failed = 0;
   for (const [status, name, message] of results) {
     if (status === 'pass') {

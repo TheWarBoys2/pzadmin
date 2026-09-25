@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/TheWarBoys2/pzadmin/internal/config"
 	"github.com/TheWarBoys2/pzadmin/internal/cronx"
+	"github.com/TheWarBoys2/pzadmin/internal/notify"
 	"github.com/TheWarBoys2/pzadmin/internal/pz"
 	"github.com/TheWarBoys2/pzadmin/internal/store"
 )
@@ -210,7 +212,7 @@ func (a *App) executeStep(ctx context.Context, step config.Step, srv config.Serv
 		return "broadcast sent", nil
 
 	case "restart":
-		if err := a.restartServer(ctx, srv, "schedule", "scheduled job"); err != nil {
+		if err := a.restartServer(ctx, srv, "schedule", "scheduled job", ""); err != nil {
 			return "", err
 		}
 		return "restart issued", nil
@@ -237,6 +239,29 @@ func (a *App) executeStep(ctx context.Context, step config.Step, srv config.Serv
 			Detail:  fmt.Sprintf("%d files in %s.", res.Archive.Files, res.Duration.Round(time.Second)),
 		})
 		return fmt.Sprintf("archived %d files, %s", res.Archive.Files, humanBytes(res.Archive.Size)), nil
+
+	case "discord":
+		h := webhookByID(a.cfg.Get(), step.Webhook)
+		switch {
+		case h == nil:
+			return "", fmt.Errorf("the Discord channel this posts to has been removed")
+		case !h.Enabled || !a.targetFor(a.cfg.Get(), *h).Valid():
+			return "", fmt.Errorf("the Discord channel %q is switched off", h.Name)
+		}
+		text := strings.NewReplacer(
+			"{server}", srv.Name,
+			"{players}", strconv.Itoa(a.statusOf(srv.ID).PlayerCount),
+		).Replace(step.Message)
+		dctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		name, avatar := postedAs(a.cfg.Get(), *h)
+		t := a.targetFor(a.cfg.Get(), *h)
+		dest := notify.Destination{URL: t.Webhook, ChannelID: t.ChannelID, BotToken: t.BotToken, API: t.API,
+			Audience: h.Audience, Username: name, AvatarURL: avatar}
+		if err := a.notify.Announce(dctx, dest, text); err != nil {
+			return "", err
+		}
+		return "posted to " + h.Name, nil
 
 	case "command":
 		line, err := ValidateRawCommand(step.Command)

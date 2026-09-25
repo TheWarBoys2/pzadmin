@@ -39,7 +39,8 @@ image, one Compose stack per server, managed through [Arcane](https://getarcane.
 - Scheduled jobs made of steps, e.g. *announce → wait 1 min → save → back up → restart*
 - Mod update detection, with an optional countdown and automatic restart
 - Backups with retention, download and restore
-- Discord webhook alerts, Prometheus metrics and an audit log of every action
+- Discord: staff alerts, player announcements when a server restarts and comes back, a status message per server, and Discord posts from scheduled jobs
+- Prometheus metrics and an audit log of every action
 
 ---
 
@@ -199,6 +200,59 @@ Everything is set in `docker-compose.yml`. Settings with a default can be left o
 Webhooks, metrics, backups and schedules are configured in the web interface.
 
 ---
+
+## Discord
+
+PZAdmin posts to Discord through webhooks, or through a bot if you have one. Everything is on the **Discord** page in
+the sidebar.
+
+**Give each server its own channel.** In Discord, open the channel's settings, then Integrations → Webhooks →
+New Webhook → Copy Webhook URL. You don't need to name it or give it a picture there. On the Discord page, click
+**Set up channel** next to the server and paste the link. That channel then gets:
+
+- short, plain announcements when the server actually goes down for a restart (and why: scheduled, mod updates,
+  stopped responding, or the reason you typed when you pressed Restart or Stop) and when it's back. Countdown
+  warnings stay in game. You can change the wording and ping a role by writing `<@&role ID>` into it.
+- a **status message**, edited only when something changes: the server comes online, restarts or goes down, or the
+  player count moves. Pin it. It shows the server's description and join address, which you type into the server's
+  **Public info**, because PZAdmin only sees the server from inside Docker.
+
+Players only see the servers whose channels they can read.
+
+**Name and picture come from PZAdmin.** Messages are posted as the name and picture set under
+**How PZAdmin appears in Discord**. A server's own channel uses the server's name, and any channel can have its own
+name and picture. The picture has to be a link Discord can reach, such as an image uploaded to Discord.
+
+**Or use a bot.** Webhooks need no bot, but if you'd rather not make a webhook per channel, or you already run a
+bot, connect it under **Discord bot** on the same page:
+
+1. At [discord.com/developers](https://discord.com/developers/applications): New Application → Bot → Reset Token, and
+   copy the token.
+2. OAuth2 → URL Generator: tick **bot**, then View Channels, Send Messages, Embed Links and Read Message History, plus
+   **Manage Channels** if you want the status dot. Open the generated link to invite the bot.
+3. Paste the token into PZAdmin and click **Connect**.
+
+Each channel can then send with the bot, and you pick the channel from a list. Messages sent by the bot use the
+bot's own name and picture. PZAdmin never keeps a connection to Discord open: it only brings a new bot online once
+when you connect it, because Discord won't let a bot post before it has been online.
+
+**Status dot in the channel name.** With the bot connected, a server's own channel can show 🟢 or 🔴 in front of
+its name. This works whether the channel sends with a webhook or the bot, as long as the bot has Manage Channels
+there. Discord only allows two renames per channel every ten minutes, so the dot follows the server's settled state:
+a restart you started leaves it alone, and a change has to last a minute and a half before it shows. The status
+message and announcements carry the detail. Turn the dot off and the channel gets its plain name back.
+
+**Staff and shared channels** cover several servers at once: a staff channel gets outages, watchdog restarts, failed
+backups and admin actions with full detail; a shared channel announces several servers in one place.
+
+**Scheduled jobs** can post too: add a **Post to Discord** step, choose the channel and write the message.
+`{server}` and `{players}` are filled in when the job runs.
+
+Project Zomboid also has its own Discord bot, which relays in-game chat. It's set in the server ini
+(`DiscordEnable`, `DiscordToken`, and on Build 42 `DiscordChatChannel`, `DiscordLogChannel` and
+`DiscordCommandChannel`), and the settings form has a Discord group for it. The two work side by side: the game's bot
+relays chat, and PZAdmin announces restarts. Anyone who can post in the command channel can run admin commands, so
+keep that channel to staff.
 
 ## Security
 

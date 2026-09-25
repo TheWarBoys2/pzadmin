@@ -14,6 +14,7 @@ import (
 
 	"github.com/TheWarBoys2/pzadmin/internal/config"
 	"github.com/TheWarBoys2/pzadmin/internal/cronx"
+	"github.com/TheWarBoys2/pzadmin/internal/notify"
 	"github.com/TheWarBoys2/pzadmin/internal/pz"
 	"github.com/TheWarBoys2/pzadmin/internal/store"
 )
@@ -265,6 +266,13 @@ func (a *App) snapshot() map[string]any {
 		"version":    Version,
 		"serverTime": time.Now().Format(time.RFC3339),
 		"timezone":   cfg.Timezone,
+		"notifyOptions": map[string]any{
+			"staffEvents":         config.NotifyEvents,
+			"playerEvents":        config.PlayerEvents,
+			"defaultStaffEvents":  config.DefaultStaffEvents,
+			"defaultPlayerEvents": config.DefaultPlayerEvents,
+			"playerTemplates":     notify.PlayerTemplates,
+		},
 	}
 }
 
@@ -429,7 +437,14 @@ func (a *App) handleServerSave(w http.ResponseWriter, r *http.Request) {
 		in.Backup = config.DefaultBackup()
 	}
 
+	public, err := cleanPublicInfo(in.Public)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	next := existing
+	next.Public = public
 	next.Name = in.Name
 	next.Enabled = in.Enabled
 	next.Notes = in.Notes
@@ -724,16 +739,23 @@ func (a *App) handleLifecycle(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "no such server")
 		return
 	}
-	reason := strings.TrimSpace(p.Reason)
-	if reason == "" {
-		reason = "requested by " + actor(r)
+	// What the operator typed is told to players, so it is kept short and on
+	// one line.
+	note := strings.Join(strings.Fields(p.Reason), " ")
+	if len([]rune(note)) > 200 {
+		httpError(w, http.StatusBadRequest, "keep the reason under 200 characters")
+		return
+	}
+	reason := "requested by " + actor(r)
+	if note != "" {
+		reason += ": " + note
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Minute)
 	defer cancel()
 
 	switch p.Action {
 	case "restart":
-		if err := a.restartServer(ctx, srv, "ui", reason); err != nil {
+		if err := a.restartServer(ctx, srv, "ui", reason, note); err != nil {
 			httpError(w, http.StatusBadGateway, err.Error())
 			return
 		}
@@ -769,8 +791,9 @@ func (a *App) handleLifecycle(w http.ResponseWriter, r *http.Request) {
 			st.ContainerState = "exited"
 		})
 		a.dropRCON(srv.ID)
-		a.event(store.Event{Kind: "server.restart", Severity: store.SevWarn, Source: "ui", Actor: actor(r),
-			ServerID: srv.ID, Server: srv.Name, Message: srv.Name + " stopped", Detail: reason})
+		a.event(store.Event{Kind: "server.stop", Severity: store.SevWarn, Source: "ui", Actor: actor(r),
+			ServerID: srv.ID, Server: srv.Name, Message: srv.Name + " stopped", Detail: reason,
+			Meta: map[string]any{"note": note}})
 		ok(w, map[string]any{"message": "Stopped."})
 
 	case "start":
@@ -809,7 +832,7 @@ func (a *App) handleLifecycle(w http.ResponseWriter, r *http.Request) {
 			detail += ". Note: " + drift
 			msg = "Started. Note: " + drift + "."
 		}
-		a.event(store.Event{Kind: "server.restart", Severity: store.SevInfo, Source: "ui", Actor: actor(r),
+		a.event(store.Event{Kind: "server.start", Severity: store.SevInfo, Source: "ui", Actor: actor(r),
 			ServerID: srv.ID, Server: srv.Name, Message: srv.Name + " started", Detail: detail})
 		ok(w, map[string]any{"message": msg, "drift": drift})
 
@@ -1220,7 +1243,11 @@ func (a *App) handleSchedules(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for n := range t.Steps {
-			if err := validateStep(&t.Steps[n]); err != nil {
+			err := validateStep(&t.Steps[n])
+			if err == nil && t.Steps[n].Kind == "discord" && webhookByID(a.cfg.Get(), t.Steps[n].Webhook) == nil {
+				err = fmt.Errorf("the Discord channel it posts to has been removed")
+			}
+			if err != nil {
 				httpError(w, http.StatusBadRequest,
 					fmt.Sprintf("%q step %d: %s", t.Name, n+1, err.Error()))
 				return
@@ -1319,9 +1346,32 @@ func (a *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if p.Notify != nil {
 			n := *p.Notify
-			if n.WebhookURL == config.Redacted {
-				n.WebhookURL = prev.Notify.WebhookURL
+			// A form that only changes the throttle leaves the webhooks and
+			// identity alone.
+			if n.Webhooks == nil {
+				n.Webhooks = prev.Notify.Webhooks
 			}
+			if n.Identity == (config.Identity{}) && p.Notify.Webhooks == nil {
+				n.Identity = prev.Notify.Identity
+			}
+			// The bot is connected and removed through its own endpoints,
+			// which check the token with Discord; the settings form only
+			// ever carries it redacted.
+			n.Bot = prev.Notify.Bot
+			hooks, err := validateWebhooks(n.Webhooks, prev.Notify.Webhooks, c.Servers, n.Bot.Token != "")
+			if err != nil {
+				return err
+			}
+			if err := webhooksInUse(hooks, c.Schedules); err != nil {
+				return err
+			}
+			n.Webhooks = hooks
+			identity, err := cleanIdentity(n.Identity, "PZAdmin")
+			if err != nil {
+				return err
+			}
+			n.Identity = identity
+			n.Enabled, n.WebhookURL, n.Events = false, "", nil
 			c.Notify = n
 		}
 		if p.Metrics != nil {
@@ -1336,6 +1386,11 @@ func (a *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	})
+	var invalid *settingsError
+	if errors.As(err, &invalid) {
+		httpError(w, http.StatusBadRequest, invalid.Error())
+		return
+	}
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1349,20 +1404,54 @@ func (a *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleNotifyTest(w http.ResponseWriter, r *http.Request) {
 	var p struct {
-		URL string `json:"url"`
+		// ID names a saved webhook, whose address is used when URL is blank
+		// or the placeholder the browser was given instead of it.
+		ID       string `json:"id"`
+		URL      string `json:"url"`
+		Audience string `json:"audience"`
+		// Server and Identity are the channel as it stands in the form, so
+		// the test shows the name and picture real messages will have.
+		Server   string          `json:"server"`
+		Identity config.Identity `json:"identity"`
+		// ChannelID tests posting through the bot.
+		ChannelID string `json:"channelId"`
 	}
 	if !decodeJSON(w, r, &p) {
 		return
 	}
-	url := strings.TrimSpace(p.URL)
-	if url == "" || url == config.Redacted {
-		url = a.cfg.Get().Notify.WebhookURL
+	cfg := a.cfg.Get()
+	if h := webhookByID(cfg, p.ID); h != nil && p.Server == "" && p.Identity == (config.Identity{}) {
+		p.Server, p.Identity = h.Server, h.Identity
 	}
-	if url == "" {
+	name, avatar := postedAs(cfg, config.Webhook{Server: p.Server, Identity: p.Identity})
+	dest := notify.Destination{URL: strings.TrimSpace(p.URL), Audience: p.Audience, Username: name, AvatarURL: avatar}
+	if id := strings.TrimSpace(p.ChannelID); id != "" {
+		if cfg.Notify.Bot.Token == "" {
+			httpError(w, http.StatusBadRequest, "connect the bot first")
+			return
+		}
+		t := a.targetFor(cfg, config.Webhook{ChannelID: id})
+		dest.URL, dest.ChannelID, dest.BotToken, dest.API = "", t.ChannelID, t.BotToken, t.API
+		if err := a.notify.Test(dest); err != nil {
+			httpError(w, http.StatusBadGateway, "the bot could not post there: "+err.Error())
+			return
+		}
+		ok(w, map[string]any{"message": "Test message sent."})
+		return
+	}
+	if dest.URL == "" || dest.URL == config.Redacted {
+		dest.URL = ""
+		for _, h := range cfg.Notify.Webhooks {
+			if p.ID != "" && h.ID == p.ID {
+				dest.URL = h.URL
+			}
+		}
+	}
+	if dest.URL == "" {
 		httpError(w, http.StatusBadRequest, "enter a webhook address first")
 		return
 	}
-	if err := a.notify.Test(url); err != nil {
+	if err := a.notify.Test(dest); err != nil {
 		httpError(w, http.StatusBadGateway, "the webhook did not accept the message: "+err.Error())
 		return
 	}
@@ -1412,6 +1501,9 @@ func (a *App) handleImport(w http.ResponseWriter, r *http.Request) {
 						cur.Recovery = in.Recovery
 					}
 					cur.Mods = in.Mods
+					if public, err := cleanPublicInfo(in.Public); err == nil {
+						cur.Public = public
+					}
 					if in.Backup.Keep > 0 {
 						cur.Backup = in.Backup
 					}
@@ -1478,6 +1570,18 @@ func validateStep(step *config.Step) error {
 	case "broadcast":
 		if strings.TrimSpace(step.Message) == "" {
 			return fmt.Errorf("a broadcast needs a message")
+		}
+		return nil
+	case "discord":
+		step.Message = strings.TrimSpace(step.Message)
+		if step.Message == "" {
+			return fmt.Errorf("a Discord post needs a message")
+		}
+		if len([]rune(step.Message)) > maxTemplate {
+			return fmt.Errorf("a Discord post must be under %d characters", maxTemplate)
+		}
+		if step.Webhook == "" {
+			return fmt.Errorf("choose which Discord channel to post to")
 		}
 		return nil
 	case "command":

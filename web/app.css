@@ -875,3 +875,12 @@ details.setting-group > summary {
 }
 .setting.changed { background: var(--sunken); }
 .mod-list { margin-top: 12px; }
+
+/* ------------------------------------------------------------- webhooks */
+.webhook-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.webhook-card .row-actions { align-items: center; justify-content: space-between; }
+.check-grid { display: grid; gap: 7px; }
+.webhook-wording > summary { cursor: pointer; font-size: 12.5px; color: var(--dust); margin-bottom: 10px; }
+.webhook-wording .field textarea { min-height: 54px; }
+p.hint { margin: 0; font-size: 11.5px; color: var(--faint); }
+ol.steps { margin: 0; padding-left: 18px; display: grid; gap: 4px; }

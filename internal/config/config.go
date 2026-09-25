@@ -108,6 +108,19 @@ type Server struct {
 	Recovery RecoveryPolicy `json:"recovery"`
 	Mods     ModPolicy      `json:"mods"`
 	Backup   BackupPolicy   `json:"backup"`
+
+	// Public is what players are told about the server in Discord.
+	Public PublicInfo `json:"public"`
+}
+
+// PublicInfo is typed in by the operator, because PZAdmin only sees the
+// server from inside Docker and cannot know the address players use.
+type PublicInfo struct {
+	Description string `json:"description,omitempty"`
+	// Address is the host name or IP players connect to.
+	Address string `json:"address,omitempty"`
+	// Port is the port players connect to. Zero means the game port.
+	Port int `json:"port,omitempty"`
 }
 
 // RecoveryPolicy controls the watchdog that restarts a wedged container.
@@ -167,9 +180,10 @@ type Task struct {
 
 // Step is one action within a job.
 type Step struct {
-	// Kind is one of: save, broadcast, restart, backup, command, action, wait.
+	// Kind is one of: save, broadcast, restart, backup, command, action,
+	// wait, discord.
 	Kind string `json:"kind"`
-	// Message is the text for a broadcast.
+	// Message is the text for a broadcast or a discord post.
 	Message string `json:"message,omitempty"`
 	// Command is the raw RCON line for a command step.
 	Command string `json:"command,omitempty"`
@@ -179,6 +193,8 @@ type Step struct {
 	// the job runs: a player argument may be "@each", "@random" or a name, and
 	// an item or vehicle argument may be "random:<category>".
 	Args []string `json:"args,omitempty"`
+	// Webhook is the ID of the webhook a discord step posts through.
+	Webhook string `json:"webhook,omitempty"`
 	// Seconds is the pause for a wait step.
 	Seconds int `json:"seconds,omitempty"`
 	// ContinueOnError keeps the job going when this step fails.
@@ -188,16 +204,87 @@ type Step struct {
 }
 
 // StepKinds enumerates the valid step kinds.
-var StepKinds = []string{"save", "broadcast", "restart", "backup", "command", "action", "wait"}
+var StepKinds = []string{"save", "broadcast", "restart", "backup", "command", "action", "wait", "discord"}
 
 // Notify configures outbound webhooks (Discord-compatible).
 type Notify struct {
-	Enabled    bool     `json:"enabled"`
-	WebhookURL string   `json:"webhookUrl"`
-	Events     []string `json:"events"`
-	// MinIntervalSeconds throttles identical repeated notifications.
+	// Webhooks are the destinations. Each has its own audience, events and
+	// servers, so staff alerts and player announcements can go to different
+	// channels.
+	Webhooks []Webhook `json:"webhooks"`
+	// MinIntervalSeconds throttles identical repeated staff alerts.
 	MinIntervalSeconds int `json:"minIntervalSeconds"`
+	// Identity is the name and picture messages are posted under, so a
+	// webhook needs no setting up in Discord beyond copying its address.
+	Identity Identity `json:"identity"`
+	// Bot is an optional Discord bot. With it, channels can be picked from a
+	// list instead of pasting webhooks, and channel names can show status.
+	Bot Bot `json:"bot"`
+
+	// Enabled, WebhookURL and Events are the single webhook used before
+	// destinations existed. They are read once on load and folded into
+	// Webhooks, then left empty.
+	Enabled    bool     `json:"enabled,omitempty"`
+	WebhookURL string   `json:"webhookUrl,omitempty"`
+	Events     []string `json:"events,omitempty"`
 }
+
+// Bot is a Discord bot PZAdmin posts through. Only the token is needed; the
+// rest is remembered from the last time it was checked, for display.
+type Bot struct {
+	Token string `json:"token,omitempty"`
+	ID    string `json:"id,omitempty"`
+	Name  string `json:"name,omitempty"`
+}
+
+// Identity is how PZAdmin appears in Discord. Empty fields fall back: a
+// webhook's own identity to the global one, the global one to "PZAdmin" and
+// whatever picture the webhook has in Discord.
+type Identity struct {
+	Name string `json:"name,omitempty"`
+	// AvatarURL must be an image Discord can fetch from the internet.
+	AvatarURL string `json:"avatarUrl,omitempty"`
+}
+
+// Webhook is one notification destination.
+type Webhook struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
+	URL     string `json:"url"`
+	// ChannelID, when set, sends through the bot to this channel instead of
+	// through the webhook URL.
+	ChannelID string `json:"channelId,omitempty"`
+	// RenameChannel puts a green or red dot in front of the channel's name as
+	// the server comes and goes. It needs the bot, on a server's own channel.
+	RenameChannel bool `json:"renameChannel,omitempty"`
+	// Server, when set, makes this that server's own channel: it covers
+	// only that server and is set up from the server's row on the Discord
+	// page. Messages default to the server's name.
+	Server string `json:"server,omitempty"`
+	// Identity overrides how messages to this webhook appear.
+	Identity Identity `json:"identity"`
+	// Audience is "staff", which gets every detail, or "players", which gets
+	// short announcements written for the people who play on the server.
+	Audience string   `json:"audience"`
+	Events   []string `json:"events"`
+	// Servers limits the webhook to these server IDs. Empty means every server.
+	Servers []string `json:"servers"`
+	// Messages overrides the wording of player announcements, by event.
+	Messages map[string]string `json:"messages,omitempty"`
+	// LiveStatus keeps one status message per server in the channel, edited
+	// whenever what it says changes, instead of posting a new one each time.
+	// Discord only.
+	LiveStatus bool `json:"liveStatus,omitempty"`
+	// ListPlayers adds who is online to the status message.
+	ListPlayers bool `json:"listPlayers,omitempty"`
+}
+
+// Webhook audiences.
+const (
+	AudienceStaff   = "staff"
+	AudiencePlayers = "players"
+)
 
 // Metrics configures the Prometheus endpoint.
 type Metrics struct {
@@ -213,12 +300,24 @@ type Interface struct {
 	RetainDays int `json:"retainDays"`
 }
 
-// NotifyEvents enumerates every notifiable event key.
+// NotifyEvents enumerates every event a staff webhook can be sent.
 var NotifyEvents = []string{
 	"server.down", "server.up", "server.recovered", "server.restart",
+	"server.stop", "server.start",
 	"player.join", "player.leave", "mods.update", "backup.done", "backup.failed",
 	"admin.action",
 }
+
+// PlayerEvents enumerates the events a player webhook can be sent. The rest
+// are staff business.
+var PlayerEvents = []string{"server.restart", "server.up", "server.down", "server.stop", "mods.update"}
+
+// DefaultStaffEvents is what a new staff webhook is sent.
+var DefaultStaffEvents = []string{"server.down", "server.up", "server.recovered", "mods.update", "backup.failed"}
+
+// DefaultPlayerEvents is what a new player webhook is sent: when a server
+// actually goes down for a restart and when it is back, not every warning.
+var DefaultPlayerEvents = []string{"server.restart", "server.up"}
 
 // Defaults returns a Config suitable for a brand new installation.
 func Defaults() Config {
@@ -230,7 +329,7 @@ func Defaults() Config {
 		Servers:      []Server{},
 		Schedules:    []Task{},
 		Notify: Notify{
-			Events:             []string{"server.down", "server.up", "server.recovered", "mods.update", "backup.failed"},
+			Webhooks:           []Webhook{},
 			MinIntervalSeconds: 300,
 		},
 		Metrics:   Metrics{Enabled: true},
@@ -301,9 +400,7 @@ func Normalise(c Config) Config {
 	if c.Schedules == nil {
 		c.Schedules = []Task{}
 	}
-	if c.Notify.Events == nil {
-		c.Notify.Events = d.Notify.Events
-	}
+	c.Notify = normaliseNotify(c.Notify)
 	for i := range c.Schedules {
 		t := &c.Schedules[i]
 		// Fold a pre-multi-step task into a single step so nothing an operator
@@ -344,6 +441,59 @@ func Normalise(c Config) Config {
 	}
 	c.Version = 8
 	return c
+}
+
+// normaliseNotify folds the old single webhook into the list and fills in
+// what each webhook needs to be delivered.
+func normaliseNotify(n Notify) Notify {
+	if n.WebhookURL != "" && len(n.Webhooks) == 0 {
+		events := n.Events
+		if events == nil {
+			events = DefaultStaffEvents
+		}
+		// server.restart used to cover stops and starts as well, so anyone
+		// who asked for restarts keeps hearing about them.
+		if contains(events, "server.restart") {
+			for _, k := range []string{"server.stop", "server.start"} {
+				if !contains(events, k) {
+					events = append(events, k)
+				}
+			}
+		}
+		n.Webhooks = []Webhook{{
+			ID: "alerts", Name: "Alerts", Enabled: n.Enabled, URL: n.WebhookURL,
+			Audience: AudienceStaff, Events: events,
+		}}
+	}
+	n.Enabled, n.WebhookURL, n.Events = false, "", nil
+	if n.Webhooks == nil {
+		n.Webhooks = []Webhook{}
+	}
+	for i := range n.Webhooks {
+		w := &n.Webhooks[i]
+		if w.ID == "" {
+			w.ID = RandomToken(6)
+		}
+		if w.Audience != AudiencePlayers {
+			w.Audience = AudienceStaff
+		}
+		if w.Events == nil {
+			w.Events = []string{}
+		}
+		if w.Servers == nil {
+			w.Servers = []string{}
+		}
+	}
+	return n
+}
+
+func contains(list []string, v string) bool {
+	for _, s := range list {
+		if s == v {
+			return true
+		}
+	}
+	return false
 }
 
 // Get returns a deep copy of the current configuration.
@@ -473,11 +623,19 @@ func Redact(c Config) Config {
 			out.Servers[i].RCONPassword = Redacted
 		}
 	}
-	if out.Notify.WebhookURL != "" {
-		out.Notify.WebhookURL = Redacted
+	// Normalise folds the old field away, but a config that has not been
+	// through it must not leak it either.
+	out.Notify.WebhookURL = ""
+	for i := range out.Notify.Webhooks {
+		if out.Notify.Webhooks[i].URL != "" {
+			out.Notify.Webhooks[i].URL = Redacted
+		}
 	}
 	if out.Metrics.Token != "" {
 		out.Metrics.Token = Redacted
+	}
+	if out.Notify.Bot.Token != "" {
+		out.Notify.Bot.Token = Redacted
 	}
 	return out
 }
@@ -489,8 +647,11 @@ func Export(c Config) Config {
 	for i := range out.Servers {
 		out.Servers[i].RCONPassword = ""
 	}
-	out.Notify.WebhookURL = ""
+	for i := range out.Notify.Webhooks {
+		out.Notify.Webhooks[i].URL = ""
+	}
 	out.Metrics.Token = ""
+	out.Notify.Bot = Bot{}
 	out.Username = ""
 	out.SetupComplete = false
 	return out
@@ -508,8 +669,9 @@ func Unredact(next *Config, prev Config) {
 			next.Servers[i].RCONPassword = byID[next.Servers[i].ID].RCONPassword
 		}
 	}
-	if next.Notify.WebhookURL == Redacted {
-		next.Notify.WebhookURL = prev.Notify.WebhookURL
+	UnredactWebhooks(next.Notify.Webhooks, prev.Notify.Webhooks)
+	if next.Notify.Bot.Token == Redacted {
+		next.Notify.Bot.Token = prev.Notify.Bot.Token
 	}
 	if next.Metrics.Token == Redacted {
 		next.Metrics.Token = prev.Metrics.Token
@@ -519,6 +681,21 @@ func Unredact(next *Config, prev Config) {
 	next.PasswordIter = prev.PasswordIter
 	next.Username = prev.Username
 	next.SetupComplete = prev.SetupComplete
+}
+
+// UnredactWebhooks restores each webhook address the browser sent back as the
+// placeholder, matching on ID. A placeholder with no match becomes empty
+// rather than being saved as an address.
+func UnredactWebhooks(next, prev []Webhook) {
+	byID := map[string]string{}
+	for _, w := range prev {
+		byID[w.ID] = w.URL
+	}
+	for i := range next {
+		if next[i].URL == Redacted {
+			next[i].URL = byID[next[i].ID]
+		}
+	}
 }
 
 // --- password hashing -------------------------------------------------------
