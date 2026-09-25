@@ -1,0 +1,27 @@
+# Allowlist: nothing enters the build context unless it is named here. The
+# image is built from source, so a stray .env, backup, log, key or data folder
+# in the checkout can never be copied into it, whatever it is called.
+#
+# Everything listed is committed source. The packaging tests read the compose
+# files, README.md and CHANGELOG.md, so they are included to let the in-image
+# test run match a local one.
+*
+
+!go.mod
+!*.go
+!internal/
+!web/
+!Dockerfile
+!docker-compose.yml
+!docker-compose.dev.yml
+!CHANGELOG.md
+!README.md
+
+# Belt and braces inside the allowed folders.
+**/.env
+**/.env.*
+**/*.log
+**/*.pem
+**/*.key
+**/*.tar.gz
+**/node_modules

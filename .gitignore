@@ -1,0 +1,17 @@
+# PZAdmin's own state: account, sessions, settings, history, backups.
+data/
+
+# Environment files may hold secrets.
+.env
+.env.*
+
+# Backups, logs and anything that looks like key material.
+backups/
+*.log
+*.tar.gz
+*.pem
+*.key
+
+# Local build output.
+/pzadmin
+dist/

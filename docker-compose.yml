@@ -1,0 +1,35 @@
+# PZAdmin. Copy this file into an empty folder on the server, change the
+# lines marked CHANGE, then run:  docker compose up -d
+# Open http://<host>:27815 and create the admin account.
+
+services:
+  pzadmin:
+    image: ghcr.io/thewarboys2/pzadmin:latest
+    pull_policy: always          # every "docker compose up -d" gets the newest build
+    container_name: pzadmin
+    restart: unless-stopped
+    user: "1000:1000"            # CHANGE if needed: must own your server folders (id -u, id -g)
+    ports:
+      - "27815:27815"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # reaches each server's RCON port on the host
+    volumes:
+      - pzadmin-data:/data
+      # CHANGE: your two server folders. Same path on both sides of the colon.
+      - /srv/zomboid:/srv/zomboid
+      - /home/youruser/docker/pzserver:/home/youruser/docker/pzserver
+    environment:
+      PZADMIN_DATA_ROOT: /srv/zomboid                     # CHANGE: same as above
+      PZADMIN_STACKS_ROOT: /home/youruser/docker/pzserver # CHANGE: same as above
+      PZADMIN_ARCANE_URL: http://host.docker.internal:3552 # CHANGE if Arcane is on another machine
+      PZADMIN_ARCANE_ENV_ID: "0"
+      PZADMIN_ARCANE_API_KEY: your-arcane-api-key         # CHANGE
+      TZ: Europe/London
+      # Optional: the pinned game image new servers are created with.
+      # PZADMIN_GAME_IMAGE: indifferentbroccoli/projectzomboid-server-docker@sha256:...
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+
+volumes:
+  pzadmin-data:

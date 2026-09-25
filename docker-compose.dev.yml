@@ -1,0 +1,7 @@
+# Development only: build the image from this checkout instead of pulling it.
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+services:
+  pzadmin:
+    build: .
+    image: pzadmin:local
+    pull_policy: build

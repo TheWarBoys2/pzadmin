@@ -1,0 +1,133 @@
+# Test, build and publish ghcr.io/thewarboys2/pzadmin.
+#
+#   push to main       -> tests, then :latest and :sha-abcdef1
+#   push tag v1.0.0    -> tests, then :v1.0.0, :v1.0 and :sha-abcdef1
+#   pull request       -> tests and a build, nothing published
+#
+# Nothing is published unless the tests, go vet and the image build all pass.
+# Publishing uses the workflow's own GITHUB_TOKEN; no password or PAT is stored.
+name: Docker image
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Nothing by default; each job asks for exactly what it needs.
+permissions: {}
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE: ghcr.io/thewarboys2/pzadmin
+
+jobs:
+  test:
+    name: go vet and tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          # The same Go as the Dockerfile's builder (golang:1.24-bookworm),
+          # so the tests here and inside the image build agree.
+          go-version: "1.24.x"
+          # No third-party modules, so there is nothing worth caching.
+          cache: false
+
+      - name: go vet
+        run: go vet ./...
+
+      # The runner has node, so the frontend suite in web/testkit runs too
+      # (TestFrontend skips only when node is missing).
+      - name: go test
+        run: go test ./...
+
+  image:
+    name: build and publish
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      # Buildx drives BuildKit. The Dockerfile cross-compiles, so arm64 is
+      # built natively with no QEMU emulation.
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tags and labels
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          # latest is added explicitly below, for main only; a version tag
+          # must not move it.
+          flavor: |
+            latest=false
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern=v{{version}}
+            type=semver,pattern=v{{major}}.{{minor}}
+            type=sha,prefix=sha-,format=short
+          labels: |
+            org.opencontainers.image.title=PZAdmin
+            org.opencontainers.image.description=Web admin panel for Project Zomboid dedicated servers
+
+      # What the binary reports: 1.0.0 for tag v1.0.0, otherwise the branch
+      # and commit, e.g. main-abcdef1, so a development image never claims to
+      # be a release.
+      - name: Version
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          HEAD_REF: ${{ github.head_ref }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if [ "$REF_TYPE" = "tag" ]; then
+            version="${REF_NAME#v}"
+          else
+            branch="${HEAD_REF:-$REF_NAME}"
+            version="$(printf '%s' "$branch" | tr -c 'A-Za-z0-9._-' '-')-${SHA:0:7}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "PZAdmin version: $version"
+
+      # No checkout: the build context is the Git commit itself, so only
+      # committed files can reach the image, and .dockerignore (an allowlist)
+      # narrows that further. The Dockerfile runs go vet and the tests again
+      # inside the build, exactly as a local build does.
+      - name: Build and push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+          # The cache only speeds builds up, so failing to write it must not
+          # fail the build. Both platforms export shared layers at once, and
+          # the cache service refuses the second writer with "failed to
+          # reserve cache".
+          cache-from: type=gha
+          cache-to: type=gha,mode=max,ignore-error=true
