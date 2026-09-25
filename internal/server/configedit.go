@@ -267,7 +267,7 @@ func (a *App) handleConfigApply(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.event(store.Event{
-		Kind: "config.edit", Severity: store.SevWarn, Source: "ui", Actor: actor(r),
+		Kind: "config.edit", Severity: store.SevWarn, Source: source(r), Actor: actor(r),
 		ServerID: srv.ID, Server: srv.Name,
 		Message: fmt.Sprintf("Changed %d setting%s in %s", len(normalised), plural(len(normalised)), p.File),
 		Detail:  strings.Join(changed, ", "),

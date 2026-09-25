@@ -62,6 +62,9 @@ func (a *App) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Sprintf("pzadmin_known_players %d", stats.Players))
 	write("pzadmin_history_bytes", "Disk used by PZAdmin history", "gauge",
 		fmt.Sprintf("pzadmin_history_bytes %d", stats.DiskBytes))
+	apiRequests, apiLimited := a.apiStats.lines()
+	write("pzadmin_api_requests_total", "External API requests by key and status code", "counter", apiRequests...)
+	write("pzadmin_api_ratelimited_total", "External API requests refused by a rate limit", "counter", apiLimited...)
 	write("pzadmin_build_info", "PZAdmin build information", "gauge",
 		fmt.Sprintf("pzadmin_build_info{version=%q} 1", Version))
 	write("pzadmin_scrape_time_seconds", "Unix time of this scrape", "gauge",

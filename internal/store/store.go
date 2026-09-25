@@ -39,7 +39,7 @@ type Event struct {
 	ServerID string         `json:"serverId,omitempty"`
 	Server   string         `json:"server,omitempty"`
 	Actor    string         `json:"actor,omitempty"`
-	Source   string         `json:"source"` // ui | schedule | monitor | system
+	Source   string         `json:"source"` // ui | api | schedule | monitor | system
 	Message  string         `json:"message"`
 	Detail   string         `json:"detail,omitempty"`
 	Meta     map[string]any `json:"meta,omitempty"`

@@ -84,7 +84,7 @@ func (a *App) handleBotConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.applyNotifyConfig(updated)
-	a.event(store.Event{Kind: "admin.action", Severity: store.SevInfo, Source: "ui", Actor: actor(r),
+	a.event(store.Event{Kind: "admin.action", Severity: store.SevInfo, Source: source(r), Actor: actor(r),
 		Message: "Discord bot connected", Detail: "As " + me.Username + ", in " + guildNames(guilds)})
 
 	names := make([]string, 0, len(guilds))
@@ -131,7 +131,7 @@ func (a *App) handleBotRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.applyNotifyConfig(updated)
-	a.event(store.Event{Kind: "admin.action", Severity: store.SevWarn, Source: "ui", Actor: actor(r),
+	a.event(store.Event{Kind: "admin.action", Severity: store.SevWarn, Source: source(r), Actor: actor(r),
 		Message: "Discord bot removed"})
 	ok(w, map[string]any{"message": "Bot removed."})
 }

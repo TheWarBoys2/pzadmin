@@ -201,7 +201,7 @@ func (a *App) handleServerDestroy(w http.ResponseWriter, r *http.Request) {
 	} else if srv.PZPath != "" {
 		detail += " World and game files kept at " + srv.PZPath + "."
 	}
-	a.event(store.Event{Kind: "admin.action", Severity: store.SevWarn, Source: "ui", Actor: actor(r),
+	a.event(store.Event{Kind: "admin.action", Severity: store.SevWarn, Source: source(r), Actor: actor(r),
 		Server: srv.Name, Message: srv.Name + " deleted", Detail: detail})
 	a.rescan()
 

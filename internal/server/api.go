@@ -399,7 +399,7 @@ func (a *App) handlePlayerForget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.store.ForgetServer(p.ServerID)
-	a.event(store.Event{Kind: "admin.action", Severity: store.SevWarn, Source: "ui", Actor: actor(r),
+	a.event(store.Event{Kind: "admin.action", Severity: store.SevWarn, Source: source(r), Actor: actor(r),
 		ServerID: p.ServerID, Message: "Player history cleared"})
 	ok(w, nil)
 }
@@ -470,7 +470,7 @@ func (a *App) handleServerSave(w http.ResponseWriter, r *http.Request) {
 
 	a.scanner.Invalidate(next.PZPath)
 	a.syncMonitors()
-	a.event(store.Event{Kind: "admin.action", Severity: store.SevInfo, Source: "ui", Actor: actor(r),
+	a.event(store.Event{Kind: "admin.action", Severity: store.SevInfo, Source: source(r), Actor: actor(r),
 		ServerID: next.ID, Server: next.Name, Message: "Server settings updated"})
 
 	server, _ := serverByID(updated.Servers, next.ID)
@@ -506,7 +506,7 @@ func (a *App) handleServerDelete(w http.ResponseWriter, r *http.Request) {
 	if p.ForgetData {
 		a.store.ForgetServer(p.ID)
 	}
-	a.event(store.Event{Kind: "admin.action", Severity: store.SevWarn, Source: "ui", Actor: actor(r),
+	a.event(store.Event{Kind: "admin.action", Severity: store.SevWarn, Source: source(r), Actor: actor(r),
 		Server: srv.Name, Message: "Server removed from PZAdmin",
 		Detail: "Game files and backups on disk were left untouched."})
 	ok(w, nil)
@@ -663,7 +663,7 @@ func (a *App) handleAction(w http.ResponseWriter, r *http.Request) {
 		detail = logged + " — " + err.Error()
 	}
 	a.event(store.Event{
-		Kind: "admin.action", Severity: sev, Source: "ui", Actor: actor(r),
+		Kind: "admin.action", Severity: sev, Source: source(r), Actor: actor(r),
 		ServerID: srv.ID, Server: srv.Name,
 		Message: cmd.Label, Detail: detail,
 		Meta: map[string]any{"command": cmd.ID, "args": loggedArgs},
@@ -713,7 +713,7 @@ func (a *App) handleConsole(w http.ResponseWriter, r *http.Request) {
 	// Every console command is audited, without exception: this is the one
 	// place an operator can do anything at all.
 	a.event(store.Event{
-		Kind: "admin.console", Severity: sev, Source: "ui", Actor: actor(r),
+		Kind: "admin.console", Severity: sev, Source: source(r), Actor: actor(r),
 		ServerID: srv.ID, Server: srv.Name,
 		Message: "Console: " + truncate(line, 120), Detail: detail,
 	})
@@ -755,7 +755,7 @@ func (a *App) handleLifecycle(w http.ResponseWriter, r *http.Request) {
 
 	switch p.Action {
 	case "restart":
-		if err := a.restartServer(ctx, srv, "ui", reason, note); err != nil {
+		if err := a.restartServer(ctx, srv, source(r), reason, note); err != nil {
 			httpError(w, http.StatusBadGateway, err.Error())
 			return
 		}
@@ -791,7 +791,7 @@ func (a *App) handleLifecycle(w http.ResponseWriter, r *http.Request) {
 			st.ContainerState = "exited"
 		})
 		a.dropRCON(srv.ID)
-		a.event(store.Event{Kind: "server.stop", Severity: store.SevWarn, Source: "ui", Actor: actor(r),
+		a.event(store.Event{Kind: "server.stop", Severity: store.SevWarn, Source: source(r), Actor: actor(r),
 			ServerID: srv.ID, Server: srv.Name, Message: srv.Name + " stopped", Detail: reason,
 			Meta: map[string]any{"note": note}})
 		ok(w, map[string]any{"message": "Stopped."})
@@ -832,7 +832,7 @@ func (a *App) handleLifecycle(w http.ResponseWriter, r *http.Request) {
 			detail += ". Note: " + drift
 			msg = "Started. Note: " + drift + "."
 		}
-		a.event(store.Event{Kind: "server.start", Severity: store.SevInfo, Source: "ui", Actor: actor(r),
+		a.event(store.Event{Kind: "server.start", Severity: store.SevInfo, Source: source(r), Actor: actor(r),
 			ServerID: srv.ID, Server: srv.Name, Message: srv.Name + " started", Detail: detail})
 		ok(w, map[string]any{"message": msg, "drift": drift})
 
@@ -842,7 +842,7 @@ func (a *App) handleLifecycle(w http.ResponseWriter, r *http.Request) {
 			st.PendingReason = ""
 		})
 		a.announce(srv, "The scheduled restart has been cancelled.")
-		a.event(store.Event{Kind: "admin.action", Severity: store.SevInfo, Source: "ui", Actor: actor(r),
+		a.event(store.Event{Kind: "admin.action", Severity: store.SevInfo, Source: source(r), Actor: actor(r),
 			ServerID: srv.ID, Server: srv.Name, Message: "Pending restart cancelled"})
 		ok(w, map[string]any{"message": "Pending restart cancelled."})
 
@@ -989,7 +989,7 @@ func (a *App) handleConfigSave(w http.ResponseWriter, r *http.Request) {
 			detail += " The server could not be asked to reload; restart it to apply."
 		}
 	}
-	a.event(store.Event{Kind: "config.edit", Severity: store.SevWarn, Source: "ui", Actor: actor(r),
+	a.event(store.Event{Kind: "config.edit", Severity: store.SevWarn, Source: source(r), Actor: actor(r),
 		ServerID: srv.ID, Server: srv.Name, Message: "Edited " + p.File, Detail: detail})
 	ok(w, map[string]any{"backup": backup, "reloaded": reloaded, "message": detail})
 }
@@ -1103,12 +1103,12 @@ func (a *App) handleBackupCreate(w http.ResponseWriter, r *http.Request) {
 
 	res, err := a.backup.Create(srv.ID, layout, srv.Backup.IncludeConfig, keep, strings.TrimSpace(p.Note))
 	if err != nil {
-		a.event(store.Event{Kind: "backup.failed", Severity: store.SevError, Source: "ui", Actor: actor(r),
+		a.event(store.Event{Kind: "backup.failed", Severity: store.SevError, Source: source(r), Actor: actor(r),
 			ServerID: srv.ID, Server: srv.Name, Message: "Backup failed", Detail: err.Error()})
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	a.event(store.Event{Kind: "backup.done", Severity: store.SevSuccess, Source: "ui", Actor: actor(r),
+	a.event(store.Event{Kind: "backup.done", Severity: store.SevSuccess, Source: source(r), Actor: actor(r),
 		ServerID: srv.ID, Server: srv.Name,
 		Message: fmt.Sprintf("Backed up %s (%s)", srv.Name, humanBytes(res.Archive.Size)),
 		Detail:  fmt.Sprintf("%d files in %s.", res.Archive.Files, res.Duration.Round(time.Second))})
@@ -1160,13 +1160,13 @@ func (a *App) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 
 	n, err := a.backup.Restore(srv.ID, p.Name, detectLayout(srv))
 	if err != nil {
-		a.event(store.Event{Kind: "backup.failed", Severity: store.SevError, Source: "ui", Actor: actor(r),
+		a.event(store.Event{Kind: "backup.failed", Severity: store.SevError, Source: source(r), Actor: actor(r),
 			ServerID: srv.ID, Server: srv.Name, Message: "Restore failed", Detail: err.Error()})
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	a.scanner.Invalidate(srv.PZPath)
-	a.event(store.Event{Kind: "backup.restore", Severity: store.SevWarn, Source: "ui", Actor: actor(r),
+	a.event(store.Event{Kind: "backup.restore", Severity: store.SevWarn, Source: source(r), Actor: actor(r),
 		ServerID: srv.ID, Server: srv.Name,
 		Message: "Restored " + srv.Name + " from " + p.Name,
 		Detail:  fmt.Sprintf("%d files written.", n)})
@@ -1185,7 +1185,7 @@ func (a *App) handleBackupDelete(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	a.event(store.Event{Kind: "admin.action", Severity: store.SevWarn, Source: "ui", Actor: actor(r),
+	a.event(store.Event{Kind: "admin.action", Severity: store.SevWarn, Source: source(r), Actor: actor(r),
 		ServerID: p.ServerID, Message: "Deleted backup " + p.Name})
 	ok(w, nil)
 }
@@ -1280,7 +1280,7 @@ func (a *App) handleSchedules(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	a.event(store.Event{Kind: "admin.action", Severity: store.SevInfo, Source: "ui", Actor: actor(r),
+	a.event(store.Event{Kind: "admin.action", Severity: store.SevInfo, Source: source(r), Actor: actor(r),
 		Message: "Schedules updated", Detail: fmt.Sprintf("%d job(s) configured", len(p.Tasks))})
 	ok(w, nil)
 }
@@ -1302,7 +1302,7 @@ func (a *App) handleScheduleRun(w http.ResponseWriter, r *http.Request) {
 			httpError(w, http.StatusBadRequest, "that task points at a server that no longer exists")
 			return
 		}
-		a.event(store.Event{Kind: "admin.action", Severity: store.SevInfo, Source: "ui", Actor: actor(r),
+		a.event(store.Event{Kind: "admin.action", Severity: store.SevInfo, Source: source(r), Actor: actor(r),
 			ServerID: srv.ID, Server: srv.Name, Message: "Ran task " + t.Name + " manually"})
 		go a.runTask(t, srv)
 		ok(w, map[string]any{"message": "Running " + t.Name + " now."})
@@ -1397,7 +1397,7 @@ func (a *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	a.applyNotifyConfig(updated)
 	a.scripts.Invalidate()
-	a.event(store.Event{Kind: "admin.action", Severity: store.SevInfo, Source: "ui", Actor: actor(r),
+	a.event(store.Event{Kind: "admin.action", Severity: store.SevInfo, Source: source(r), Actor: actor(r),
 		Message: "Settings updated"})
 	writeJSON(w, map[string]any{"ok": true, "config": config.Redact(updated)})
 }
@@ -1537,7 +1537,7 @@ func (a *App) handleImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.syncMonitors()
-	a.event(store.Event{Kind: "admin.action", Severity: store.SevWarn, Source: "ui", Actor: actor(r),
+	a.event(store.Event{Kind: "admin.action", Severity: store.SevWarn, Source: source(r), Actor: actor(r),
 		Message: "Configuration imported",
 		Detail: fmt.Sprintf("Settings applied to %d server(s); %d had no matching stack folder here and were skipped.",
 			matched, skipped)})

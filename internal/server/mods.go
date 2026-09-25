@@ -567,7 +567,7 @@ func (a *App) handleModApply(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.event(store.Event{
-		Kind: "config.edit", Severity: store.SevWarn, Source: "ui", Actor: actor(r),
+		Kind: "config.edit", Severity: store.SevWarn, Source: source(r), Actor: actor(r),
 		ServerID: srv.ID, Server: srv.Name,
 		Message: "Mod list changed on " + srv.Name, Detail: detail,
 	})
