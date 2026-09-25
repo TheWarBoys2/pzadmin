@@ -576,7 +576,7 @@ func (a *App) checkPendingRestart(ctx context.Context, s config.Server) {
 		reason = "scheduled"
 	}
 	// restartServer records the restart itself, so it is not announced twice.
-	if err := a.restartServer(ctx, s, "monitor", "auto ("+reason+")"); err != nil {
+	if err := a.restartServer(ctx, s, "monitor", "auto ("+reason+")", ""); err != nil {
 		a.event(store.Event{
 			Kind: "server.restart", Severity: store.SevError, Source: "monitor",
 			ServerID: s.ID, Server: s.Name,
@@ -635,7 +635,10 @@ func (a *App) clearRestarting(serverID string) {
 //
 // Without a restart policy that revives the container, quit is a stop, so
 // that case is refused rather than leaving the server down.
-func (a *App) restartServer(ctx context.Context, s config.Server, source, reason string) error {
+//
+// note is what the operator typed as the reason, if anything; players are
+// told it.
+func (a *App) restartServer(ctx context.Context, s config.Server, source, reason, note string) error {
 	if !restartPolicyRevives(s.RestartPolicy) {
 		return fmt.Errorf("%s has restart: %q in its compose file, so quitting would leave it down. "+
 			"Set restart: unless-stopped and recreate the container", s.Name, s.RestartPolicy)
@@ -663,7 +666,7 @@ func (a *App) restartServer(ctx context.Context, s config.Server, source, reason
 		ServerID: s.ID, Server: s.Name,
 		Message: s.Name + " restarting",
 		Detail:  "Saved and quit over RCON; Docker's restart policy brings it back. Reason: " + reason,
-		Meta:    map[string]any{"reason": restartReason(source, reason)},
+		Meta:    map[string]any{"reason": restartReason(source, reason), "note": note},
 	})
 	return nil
 }

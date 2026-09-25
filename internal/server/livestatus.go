@@ -17,9 +17,9 @@ import (
 	"github.com/TheWarBoys2/pzadmin/internal/notify"
 )
 
-// Live status keeps one Discord message per server in a channel and edits it
-// as the server changes, so players can glance at a pinned post instead of
-// scrolling a stream of alerts.
+// The status message is one Discord message per server in a channel, edited
+// when something about the server changes, so players can glance at a pinned
+// post instead of scrolling a stream of alerts.
 //
 // Edits are only sent when what the card says has changed. Times are written
 // as Discord timestamps (<t:…:R>), which every reader's client renders as
@@ -27,6 +27,8 @@ import (
 // minute.
 
 // liveStatusEvery is how often cards are compared with the servers' state.
+// Comparing is free; a request is only made when a card would say something
+// different.
 const liveStatusEvery = 20 * time.Second
 
 // liveCard is one message PZAdmin owns in a channel.
@@ -235,7 +237,7 @@ func (a *App) pauseLiveStatus(ctx context.Context, board *liveBoard) {
 				Title:       names[serverID],
 				Description: "⚪ **Status unavailable**\nPZAdmin is not running, so this message is not being updated.",
 				Colour:      notify.Colour("info"),
-				Footer:      "Live status",
+				Footer:      "Updated by PZAdmin",
 				At:          time.Now(),
 			}
 			if err := a.notify.EditCard(ctx, c.URL, c.MessageID, card); err == nil {
@@ -280,6 +282,9 @@ func liveCardFor(s config.Server, st Status, listPlayers bool) notify.Card {
 	if !st.PendingRestartAt.IsZero() && !st.Stopped {
 		lines = append(lines, "Restart due "+discordTime(st.PendingRestartAt.Time))
 	}
+	if join := joinAddress(s); join != "" {
+		lines = append(lines, "**Join:** `"+join+"`")
+	}
 	if listPlayers && st.Online && len(st.Players) > 0 {
 		names := make([]string, 0, len(st.Players))
 		for _, p := range st.Players {
@@ -287,12 +292,31 @@ func liveCardFor(s config.Server, st Status, listPlayers bool) notify.Card {
 		}
 		lines = append(lines, "", "**Playing:** "+truncateRunes(strings.Join(names, ", "), 1500))
 	}
+	// The operator's description leads, as it would in a server browser.
+	if d := strings.TrimSpace(s.Public.Description); d != "" {
+		lines = append([]string{d, ""}, lines...)
+	}
 	return notify.Card{
 		Title:       s.Name,
 		Description: strings.Join(lines, "\n"),
 		Colour:      colour,
-		Footer:      "Live status · updates automatically",
+		Footer:      "Updated by PZAdmin",
 	}
+}
+
+// joinAddress is where players connect, when the operator has said.
+func joinAddress(s config.Server) string {
+	if s.Public.Address == "" {
+		return ""
+	}
+	port := s.Public.Port
+	if port == 0 {
+		port = s.GamePort
+	}
+	if port == 0 {
+		return s.Public.Address
+	}
+	return fmt.Sprintf("%s:%d", s.Public.Address, port)
 }
 
 // discordTime is a timestamp each reader's Discord renders relative to now.

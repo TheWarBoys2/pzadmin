@@ -108,6 +108,19 @@ type Server struct {
 	Recovery RecoveryPolicy `json:"recovery"`
 	Mods     ModPolicy      `json:"mods"`
 	Backup   BackupPolicy   `json:"backup"`
+
+	// Public is what players are told about the server in Discord.
+	Public PublicInfo `json:"public"`
+}
+
+// PublicInfo is typed in by the operator, because PZAdmin only sees the
+// server from inside Docker and cannot know the address players use.
+type PublicInfo struct {
+	Description string `json:"description,omitempty"`
+	// Address is the host name or IP players connect to.
+	Address string `json:"address,omitempty"`
+	// Port is the port players connect to. Zero means the game port.
+	Port int `json:"port,omitempty"`
 }
 
 // RecoveryPolicy controls the watchdog that restarts a wedged container.
@@ -167,9 +180,10 @@ type Task struct {
 
 // Step is one action within a job.
 type Step struct {
-	// Kind is one of: save, broadcast, restart, backup, command, action, wait.
+	// Kind is one of: save, broadcast, restart, backup, command, action,
+	// wait, discord.
 	Kind string `json:"kind"`
-	// Message is the text for a broadcast.
+	// Message is the text for a broadcast or a discord post.
 	Message string `json:"message,omitempty"`
 	// Command is the raw RCON line for a command step.
 	Command string `json:"command,omitempty"`
@@ -179,6 +193,8 @@ type Step struct {
 	// the job runs: a player argument may be "@each", "@random" or a name, and
 	// an item or vehicle argument may be "random:<category>".
 	Args []string `json:"args,omitempty"`
+	// Webhook is the ID of the webhook a discord step posts through.
+	Webhook string `json:"webhook,omitempty"`
 	// Seconds is the pause for a wait step.
 	Seconds int `json:"seconds,omitempty"`
 	// ContinueOnError keeps the job going when this step fails.
@@ -188,7 +204,7 @@ type Step struct {
 }
 
 // StepKinds enumerates the valid step kinds.
-var StepKinds = []string{"save", "broadcast", "restart", "backup", "command", "action", "wait"}
+var StepKinds = []string{"save", "broadcast", "restart", "backup", "command", "action", "wait", "discord"}
 
 // Notify configures outbound webhooks (Discord-compatible).
 type Notify struct {
@@ -221,10 +237,11 @@ type Webhook struct {
 	Servers []string `json:"servers"`
 	// Messages overrides the wording of player announcements, by event.
 	Messages map[string]string `json:"messages,omitempty"`
-	// LiveStatus keeps one message per server in the channel and edits it
-	// as the server changes, instead of posting a new one. Discord only.
+	// LiveStatus keeps one status message per server in the channel, edited
+	// whenever what it says changes, instead of posting a new one each time.
+	// Discord only.
 	LiveStatus bool `json:"liveStatus,omitempty"`
-	// ListPlayers adds who is online to the live status message.
+	// ListPlayers adds who is online to the status message.
 	ListPlayers bool `json:"listPlayers,omitempty"`
 }
 

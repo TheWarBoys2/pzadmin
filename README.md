@@ -39,7 +39,7 @@ image, one Compose stack per server, managed through [Arcane](https://getarcane.
 - Scheduled jobs made of steps, e.g. *announce → wait 1 min → save → back up → restart*
 - Mod update detection, with an optional countdown and automatic restart
 - Backups with retention, download and restore
-- Discord: staff alerts, player announcements when a server restarts and comes back, and a live status message per server
+- Discord: staff alerts, player announcements when a server restarts and comes back, a status message per server, and Discord posts from scheduled jobs
 - Prometheus metrics and an audit log of every action
 
 ---
@@ -203,18 +203,26 @@ Webhooks, metrics, backups and schedules are configured in the web interface.
 
 ## Discord
 
-PZAdmin posts to Discord through webhooks. It doesn't need a bot. Add them under **Settings → Notifications**.
-Each webhook is written for one of two audiences:
+PZAdmin posts to Discord through webhooks. It doesn't need a bot. Everything is on the **Discord** page in the sidebar,
+where each channel is marked as one of two kinds:
 
-- **Staff alerts** get every event you tick, with full detail: outages, watchdog restarts, failed backups, admin actions.
-- **Player announcements** get short, plain messages for a public channel: when a server actually goes down for a
-  restart (and whether it was scheduled, for mod updates or because it stopped responding) and when it's back.
-  Countdown warnings stay in game. You can change the wording of each message and ping a role by writing
-  `<@&role ID>` into it.
+- **Staff channels** get every event you tick, with full detail: outages, watchdog restarts, failed backups, admin actions.
+- **Player channels** get short, plain messages for a public channel: when a server actually goes down for a
+  restart (and why: scheduled, mod updates, stopped responding, or the reason you typed when you pressed Restart
+  or Stop) and when it's back. Countdown warnings stay in game. You can change the wording of each message and
+  ping a role by writing `<@&role ID>` into it.
 
-Tick **Keep a live status message** on a Discord webhook and PZAdmin keeps one message per server in that channel,
-edited as the server comes online, restarts or goes down. Pin it. If someone deletes it, a new one is posted. When
+Each channel can cover every server or only some. Give each server its own channel and players only see the
+servers they have access to. The page's **By server** list shows where each server is announced.
+
+Tick **Post a status message for each server** and PZAdmin keeps one message per server in that channel, edited only
+when something changes: the server comes online, restarts or goes down, or the player count moves. Pin it. It
+shows the server's description and join address, which you type into the server's **Public info**, because
+PZAdmin only sees the server from inside Docker. If someone deletes the message, a new one is posted. When
 PZAdmin itself stops, the message says it is no longer being updated.
+
+Scheduled jobs can post too: add a **Post to Discord** step, choose the channel and write the message.
+`{server}` and `{players}` are filled in when the job runs.
 
 Project Zomboid also has its own Discord bot, which relays in-game chat. It's set in the server ini
 (`DiscordEnable`, `DiscordToken`, and on Build 42 `DiscordChatChannel`, `DiscordLogChannel` and

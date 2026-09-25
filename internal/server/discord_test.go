@@ -342,3 +342,105 @@ func TestRestartReason(t *testing.T) {
 		}
 	}
 }
+
+// A scheduled job can post to a chosen Discord channel, the channel cannot be
+// removed while a job uses it, and a job cannot point at one that is gone.
+func TestDiscordScheduleStep(t *testing.T) {
+	app, handler, _ := newTestApp(t)
+	c := &client{t: t, handler: handler}
+	c.setup("rick", "a-long-enough-password")
+	discord := newFakeDiscord(t)
+	seedServer(t, app, `{"id":"a","name":"Riverside","enabled":true}`)
+	if _, err := app.cfg.Update(func(cfg *config.Config) error {
+		cfg.Notify.Webhooks = []config.Webhook{
+			{ID: "chat", Name: "riverside-chat", Enabled: true, URL: discord.srv.URL + "/api/webhooks/1/x",
+				Audience: config.AudiencePlayers},
+			{ID: "off", Name: "old", Enabled: false, URL: discord.srv.URL + "/api/webhooks/2/y",
+				Audience: config.AudiencePlayers},
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	job := func(webhook string) string {
+		return `{"tasks":[{"serverId":"a","name":"Event","cron":"0 20 * * 5","enabled":true,"steps":[
+		  {"kind":"discord","webhook":"` + webhook + `","message":"Night event on {server}, {players} online"}]}]}`
+	}
+	if rec := c.raw("/api/schedules", job("missing")); rec.Code != http.StatusBadRequest {
+		t.Fatalf("a step pointing at no channel should be refused, got %d", rec.Code)
+	}
+	if rec := c.raw("/api/schedules", job("chat")); rec.Code != http.StatusOK {
+		t.Fatalf("save failed: %s", rec.Body.String())
+	}
+
+	app.updateStatus("a", func(st *Status) { st.PlayerCount = 3 })
+	step := app.cfg.Get().Schedules[0].Steps[0]
+	srv, _ := app.cfg.Server("a")
+	out, err := app.executeStep(context.Background(), step, srv)
+	if err != nil || out != "posted to riverside-chat" {
+		t.Fatalf("step failed: %q %v", out, err)
+	}
+	discord.mu.Lock()
+	posted := len(discord.reqs)
+	discord.mu.Unlock()
+	if posted != 1 {
+		t.Fatalf("expected one post, got %d", posted)
+	}
+
+	step.Webhook = "off"
+	if _, err := app.executeStep(context.Background(), step, srv); err == nil || !strings.Contains(err.Error(), "switched off") {
+		t.Fatalf("a switched-off channel should fail the step, got %v", err)
+	}
+
+	// Removing the channel the job uses is refused.
+	rec := c.do(http.MethodPost, "/api/settings", map[string]any{"notify": map[string]any{
+		"minIntervalSeconds": 300, "webhooks": []any{},
+	}})
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "Event") {
+		t.Fatalf("removing a channel a job uses should be refused naming the job: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPublicInfoIsSavedAndShownOnTheCard(t *testing.T) {
+	app, handler, _ := newTestApp(t)
+	c := &client{t: t, handler: handler}
+	c.setup("rick", "a-long-enough-password")
+	seedServer(t, app, `{"id":"a","name":"Riverside","enabled":true,"gamePort":16261}`)
+
+	rec := c.do(http.MethodPost, "/api/server/save", map[string]any{
+		"id": "a", "name": "Riverside", "enabled": true,
+		"public": map[string]any{"description": "  Hardcore, 8 slots  ", "address": "https://play.example.com:16300/"},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save failed: %s", rec.Body.String())
+	}
+	srv, _ := app.cfg.Server("a")
+	if srv.Public.Description != "Hardcore, 8 slots" || srv.Public.Address != "play.example.com" || srv.Public.Port != 16300 {
+		t.Fatalf("public info not cleaned up: %#v", srv.Public)
+	}
+
+	card := liveCardFor(srv, Status{Online: true, PlayerCount: 1}, false)
+	if !strings.HasPrefix(card.Description, "Hardcore, 8 slots\n") || !strings.Contains(card.Description, "`play.example.com:16300`") {
+		t.Fatalf("unexpected card:\n%s", card.Description)
+	}
+	srv.Public.Port = 0
+	if got := joinAddress(srv); got != "play.example.com:16261" {
+		t.Fatalf("a blank port should fall back to the game port, got %q", got)
+	}
+	srv.Public.Address = ""
+	if strings.Contains(liveCardFor(srv, Status{Online: true}, false).Description, "Join") {
+		t.Fatal("no address, no join line")
+	}
+
+	for _, bad := range []map[string]any{
+		{"address": "play example com"},
+		{"address": "play.example.com", "port": 70000},
+		{"address": "host:notaport"},
+	} {
+		rec := c.do(http.MethodPost, "/api/server/save", map[string]any{"id": "a", "name": "Riverside", "public": bad})
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%v should be refused, got %d", bad, rec.Code)
+		}
+	}
+}

@@ -52,6 +52,9 @@ type Message struct {
 	// Reason is why a server is restarting: one of the Reason constants, or
 	// empty when there is nothing worth telling players.
 	Reason string
+	// Note is the reason an operator typed when restarting or stopping a
+	// server by hand. It is shown to players.
+	Note string
 	// Minutes is the countdown to a restart announced alongside the event,
 	// when there is one.
 	Minutes int
@@ -80,12 +83,13 @@ type Config struct {
 
 // PlayerTemplates is the default wording of each player announcement.
 // {server} is the server's name, {reason} a phrase saying why it is
-// restarting (it may be empty), and {minutes} the countdown to a restart.
+// restarting or stopping (it may be empty), and {minutes} the countdown to a
+// restart.
 var PlayerTemplates = map[string]string{
 	"server.restart": "🔄 **{server}** is restarting{reason}. It should be back in a few minutes.",
 	"server.up":      "✅ **{server}** is back online.",
 	"server.down":    "⚠️ **{server}** has gone offline unexpectedly.",
-	"server.stop":    "⏸️ **{server}** has been shut down for now.",
+	"server.stop":    "⏸️ **{server}** has been shut down for now{reason}.",
 	"mods.update":    "📦 Mods have updated. **{server}** will restart in {minutes} minutes to load them.",
 }
 
@@ -354,10 +358,35 @@ func RenderPlayer(custom map[string]string, m Message) string {
 	}
 	out := strings.NewReplacer(
 		"{server}", m.Server,
-		"{reason}", reasonPhrases[m.Reason],
+		"{reason}", reasonPhrase(m),
 		"{minutes}", strconv.Itoa(m.Minutes),
 	).Replace(tmpl)
 	return truncate(out, 2000)
+}
+
+// reasonPhrase says why, preferring what the operator typed.
+func reasonPhrase(m Message) string {
+	if note := strings.TrimSpace(m.Note); note != "" {
+		return " (" + note + ")"
+	}
+	return reasonPhrases[m.Reason]
+}
+
+// Announce posts a message written by the operator straight away, for a
+// scheduled job. Unlike Send it reports failure, so the job can.
+func (n *Notifier) Announce(ctx context.Context, d Destination, text string) error {
+	if !strings.HasPrefix(d.URL, "http") {
+		return fmt.Errorf("the webhook has no address")
+	}
+	resp, err := n.do(ctx, http.MethodPost, d.URL, map[string]any{
+		"content":          truncate(text, 2000),
+		"allowed_mentions": map[string]any{"parse": []string{"roles"}},
+	})
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
 }
 
 func (n *Notifier) post(url string, payload map[string]any) error {

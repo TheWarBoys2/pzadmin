@@ -85,7 +85,7 @@ const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8')
   'renderModIssues, confirmModChange, modIssueTone, ' +
   'stackStatusPanel, stackServersPanel, stackCreatePanel, paintPlan, buildControl, StackState, ' +
   'newWizard, applyWizardMods, settingsEditor, wizardRequest, ' +
-  'commandAvailability, isStopped, powerButton, settingsNotify };\n';
+  'commandAvailability, isStopped, powerButton, editWebhook, viewDiscord };\n';
 
 vm.createContext(sandbox);
 vm.runInContext(source, sandbox, { filename: 'app.js' });
@@ -98,7 +98,7 @@ const {
   renderModIssues, confirmModChange, modIssueTone,
   stackStatusPanel, stackServersPanel, stackCreatePanel, paintPlan, buildControl, StackState,
   newWizard, applyWizardMods, settingsEditor, wizardRequest,
-  commandAvailability, isStopped, powerButton, settingsNotify,
+  commandAvailability, isStopped, powerButton, editWebhook, viewDiscord,
 } = sandbox.__exports__;
 
 // The views read from S, so give it the shape a loaded page would have.
@@ -836,21 +836,37 @@ test('Start is offered for a stopped server and Stop for a running one', () => {
   assert.strictEqual(powerButton({ id: 'x', name: 'X' }, { online: true }, 'btn'), null);
 });
 
-// --- notifications ----------------------------------------------------------
+// --- Discord ----------------------------------------------------------------
 
-// A saved webhook address is never shown, and saving the form without
-// touching it must send the placeholder back so the server keeps it.
-test('a saved webhook address stays hidden and is kept on save', async () => {
-  const REDACTED = '__pzadmin_unchanged__';
+const NOTIFY_OPTIONS = {
+  staffEvents: ['server.down', 'server.up'], playerEvents: ['server.restart', 'server.up', 'server.down'],
+  defaultStaffEvents: ['server.down'], defaultPlayerEvents: ['server.restart', 'server.up'],
+  playerTemplates: { 'server.restart': '{server} restarting', 'server.up': '{server} is back' },
+};
+
+function withDiscordState(webhooks, fn) {
   const saved = S.state;
   S.state = Object.assign({}, saved, {
-    servers: [{ id: 'a', name: 'Riverside' }],
-    notifyOptions: {
-      staffEvents: ['server.down', 'server.up'], playerEvents: ['server.restart', 'server.up'],
-      defaultStaffEvents: ['server.down'], defaultPlayerEvents: ['server.restart', 'server.up'],
-      playerTemplates: { 'server.restart': '{server} restarting', 'server.up': '{server} is back' },
-    },
+    servers: [{ id: 'a', name: 'Riverside', gamePort: 16261, public: { address: 'play.example.com' } },
+      { id: 'b', name: 'Louisville' }],
+    config: { notify: { minIntervalSeconds: 300, webhooks } },
+    notifyOptions: NOTIFY_OPTIONS,
   });
+  const done = () => { S.state = saved; closeAllModals(); };
+  try {
+    const out = fn();
+    if (out && out.then) return out.finally(done);
+    done();
+    return out;
+  } catch (err) { done(); throw err; }
+}
+
+// A saved webhook address is never shown, and saving the dialog without
+// touching it must send the placeholder back so the server keeps it.
+test('a saved webhook address stays hidden and is kept on save', () => withDiscordState([{
+  id: 'p', name: 'Players', enabled: true, url: '__pzadmin_unchanged__', audience: 'players',
+  events: ['server.restart'], servers: [], liveStatus: true,
+}], async () => {
   const sent = [];
   const fetchBefore = sandbox.fetch;
   sandbox.fetch = (path, opts) => {
@@ -861,48 +877,60 @@ test('a saved webhook address stays hidden and is kept on save', async () => {
     return Promise.reject(new Error('no state in tests'));
   };
   try {
-    const panel = settingsNotify({ notify: { minIntervalSeconds: 300, webhooks: [{
-      id: 'p', name: 'Players', enabled: true, url: REDACTED, audience: 'players',
-      events: ['server.restart'], servers: [], liveStatus: true,
-    }] } });
-    const inputs = panel.querySelectorAll('input');
-    assert.ok(!inputs.some((i) => i.value === REDACTED), 'the placeholder must not be shown as an address');
-
-    const save = panel.querySelectorAll('button').find((b) => b.textContent === 'Save');
-    save.click();
+    closeAllModals();
+    editWebhook(0);
+    const modal = overlay().children[overlay().children.length - 1];
+    assert.ok(!modal.querySelectorAll('input').some((i) => i.value === '__pzadmin_unchanged__'),
+      'the placeholder must not be shown as an address');
+    modal.querySelectorAll('button').find((b) => b.textContent === 'Save').click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.strictEqual(sent.length, 1, 'save should post once');
     const hook = sent[0].body.notify.webhooks[0];
-    assert.strictEqual(hook.url, REDACTED, 'an untouched address is sent back as the placeholder');
+    assert.strictEqual(hook.url, '__pzadmin_unchanged__', 'an untouched address is sent back as the placeholder');
     assert.strictEqual(hook.id, 'p');
     assert.strictEqual(hook.liveStatus, true);
     assertList(hook.events, ['server.restart']);
   } finally {
     sandbox.fetch = fetchBefore;
-    S.state = saved;
   }
-});
+}));
 
-test('adding player announcements starts with restarts, back online and live status', () => {
-  const saved = S.state;
-  S.state = Object.assign({}, saved, { notifyOptions: {
-    staffEvents: ['server.down'], playerEvents: ['server.restart', 'server.up', 'server.down'],
-    defaultStaffEvents: ['server.down'], defaultPlayerEvents: ['server.restart', 'server.up'], playerTemplates: {},
-  } });
-  try {
-    const panel = settingsNotify({ notify: { webhooks: [] } });
-    panel.querySelectorAll('button').find((b) => b.textContent === '+ Player announcements').click();
-    const labels = panel.querySelectorAll('label.check')
-      .filter((l) => l.children[0] && l.children[0].checked)
-      .map((l) => l.textContent);
-    assert.ok(labels.includes('The server goes down for a restart'), labels.join(', '));
-    assert.ok(labels.includes('The server is back online'), labels.join(', '));
-    assert.ok(!labels.includes('The server goes down unexpectedly'), labels.join(', '));
-    assert.ok(labels.some((t) => t.startsWith('Keep a live status message')), labels.join(', '));
-  } finally {
-    S.state = saved;
-  }
-});
+test('a new player channel starts with restarts, back online and a status message', () => withDiscordState([], () => {
+  closeAllModals();
+  editWebhook(-1, 'players');
+  const modal = overlay().children[overlay().children.length - 1];
+  const labels = modal.querySelectorAll('label.check')
+    .filter((l) => l.children[0] && l.children[0].checked)
+    .map((l) => l.textContent);
+  assert.ok(labels.includes('The server goes down for a restart'), labels.join(', '));
+  assert.ok(labels.includes('The server is back online'), labels.join(', '));
+  assert.ok(!labels.includes('The server goes down unexpectedly'), labels.join(', '));
+  assert.ok(labels.some((t) => t.startsWith('Post a status message')), labels.join(', '));
+}));
+
+// Per-server channels: the page says which channel each server posts to.
+test('the Discord page shows where each server is announced', () => withDiscordState([
+  { id: 'r', name: 'riverside-chat', enabled: true, url: '__pzadmin_unchanged__', audience: 'players',
+    events: ['server.up'], servers: ['a'], liveStatus: true },
+  { id: 's', name: 'staff', enabled: true, url: '__pzadmin_unchanged__', audience: 'staff', events: ['server.down'], servers: [] },
+], () => {
+  const main = el('main');
+  viewDiscord(main);
+  const text = main.textContent;
+  assert.ok(text.includes('riverside-chat'), text);
+  assert.ok(text.includes('play.example.com:16261'), 'the join address should be shown: ' + text);
+  const rows = main.querySelectorAll('.list-row').map((r) => r.textContent);
+  const louisville = rows.find((r) => r.startsWith('Louisville'));
+  assert.ok(louisville.includes('Players hear in: nowhere'), louisville);
+  assert.ok(louisville.includes('Staff hear in: staff'), louisville);
+}));
+
+test('a Discord step names its channel', () => withDiscordState([
+  { id: 'r', name: 'riverside-chat', enabled: true, audience: 'players', events: [], servers: [] },
+], () => {
+  assert.strictEqual(describeStep({ kind: 'discord', webhook: 'r', message: 'hi' }), 'post to riverside-chat');
+  assert.strictEqual(describeStep({ kind: 'discord', webhook: 'gone', message: 'hi' }), 'post to a removed channel');
+}));
 
 // --- report -----------------------------------------------------------------
 

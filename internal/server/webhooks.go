@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/TheWarBoys2/pzadmin/internal/config"
@@ -142,4 +143,57 @@ func containsString(list []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// cleanPublicInfo checks what players will be shown about a server.
+func cleanPublicInfo(p config.PublicInfo) (config.PublicInfo, error) {
+	p.Description = strings.TrimSpace(p.Description)
+	if len([]rune(p.Description)) > 1000 {
+		return p, invalidf("keep the public description under 1000 characters")
+	}
+	p.Address = strings.TrimSpace(p.Address)
+	// People paste "host:port" or a URL; take it apart rather than refuse it.
+	p.Address = strings.TrimPrefix(strings.TrimPrefix(p.Address, "http://"), "https://")
+	p.Address = strings.TrimSuffix(p.Address, "/")
+	if host, port, ok := strings.Cut(p.Address, ":"); ok && p.Port == 0 && !strings.Contains(port, ":") {
+		n, err := strconv.Atoi(port)
+		if err != nil {
+			return p, invalidf("the join address %q has a port that is not a number", p.Address)
+		}
+		p.Address, p.Port = host, n
+	}
+	if len(p.Address) > 253 || strings.ContainsAny(p.Address, " \t/<>@`*_~|") {
+		return p, invalidf("the join address should be a host name or IP, like play.example.com or 203.0.113.7")
+	}
+	if p.Port < 0 || p.Port > 65535 {
+		return p, invalidf("the join port must be between 1 and 65535")
+	}
+	return p, nil
+}
+
+// webhookByID finds a configured webhook.
+func webhookByID(cfg config.Config, id string) *config.Webhook {
+	for i := range cfg.Notify.Webhooks {
+		if cfg.Notify.Webhooks[i].ID == id {
+			return &cfg.Notify.Webhooks[i]
+		}
+	}
+	return nil
+}
+
+// webhooksInUse refuses to drop a webhook a scheduled job still posts to,
+// which would otherwise only come to light when the job failed.
+func webhooksInUse(hooks []config.Webhook, tasks []config.Task) error {
+	kept := map[string]bool{}
+	for _, h := range hooks {
+		kept[h.ID] = true
+	}
+	for _, t := range tasks {
+		for _, step := range t.Steps {
+			if step.Kind == "discord" && !kept[step.Webhook] {
+				return invalidf("the scheduled job %q posts to a channel you removed. Change that step first", t.Name)
+			}
+		}
+	}
+	return nil
 }

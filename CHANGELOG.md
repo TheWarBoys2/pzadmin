@@ -9,8 +9,17 @@
   restart (and why: scheduled, mod updates, not responding) and when it is
   back. Not every countdown warning. The wording can be changed per event,
   including a role ping.
-- A live status message per server, edited in place as it goes online,
-  restarts or goes down, optionally listing who is playing.
+- A status message per server, edited only when something changes (it goes
+  online, restarts or goes down, or the player count moves), with the
+  server's description and join address and optionally who is playing.
+- A Discord page in the sidebar: channels, and per server where it is
+  announced, so each server can have its own channel.
+- Restart and Stop ask for an optional reason, which players see in the
+  announcement.
+- Each server has public info (description, join address and port) typed in
+  by hand, since PZAdmin cannot see the address players use.
+- Scheduled jobs can post to a chosen Discord channel. A channel a job uses
+  cannot be removed until the job is changed.
 - Stopping and starting a server are now their own events instead of being
   reported as restarts, and a mod-update restart is announced once, not twice.
 - Alerts can no longer ping @everyone through a player's name.

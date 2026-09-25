@@ -182,7 +182,7 @@ func TestRCONRestartRefusedWithoutARevivingPolicy(t *testing.T) {
 	app, _, _, _ := discoveryApp(t)
 	for _, policy := range []string{"", "no", "on-failure"} {
 		srv := config.Server{ID: "x", Name: "X", Host: "127.0.0.1", RCONPort: 1, RestartPolicy: policy}
-		err := app.restartServer(context.Background(), srv, "test", "test")
+		err := app.restartServer(context.Background(), srv, "test", "test", "")
 		if err == nil || !strings.Contains(err.Error(), "unless-stopped") {
 			t.Fatalf("policy %q: %v", policy, err)
 		}

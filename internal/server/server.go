@@ -308,6 +308,9 @@ func (a *App) event(e store.Event) {
 	if reason, ok := e.Meta["reason"].(string); ok {
 		m.Reason = reason
 	}
+	if note, ok := e.Meta["note"].(string); ok {
+		m.Note = note
+	}
 	if minutes, ok := e.Meta["restartIn"].(int); ok {
 		m.Minutes = minutes
 	}

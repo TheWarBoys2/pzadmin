@@ -274,3 +274,20 @@ func TestIsDiscord(t *testing.T) {
 		}
 	}
 }
+
+// What the operator typed when restarting or stopping is what players read.
+func TestOperatorReasonIsShownToPlayers(t *testing.T) {
+	text := RenderPlayer(nil, Message{Kind: "server.restart", Severity: "warn", Server: "Riverside",
+		Reason: ReasonManual, Note: "installing a new map"})
+	if !strings.Contains(text, "is restarting (installing a new map).") {
+		t.Fatalf("got %q", text)
+	}
+	text = RenderPlayer(nil, Message{Kind: "server.stop", Server: "Riverside", Note: "maintenance"})
+	if text != "⏸️ **Riverside** has been shut down for now (maintenance)." {
+		t.Fatalf("got %q", text)
+	}
+	text = RenderPlayer(nil, Message{Kind: "server.stop", Server: "Riverside"})
+	if text != "⏸️ **Riverside** has been shut down for now." {
+		t.Fatalf("without a reason nothing is added, got %q", text)
+	}
+}

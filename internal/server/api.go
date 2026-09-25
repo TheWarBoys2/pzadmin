@@ -437,7 +437,14 @@ func (a *App) handleServerSave(w http.ResponseWriter, r *http.Request) {
 		in.Backup = config.DefaultBackup()
 	}
 
+	public, err := cleanPublicInfo(in.Public)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	next := existing
+	next.Public = public
 	next.Name = in.Name
 	next.Enabled = in.Enabled
 	next.Notes = in.Notes
@@ -732,16 +739,23 @@ func (a *App) handleLifecycle(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "no such server")
 		return
 	}
-	reason := strings.TrimSpace(p.Reason)
-	if reason == "" {
-		reason = "requested by " + actor(r)
+	// What the operator typed is told to players, so it is kept short and on
+	// one line.
+	note := strings.Join(strings.Fields(p.Reason), " ")
+	if len([]rune(note)) > 200 {
+		httpError(w, http.StatusBadRequest, "keep the reason under 200 characters")
+		return
+	}
+	reason := "requested by " + actor(r)
+	if note != "" {
+		reason += ": " + note
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Minute)
 	defer cancel()
 
 	switch p.Action {
 	case "restart":
-		if err := a.restartServer(ctx, srv, "ui", reason); err != nil {
+		if err := a.restartServer(ctx, srv, "ui", reason, note); err != nil {
 			httpError(w, http.StatusBadGateway, err.Error())
 			return
 		}
@@ -778,7 +792,8 @@ func (a *App) handleLifecycle(w http.ResponseWriter, r *http.Request) {
 		})
 		a.dropRCON(srv.ID)
 		a.event(store.Event{Kind: "server.stop", Severity: store.SevWarn, Source: "ui", Actor: actor(r),
-			ServerID: srv.ID, Server: srv.Name, Message: srv.Name + " stopped", Detail: reason})
+			ServerID: srv.ID, Server: srv.Name, Message: srv.Name + " stopped", Detail: reason,
+			Meta: map[string]any{"note": note}})
 		ok(w, map[string]any{"message": "Stopped."})
 
 	case "start":
@@ -1228,7 +1243,11 @@ func (a *App) handleSchedules(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for n := range t.Steps {
-			if err := validateStep(&t.Steps[n]); err != nil {
+			err := validateStep(&t.Steps[n])
+			if err == nil && t.Steps[n].Kind == "discord" && webhookByID(a.cfg.Get(), t.Steps[n].Webhook) == nil {
+				err = fmt.Errorf("the Discord channel it posts to has been removed")
+			}
+			if err != nil {
 				httpError(w, http.StatusBadRequest,
 					fmt.Sprintf("%q step %d: %s", t.Name, n+1, err.Error()))
 				return
@@ -1333,6 +1352,9 @@ func (a *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 			}
 			hooks, err := validateWebhooks(n.Webhooks, prev.Notify.Webhooks, c.Servers)
 			if err != nil {
+				return err
+			}
+			if err := webhooksInUse(hooks, c.Schedules); err != nil {
 				return err
 			}
 			n.Webhooks = hooks
@@ -1441,6 +1463,9 @@ func (a *App) handleImport(w http.ResponseWriter, r *http.Request) {
 						cur.Recovery = in.Recovery
 					}
 					cur.Mods = in.Mods
+					if public, err := cleanPublicInfo(in.Public); err == nil {
+						cur.Public = public
+					}
 					if in.Backup.Keep > 0 {
 						cur.Backup = in.Backup
 					}
@@ -1507,6 +1532,18 @@ func validateStep(step *config.Step) error {
 	case "broadcast":
 		if strings.TrimSpace(step.Message) == "" {
 			return fmt.Errorf("a broadcast needs a message")
+		}
+		return nil
+	case "discord":
+		step.Message = strings.TrimSpace(step.Message)
+		if step.Message == "" {
+			return fmt.Errorf("a Discord post needs a message")
+		}
+		if len([]rune(step.Message)) > maxTemplate {
+			return fmt.Errorf("a Discord post must be under %d characters", maxTemplate)
+		}
+		if step.Webhook == "" {
+			return fmt.Errorf("choose which Discord channel to post to")
 		}
 		return nil
 	case "command":
