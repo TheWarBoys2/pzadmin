@@ -115,6 +115,7 @@ type App struct {
 	discMu   sync.Mutex
 	lastScan stacks.Result
 	sess     *sessionStore
+	keys     *apiKeyStore
 	limiter  *loginLimiter
 	assets   fs.FS
 	dataDir  string
@@ -184,6 +185,7 @@ func New(opts Options) (*App, error) {
 		scripts:   pz.NewScriptScanner(30 * time.Minute),
 		custom:    loadCustomCatalogue(filepath.Join(opts.DataDir, "catalogue.json")),
 		sess:      newSessionStore(filepath.Join(opts.DataDir, "sessions.json")),
+		keys:      newAPIKeyStore(filepath.Join(opts.DataDir, "apikeys.json")),
 		limiter:   newLoginLimiter(),
 		assets:    opts.Assets,
 		dataDir:   opts.DataDir,
@@ -395,6 +397,10 @@ func (a *App) Handler() http.Handler {
 	// Authenticated endpoints.
 	get := func(path string, h http.HandlerFunc) { mux.Handle(path, a.auth(h, false)) }
 	post := func(path string, h http.HandlerFunc) { mux.Handle(path, a.auth(h, true)) }
+	// Account endpoints take a browser session only: an API key must not be
+	// able to mint more keys, change the password or sign the owner out.
+	getSession := func(path string, h http.HandlerFunc) { mux.Handle(path, a.authSession(h, false)) }
+	postSession := func(path string, h http.HandlerFunc) { mux.Handle(path, a.authSession(h, true)) }
 
 	get("/api/state", a.handleState)
 	get("/api/stream", a.handleStream)
@@ -415,7 +421,8 @@ func (a *App) Handler() http.Handler {
 	get("/api/backups", a.handleBackupList)
 	get("/api/backups/download", a.handleBackupDownload)
 	get("/api/export", a.handleExport)
-	get("/api/sessions", a.handleSessions)
+	getSession("/api/sessions", a.handleSessions)
+	getSession("/api/keys", a.handleAPIKeys)
 	get("/api/stack", a.handleStack)
 	post("/api/stack/rescan", a.handleStackRescan)
 	get("/api/stack/new", a.handleStackNew)
@@ -427,7 +434,7 @@ func (a *App) Handler() http.Handler {
 	post("/api/stack/env/save", a.handleStackEnvSave)
 
 	post("/api/settings", a.handleSettings)
-	post("/api/password", a.handlePassword)
+	postSession("/api/password", a.handlePassword)
 	post("/api/server/save", a.handleServerSave)
 	post("/api/server/delete", a.handleServerDelete)
 	post("/api/server/destroy", a.handleServerDestroy)
@@ -454,14 +461,26 @@ func (a *App) Handler() http.Handler {
 	post("/api/player/forget", a.handlePlayerForget)
 	post("/api/notify/test", a.handleNotifyTest)
 	post("/api/import", a.handleImport)
-	post("/api/sessions/revoke", a.handleRevokeSessions)
+	postSession("/api/sessions/revoke", a.handleRevokeSessions)
+	postSession("/api/keys/create", a.handleAPIKeyCreate)
+	postSession("/api/keys/revoke", a.handleAPIKeyRevoke)
 
 	mux.HandleFunc("/", a.handleStatic)
 	return securityHeaders(a.logRequests(mux))
 }
 
-// auth wraps a handler with session and CSRF checks.
+// auth wraps a handler with session and CSRF checks, and also accepts an API
+// key sent as Authorization: Bearer.
 func (a *App) auth(next http.HandlerFunc, mutating bool) http.Handler {
+	return a.authWith(next, mutating, true)
+}
+
+// authSession is auth for endpoints that only a signed-in browser may call.
+func (a *App) authSession(next http.HandlerFunc, mutating bool) http.Handler {
+	return a.authWith(next, mutating, false)
+}
+
+func (a *App) authWith(next http.HandlerFunc, mutating, allowKey bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if mutating && r.Method != http.MethodPost {
 			httpError(w, http.StatusMethodNotAllowed, "use POST for this endpoint")
@@ -469,6 +488,30 @@ func (a *App) auth(next http.HandlerFunc, mutating bool) http.Handler {
 		}
 		if !mutating && r.Method != http.MethodGet {
 			httpError(w, http.StatusMethodNotAllowed, "use GET for this endpoint")
+			return
+		}
+
+		// A request that carries a Bearer header is judged on that alone and
+		// never falls back to a cookie, so a bad key is always a clear 401.
+		if token, present := bearerToken(r); present {
+			if !allowKey {
+				httpError(w, http.StatusForbidden, "this endpoint needs a signed-in browser, not an API key")
+				return
+			}
+			key, ok := a.keys.lookup(token, clientIP(r))
+			if !ok {
+				httpError(w, http.StatusUnauthorized, "that API key is not valid")
+				return
+			}
+			if mutating && key.Scope != scopeFull {
+				httpError(w, http.StatusForbidden, "this API key is read only")
+				return
+			}
+			// No CSRF or same-origin check: a browser never attaches an
+			// Authorization header on its own, so another site cannot forge
+			// one the way it can ride along on a cookie.
+			r = r.WithContext(context.WithValue(r.Context(), ctxUser{}, keyActor(key)))
+			next(w, r)
 			return
 		}
 
