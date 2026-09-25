@@ -83,7 +83,8 @@ const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8')
   'renderModIssues, confirmModChange, modIssueTone, ' +
   'stackStatusPanel, stackServersPanel, stackCreatePanel, paintPlan, buildControl, StackState, ' +
   'newWizard, applyWizardMods, settingsEditor, wizardRequest, ' +
-  'commandAvailability, isStopped, powerButton, editWebhook, viewDiscord, editServerChannel };\n';
+  'commandAvailability, isStopped, powerButton, editWebhook, viewDiscord, editServerChannel, ' +
+  'apiKeyCreateDialog, apiKeysBody };\n';
 
 vm.createContext(sandbox);
 vm.runInContext(source, sandbox, { filename: 'app.js' });
@@ -97,6 +98,7 @@ const {
   stackStatusPanel, stackServersPanel, stackCreatePanel, paintPlan, buildControl, StackState,
   newWizard, applyWizardMods, settingsEditor, wizardRequest,
   commandAvailability, isStopped, powerButton, editWebhook, viewDiscord, editServerChannel,
+  apiKeyCreateDialog, apiKeysBody,
 } = sandbox.__exports__;
 
 // The views read from S, so give it the shape a loaded page would have.
@@ -1007,6 +1009,64 @@ test('a Discord step names its channel', () => withDiscordState([
   assert.strictEqual(describeStep({ kind: 'discord', webhook: 'r', message: 'hi' }), 'post to riverside-chat');
   assert.strictEqual(describeStep({ kind: 'discord', webhook: 'gone', message: 'hi' }), 'post to a removed channel');
 }));
+
+// --- API keys -----------------------------------------------------------------
+
+test('creating an API key sends the chosen access and shows the key once', async () => {
+  const sent = [];
+  const fetchBefore = sandbox.fetch;
+  const serversBefore = S.state.servers;
+  S.state.servers = [{ id: 'a', name: 'Riverside' }, { id: 'b', name: 'Muldraugh' }];
+  sandbox.fetch = (path, opts) => {
+    if (opts.method === 'POST') {
+      sent.push({ path, body: JSON.parse(opts.body) });
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(
+        '{"ok":true,"key":"pzk_abcd1234_secret","apiKey":{"id":"abcd1234","name":"Discord bot"}}') });
+    }
+    return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{"keys":[]}') });
+  };
+  try {
+    closeAllModals();
+    let reloaded = 0;
+    apiKeyCreateDialog(() => { reloaded++; });
+    const modal = overlay().children[overlay().children.length - 1];
+    const name = modal.querySelectorAll('input').find((i) => i.attributes.placeholder === 'Discord bot');
+    name.value = 'Discord bot';
+    const checks = modal.querySelectorAll('label.check');
+    const box = (text) => checks.find((l) => l.textContent.startsWith(text)).children[0];
+    box('Control').checked = true;
+    const all = box('All servers');
+    all.checked = false;
+    all.dispatch('change');
+    box('Muldraugh').checked = true;
+    modal.querySelectorAll('button').find((b) => b.textContent === 'Create key').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.strictEqual(sent.length, 1);
+    assert.strictEqual(sent[0].path, '/api/keys/create');
+    assert.strictEqual(sent[0].body.name, 'Discord bot');
+    assertList(sent[0].body.scopes, ['read', 'control']);
+    assertList(sent[0].body.servers, ['b']);
+    assert.strictEqual(reloaded, 1, 'the key list should reload');
+    assert.strictEqual(openCount(), 1, 'only the reveal dialog should be open');
+    const reveal = overlay().children[overlay().children.length - 1];
+    assert.ok(reveal.textContent.includes('pzk_abcd1234_secret'), 'the new key is shown');
+    closeAllModals();
+  } finally {
+    sandbox.fetch = fetchBefore;
+    S.state.servers = serversBefore;
+  }
+});
+
+test('an API key list keeps a hostile key name as text', () => {
+  const parts = apiKeysBody([{ id: 'x1', name: '<img src=x onerror=alert(1)>', scopes: ['read', 'console'],
+    servers: [], lastUsed: null, expires: null }], () => {});
+  const host = el('div');
+  for (const p of parts) if (p) host.append(p);
+  assert.ok(host.textContent.includes('<img src=x onerror=alert(1)>'));
+  assert.strictEqual(host.querySelectorAll('img').length, 0);
+  assert.ok(host.textContent.includes('Console'));
+});
 
 // --- report -----------------------------------------------------------------
 

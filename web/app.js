@@ -3816,7 +3816,7 @@ function viewSettings(main) {
       el('div', { class: 'sub', text: 'PZAdmin ' + S.version }))));
 
   main.append(el('div', { class: 'grid halves' },
-    settingsGeneral(cfg), settingsMetrics(cfg), settingsData(cfg), settingsAccount()));
+    settingsGeneral(cfg), settingsMetrics(cfg), settingsData(cfg), settingsAccount(), settingsAPIKeys()));
 }
 
 function settingsGeneral(cfg) {
@@ -4524,6 +4524,184 @@ function settingsAccount() {
       field('Confirm new password', confirm),
       error,
       el('div', { class: 'form-actions' }, revoke, change))));
+}
+
+// ------------------------------------------------------------------ API keys
+
+/* API keys let a script or bot call /api/v1 without a browser. The key itself
+ * is shown once, when it is made; PZAdmin keeps only a hash. Keys are managed
+ * here with the browser session only: a key cannot make or revoke keys. */
+
+const API_SCOPE_LABELS = { read: 'Read', control: 'Control', console: 'Console' };
+
+function settingsAPIKeys() {
+  const body = el('div', { class: 'panel-body' }, el('p', { class: 'muted', text: 'Loading keys…' }));
+  const panel = el('div', { class: 'panel' },
+    el('div', { class: 'panel-head' }, el('h3', { text: 'API keys' })),
+    body);
+
+  async function load() {
+    let keys;
+    try {
+      keys = (await api.get('/api/keys')).keys || [];
+    } catch (err) {
+      clear(body);
+      body.append(el('div', { class: 'error', text: err.message }));
+      return;
+    }
+    clear(body);
+    appendAll(body, apiKeysBody(keys, load));
+  }
+  load();
+  return panel;
+}
+
+function apiKeysBody(keys, reload) {
+  const create = el('button', { class: 'btn primary', type: 'button', text: 'Create key',
+    onclick: () => apiKeyCreateDialog(reload) });
+  const revokeAll = keys.length ? el('button', { class: 'btn danger', type: 'button', text: 'Revoke all' }) : null;
+  if (revokeAll) {
+    revokeAll.addEventListener('click', async () => {
+      const confirmed = await confirmDialog({
+        title: 'Revoke every API key?',
+        message: 'Every script and bot using a key stops working immediately.',
+        confirmLabel: 'Revoke all', danger: true,
+      });
+      if (!confirmed) return;
+      try {
+        await api.post('/api/keys/revoke-all');
+        toast('All API keys revoked.', 'good');
+        reload();
+      } catch (err) { toast(err.message, 'bad'); }
+    });
+  }
+
+  const now = Date.now();
+  const rows = keys.map((k) => {
+    const expired = hasTime(k.expires) && new Date(k.expires).getTime() < now;
+    const revoke = el('button', { class: 'btn small danger', type: 'button', text: 'Revoke' });
+    revoke.addEventListener('click', async () => {
+      const confirmed = await confirmDialog({
+        title: 'Revoke ' + k.name + '?',
+        message: 'Anything using this key stops working immediately. This cannot be undone.',
+        confirmLabel: 'Revoke', danger: true,
+      });
+      if (!confirmed) return;
+      try {
+        await api.post('/api/keys/revoke', { id: k.id });
+        toast('Key revoked.', 'good');
+        reload();
+      } catch (err) { toast(err.message, 'bad'); }
+    });
+    const servers = (k.servers || []).length
+      ? (k.servers || []).map((id) => (serverFor(id) || { name: id }).name).join(', ')
+      : 'All';
+    return el('tr', { class: expired ? 'muted' : null },
+      el('td', null,
+        el('div', { text: k.name }),
+        el('div', { class: 'mono faint', text: 'pzk_' + k.id + '_…' })),
+      el('td', null, (k.scopes || []).map((s) =>
+        el('span', { class: 'pill' + (s === 'console' ? ' warn' : s === 'control' ? ' on' : ''), text: API_SCOPE_LABELS[s] || s }))),
+      el('td', { text: servers }),
+      el('td', { title: k.lastIp ? 'From ' + k.lastIp : null, text: fmtAgo(k.lastUsed) }),
+      el('td', { class: expired ? 'warn' : null,
+        text: expired ? 'Expired' : hasTime(k.expires) ? fmtDateTime(k.expires) : 'Never' }),
+      el('td', { class: 'right' }, revoke));
+  });
+
+  return [
+    el('p', { class: 'muted', text: 'Keys let scripts and bots, like a Discord bot, use the PZAdmin API at /api/v1. '
+      + 'A key cannot change settings, the password or other keys.' }),
+    rows.length
+      ? el('table', null,
+        el('thead', null, el('tr', null,
+          el('th', { text: 'Key' }), el('th', { text: 'Access' }), el('th', { text: 'Servers' }),
+          el('th', { text: 'Last used' }), el('th', { text: 'Expires' }), el('th', { class: 'right', text: '' }))),
+        el('tbody', null, rows))
+      : el('p', { class: 'muted', text: 'No keys yet.' }),
+    el('div', { class: 'form-actions' }, revokeAll, create),
+  ];
+}
+
+function apiKeyCreateDialog(reload) {
+  const name = el('input', { type: 'text', maxlength: '40', autocomplete: 'off', placeholder: 'Discord bot' });
+  const control = el('input', { type: 'checkbox' });
+  const consoleScope = el('input', { type: 'checkbox' });
+  const allServers = el('input', { type: 'checkbox', checked: true });
+  const picks = servers().map((s) => ({ id: s.id, box: el('input', { type: 'checkbox' }), name: s.name }));
+  const pickList = el('div', { class: 'form hidden' }, picks.map((p) =>
+    el('label', { class: 'check' }, p.box, el('span', { text: p.name }))));
+  allServers.addEventListener('change', () => pickList.classList.toggle('hidden', allServers.checked));
+  const expires = el('select', null,
+    el('option', { value: '0', text: 'Never' }),
+    el('option', { value: '30', text: 'In 30 days' }),
+    el('option', { value: '90', text: 'In 90 days' }),
+    el('option', { value: '365', text: 'In a year' }));
+  const error = el('div', { class: 'error' });
+  const plainHTTP = typeof location !== 'undefined' && location.protocol === 'http:';
+
+  const save = el('button', { class: 'btn primary', type: 'button', text: 'Create key' });
+  save.addEventListener('click', async () => {
+    error.textContent = '';
+    const scopes = ['read'];
+    if (control.checked) scopes.push('control');
+    if (consoleScope.checked) scopes.push('console');
+    const chosen = allServers.checked ? [] : picks.filter((p) => p.box.checked).map((p) => p.id);
+    if (!allServers.checked && !chosen.length) { error.textContent = 'Pick at least one server, or allow all.'; return; }
+    save.disabled = true;
+    try {
+      const res = await api.post('/api/keys/create', {
+        name: name.value.trim(), scopes: scopes, servers: chosen, expiresDays: Number(expires.value),
+      });
+      closeModal();
+      reload();
+      apiKeyReveal(res.key, res.apiKey);
+    } catch (err) { error.textContent = err.message; save.disabled = false; }
+  });
+
+  openModal({
+    title: 'Create an API key',
+    sub: 'For a script or bot that talks to PZAdmin',
+    body: el('div', { class: 'form' },
+      field('Name', name, 'So you can tell keys apart, and so the event log can say which one acted.'),
+      el('div', { class: 'field' },
+        el('label', { text: 'Access' }),
+        el('label', { class: 'check' }, el('input', { type: 'checkbox', checked: true, disabled: true }),
+          el('span', null, 'Read', el('span', { class: 'hint', text: 'Server status, players and the event log. Every key has this.' }))),
+        el('label', { class: 'check' }, control,
+          el('span', null, 'Control', el('span', { class: 'hint', text: 'Run commands from the command list, restart, stop, start and take backups.' }))),
+        el('label', { class: 'check' }, consoleScope,
+          el('span', null, 'Console', el('span', { class: 'hint', text: 'Send any RCON command. Only give this to something you trust completely.' })))),
+      el('div', { class: 'field' },
+        el('label', { text: 'Servers' }),
+        el('label', { class: 'check' }, allServers, el('span', { text: 'All servers, including ones added later' })),
+        pickList),
+      field('Expires', expires),
+      plainHTTP ? el('div', { class: 'notice warn', text: 'This page is on plain HTTP, so the key will be sent '
+        + 'unencrypted. Put PZAdmin behind HTTPS before using a key over the internet.' }) : null,
+      error),
+    actions: [el('button', { class: 'btn', type: 'button', text: 'Cancel', onclick: closeModal }), save],
+  });
+}
+
+function apiKeyReveal(key, meta) {
+  const origin = (typeof location !== 'undefined' && location.origin) || 'http://your-pzadmin:27815';
+  const example = 'curl -H "Authorization: Bearer ' + key + '" ' + origin + '/api/v1/servers';
+  openModal({
+    title: 'Copy your new key',
+    sub: (meta && meta.name) || '',
+    body: el('div', { class: 'form' },
+      el('div', { class: 'notice warn', text: 'This is the only time the key is shown. PZAdmin keeps only a '
+        + 'fingerprint of it, so if you lose it, revoke it and make a new one.' }),
+      el('pre', { class: 'command' }, el('code', { text: key })),
+      el('p', { class: 'muted', text: 'Try it:' }),
+      el('pre', { class: 'command' }, el('code', { text: example }))),
+    actions: [
+      el('button', { class: 'btn', type: 'button', text: 'Copy example', onclick: () => copyText(example) }),
+      el('button', { class: 'btn primary', type: 'button', text: 'Copy key', onclick: () => copyText(key) }),
+      el('button', { class: 'btn', type: 'button', text: 'Done', onclick: closeModal }),
+    ],
+  });
 }
 
 // -------------------------------------------------------------- server editor
