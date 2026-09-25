@@ -4022,7 +4022,7 @@ function viewDiscord(main) {
         + 'restarts and failed backups for every server. A shared channel announces several servers in one place.' }))));
 
   main.append(el('div', { class: 'grid halves', style: { marginTop: '18px' } },
-    discordOptions(), discordGameBot()));
+    discordQuietHours(), discordOptions(), discordGameBot()));
 }
 
 /* discordBot connects an optional bot. Webhooks do everything else on
@@ -4170,6 +4170,37 @@ function webhookRow(hook, index) {
       webhookTestButton(hook),
       el('button', { class: 'btn small', type: 'button', text: 'Edit', onclick: () => editWebhook(index) }),
       el('button', { class: 'btn small danger', type: 'button', text: 'Remove', onclick: () => removeWebhook(index) })));
+}
+
+// discordQuietHours sets a nightly window when scheduled jobs still run but
+// post nothing to Discord.
+function discordQuietHours() {
+  const quiet = ((S.state.config || {}).notify || {}).quietHours || {};
+  const enabled = el('input', { type: 'checkbox', checked: !!quiet.enabled });
+  const start = el('input', { type: 'time', value: quiet.start || '23:00' });
+  const end = el('input', { type: 'time', value: quiet.end || '08:00' });
+  const save = el('button', { class: 'btn primary', type: 'button', text: 'Save' });
+  save.addEventListener('click', async () => {
+    save.disabled = true;
+    try {
+      await api.post('/api/settings', { notify: { quietHours: {
+        enabled: enabled.checked, start: start.value, end: end.value,
+      } } });
+      toast('Saved.', 'good');
+      await refreshState();
+    } catch (err) { toast(err.message, 'bad'); save.disabled = false; }
+  });
+  return el('div', { class: 'panel' },
+    el('div', { class: 'panel-head' }, el('h3', { text: 'Quiet hours' })),
+    el('div', { class: 'panel-body' }, el('div', { class: 'form' },
+      el('label', { class: 'check' }, enabled, el('span', { text: 'Keep scheduled jobs quiet in Discord overnight' })),
+      el('p', { class: 'muted', text: 'Scheduled jobs still run, and players in game still see the countdown, but nothing about them is '
+        + 'posted to Discord: no restart or back-online announcements and no Discord steps. Crashes, outages, '
+        + 'failed backups and restarts done by hand still post.' }),
+      field('From', start, 'Times use ' + (S.state.timezone || 'UTC') + '. A window that ends earlier than it '
+        + 'starts runs past midnight.'),
+      field('Until', end),
+      el('div', { class: 'form-actions' }, save))));
 }
 
 function discordOptions() {

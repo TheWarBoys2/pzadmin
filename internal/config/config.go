@@ -220,6 +220,9 @@ type Notify struct {
 	// Bot is an optional Discord bot. With it, channels can be picked from a
 	// list instead of pasting webhooks, and channel names can show status.
 	Bot Bot `json:"bot"`
+	// QuietHours holds back the Discord posts scheduled jobs make overnight,
+	// while the jobs themselves still run.
+	QuietHours QuietHours `json:"quietHours"`
 
 	// Enabled, WebhookURL and Events are the single webhook used before
 	// destinations existed. They are read once on load and folded into
@@ -227,6 +230,44 @@ type Notify struct {
 	Enabled    bool     `json:"enabled,omitempty"`
 	WebhookURL string   `json:"webhookUrl,omitempty"`
 	Events     []string `json:"events,omitempty"`
+}
+
+// QuietHours is a daily window, in the configured timezone, when scheduled
+// jobs post nothing to Discord: no restart or back-up-again announcements and
+// no Discord steps. Outages, crashes and restarts done by hand still post.
+type QuietHours struct {
+	Enabled bool `json:"enabled"`
+	// Start and End are "HH:MM". A window whose end is earlier than its start
+	// runs past midnight.
+	Start string `json:"start,omitempty"`
+	End   string `json:"end,omitempty"`
+}
+
+// ParseClock reads an "HH:MM" time of day as minutes past midnight.
+func ParseClock(v string) (int, bool) {
+	t, err := time.Parse("15:04", strings.TrimSpace(v))
+	if err != nil {
+		return 0, false
+	}
+	return t.Hour()*60 + t.Minute(), true
+}
+
+// Contains reports whether t, already in the configured timezone, falls in
+// the window. The start minute is inside it and the end minute is not.
+func (q QuietHours) Contains(t time.Time) bool {
+	if !q.Enabled {
+		return false
+	}
+	start, ok1 := ParseClock(q.Start)
+	end, ok2 := ParseClock(q.End)
+	if !ok1 || !ok2 || start == end {
+		return false
+	}
+	now := t.Hour()*60 + t.Minute()
+	if start < end {
+		return now >= start && now < end
+	}
+	return now >= start || now < end
 }
 
 // Bot is a Discord bot PZAdmin posts through. Only the token is needed; the

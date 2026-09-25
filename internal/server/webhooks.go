@@ -313,3 +313,24 @@ func (a *App) targetFromKey(cfg config.Config, key string) notify.Target {
 	}
 	return notify.Target{Webhook: key}
 }
+
+// cleanQuietHours checks the quiet hours window. Times are kept even while it
+// is switched off, so turning it back on restores the same window.
+func cleanQuietHours(q config.QuietHours) (config.QuietHours, error) {
+	q.Start, q.End = strings.TrimSpace(q.Start), strings.TrimSpace(q.End)
+	if !q.Enabled {
+		return q, nil
+	}
+	start, ok := config.ParseClock(q.Start)
+	if !ok {
+		return q, invalidf("quiet hours need a start time, like 23:00")
+	}
+	end, ok := config.ParseClock(q.End)
+	if !ok {
+		return q, invalidf("quiet hours need an end time, like 08:00")
+	}
+	if start == end {
+		return q, invalidf("quiet hours must start and end at different times")
+	}
+	return q, nil
+}

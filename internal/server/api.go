@@ -1371,6 +1371,15 @@ func (a *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 			n.Identity = identity
+			// Forms that do not show quiet hours leave them as they were.
+			if n.QuietHours == (config.QuietHours{}) {
+				n.QuietHours = prev.Notify.QuietHours
+			}
+			quiet, err := cleanQuietHours(n.QuietHours)
+			if err != nil {
+				return err
+			}
+			n.QuietHours = quiet
 			n.Enabled, n.WebhookURL, n.Events = false, "", nil
 			c.Notify = n
 		}

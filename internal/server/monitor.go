@@ -219,6 +219,7 @@ func (a *App) probe(ctx context.Context, s config.Server) {
 			a.event(store.Event{
 				Kind: "server.up", Severity: store.SevSuccess, Source: "monitor",
 				ServerID: s.ID, Server: s.Name, Message: message, Detail: detail,
+				Meta: map[string]any{"scheduled": prev.Restarting && prev.RestartReason == scheduledReason},
 			})
 		}
 		for _, n := range joined {
