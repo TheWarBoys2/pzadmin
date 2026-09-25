@@ -12,8 +12,12 @@
 - A status message per server, edited only when something changes (it goes
   online, restarts or goes down, or the player count moves), with the
   server's description and join address and optionally who is playing.
-- A Discord page in the sidebar: channels, and per server where it is
-  announced, so each server can have its own channel.
+- A Discord page in the sidebar, organised by server: set up a server's own
+  channel by pasting one webhook link, and see where each server is
+  announced. Staff and shared channels sit alongside.
+- Messages are posted under a name and picture set in PZAdmin, so a webhook
+  needs no setting up in Discord. A server's own channel uses the server's
+  name; any channel can have its own name and picture.
 - Restart and Stop ask for an optional reason, which players see in the
   announcement.
 - Each server has public info (description, join address and port) typed in

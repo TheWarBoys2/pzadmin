@@ -3895,39 +3895,98 @@ function looksLikeDiscord(url) {
 
 function viewDiscord(main) {
   const hooks = webhooks();
+  const shared = hooks.map((h, i) => [h, i]).filter(([h]) => !h.server);
   main.append(el('div', { class: 'page-head' },
     el('div', null,
       el('h1', { text: 'Discord' }),
-      el('div', { class: 'sub', text: 'Restart and back-online announcements, staff alerts and a status message per server.' })),
+      el('div', { class: 'sub', text: 'Give each server its own channel: in Discord, create a webhook in that channel, '
+        + 'copy its URL, and paste it into the server below. Name and picture come from here.' })),
     el('div', { class: 'page-actions' },
       el('button', { class: 'btn', type: 'button', text: '+ Staff channel', onclick: () => editWebhook(-1, 'staff') }),
-      el('button', { class: 'btn primary', type: 'button', text: '+ Player channel', onclick: () => editWebhook(-1, 'players') }))));
+      el('button', { class: 'btn', type: 'button', text: '+ Shared channel', onclick: () => editWebhook(-1, 'players') }))));
 
-  if (!hooks.length) {
-    main.append(el('div', { class: 'panel' }, el('div', { class: 'empty' },
-      el('h3', { text: 'No Discord channels yet' }),
-      el('p', { text: 'In Discord, open a channel’s settings, then Integrations, Webhooks, New Webhook, and copy '
-        + 'its URL. Add it here as a player channel for announcements players can read, or a staff channel for '
-        + 'alerts. Give each server its own channel if players should only see their own server.' }),
-      el('button', { class: 'btn primary', type: 'button', text: 'Add a player channel',
-        onclick: () => editWebhook(-1, 'players') }))));
-  } else {
-    main.append(el('div', { class: 'panel' },
-      el('div', { class: 'panel-head' }, el('h3', { text: 'Channels' })),
-      el('div', { class: 'panel-body flush' }, hooks.map((h, i) => webhookRow(h, i)))));
+  main.append(discordIdentity());
+
+  if (servers().length) {
+    main.append(el('div', { class: 'panel', style: { marginTop: '18px' } },
+      el('div', { class: 'panel-head' }, el('h3', { text: 'Servers' })),
+      el('div', { class: 'panel-body flush' }, servers().map((s) => serverChannelRow(s, hooks)))));
   }
 
-  if (hooks.length && servers().length) main.append(discordByServer(hooks));
+  main.append(el('div', { class: 'panel', style: { marginTop: '18px' } },
+    el('div', { class: 'panel-head' }, el('h3', { text: 'Staff and shared channels' })),
+    shared.length
+      ? el('div', { class: 'panel-body flush' }, shared.map(([h, i]) => webhookRow(h, i)))
+      : el('div', { class: 'panel-body' }, el('p', { class: 'muted', text: 'A staff channel gets outages, watchdog '
+        + 'restarts and failed backups for every server. A shared channel announces several servers in one place.' }))));
 
   main.append(el('div', { class: 'grid halves', style: { marginTop: '18px' } },
     discordOptions(), discordGameBot()));
 }
 
-function webhookRow(hook, index) {
-  const scope = hook.servers && hook.servers.length
-    ? hook.servers.map((id) => (serverFor(id) || { name: 'removed server' }).name).join(', ')
-    : 'every server';
-  const count = (hook.events || []).length;
+// discordIdentity is the name and picture every message is posted under,
+// unless a channel says otherwise.
+function discordIdentity() {
+  const notify = (S.state.config || {}).notify || {};
+  const identity = notify.identity || {};
+  const name = el('input', { type: 'text', maxlength: '80', value: identity.name || '', placeholder: 'PZAdmin' });
+  const avatar = el('input', { type: 'text', value: identity.avatarUrl || '', placeholder: 'https://…/logo.png' });
+  const save = el('button', { class: 'btn primary', type: 'button', text: 'Save' });
+  save.addEventListener('click', async () => {
+    save.disabled = true;
+    try {
+      await saveWebhooks(hookDrafts(), { name: name.value.trim(), avatarUrl: avatar.value.trim() });
+      toast('Saved.', 'good');
+      await refreshState();
+    } catch (err) { toast(err.message, 'bad'); save.disabled = false; }
+  });
+  return el('div', { class: 'panel' },
+    el('div', { class: 'panel-head' }, el('h3', { text: 'How PZAdmin appears in Discord' })),
+    el('div', { class: 'panel-body' }, el('div', { class: 'form' },
+      el('div', { class: 'row' },
+        field('Name', name, 'A server’s own channel uses the server’s name unless you change it there.'),
+        field('Picture', avatar, 'A link to an image Discord can reach, such as one uploaded to Discord itself. '
+          + 'Leave blank to keep the picture set on each webhook.')),
+      el('div', { class: 'form-actions' }, save))));
+}
+
+function serverChannelRow(server, hooks) {
+  const index = hooks.findIndex((h) => h.server === server.id);
+  const own = index >= 0 ? hooks[index] : null;
+  const covers = (h) => h.enabled && !h.server && (!h.servers || !h.servers.length || h.servers.includes(server.id));
+  const alsoPlayers = hooks.filter((h) => covers(h) && h.audience === 'players').map((h) => h.name);
+  const staff = hooks.filter((h) => covers(h) && h.audience !== 'players').map((h) => h.name);
+  const pub = server.public || {};
+  const join = pub.address ? pub.address + ':' + (pub.port || server.gamePort || 16261) : '';
+  const line = (label, value) => el('div', { class: 'sub' }, el('span', { class: 'muted', text: label + ': ' }), value);
+
+  const announced = own
+    ? (own.events || []).map((k) => (PLAYER_EVENT_LABELS[k] || k).replace(/^The server /, '')).join(', ') || 'nothing ticked'
+    : 'no channel yet';
+  const actions = own
+    ? [
+      webhookTestButton(own),
+      el('button', { class: 'btn small', type: 'button', text: 'Edit', onclick: () => editServerChannel(server) }),
+      el('button', { class: 'btn small danger', type: 'button', text: 'Remove', onclick: () => removeWebhook(index) }),
+    ]
+    : [el('button', { class: 'btn small primary', type: 'button', text: 'Set up channel',
+      onclick: () => editServerChannel(server) })];
+
+  return el('div', { class: 'list-row' },
+    el('div', { class: 'grow' },
+      el('div', { class: 'webhook-title' },
+        el('strong', { text: server.name }),
+        own ? el('span', { class: 'pill ' + (own.enabled ? 'on' : 'off'), text: own.enabled ? 'Own channel' : 'Channel off' }) : null,
+        own && own.liveStatus ? el('span', { class: 'pill', text: 'Status message' }) : null),
+      line('Announces', announced),
+      alsoPlayers.length ? line('Also announced in', alsoPlayers.join(', ')) : null,
+      line('Staff alerts in', staff.length ? staff.join(', ') : 'nowhere'),
+      line('Join address', join ? el('code', { text: join }) : 'not set')),
+    el('div', { class: 'row-actions' }, actions,
+      el('button', { class: 'btn small', type: 'button', text: 'Public info', onclick: () => editServer(server) })));
+}
+
+function webhookTestButton(hook) {
   const test = el('button', { class: 'btn small', type: 'button', text: 'Test' });
   test.addEventListener('click', async () => {
     test.disabled = true;
@@ -3936,6 +3995,14 @@ function webhookRow(hook, index) {
     } catch (err) { toast(err.message, 'bad'); }
     test.disabled = false;
   });
+  return test;
+}
+
+function webhookRow(hook, index) {
+  const scope = hook.servers && hook.servers.length
+    ? hook.servers.map((id) => (serverFor(id) || { name: 'removed server' }).name).join(', ')
+    : 'every server';
+  const count = (hook.events || []).length;
   return el('div', { class: 'list-row' },
     el('div', { class: 'grow' },
       el('div', { class: 'webhook-title' },
@@ -3945,33 +4012,9 @@ function webhookRow(hook, index) {
         hook.enabled ? null : el('span', { class: 'pill off', text: 'Off' })),
       el('div', { class: 'sub', text: count + ' event' + (count === 1 ? '' : 's') + ' · ' + scope })),
     el('div', { class: 'row-actions' },
-      test,
+      webhookTestButton(hook),
       el('button', { class: 'btn small', type: 'button', text: 'Edit', onclick: () => editWebhook(index) }),
       el('button', { class: 'btn small danger', type: 'button', text: 'Remove', onclick: () => removeWebhook(index) })));
-}
-
-/* discordByServer answers "who hears about this server, and where", which
-   is the question that matters once each server has its own channels. */
-function discordByServer(hooks) {
-  const covering = (s, test) => hooks.filter((h) => h.enabled && test(h)
-    && (!h.servers || !h.servers.length || h.servers.includes(s.id))).map((h) => h.name);
-  const line = (label, names) => el('div', { class: 'sub' },
-    el('span', { class: 'muted', text: label + ': ' }), names.length ? names.join(', ') : 'nowhere');
-  return el('div', { class: 'panel', style: { marginTop: '18px' } },
-    el('div', { class: 'panel-head' }, el('h3', { text: 'By server' })),
-    el('div', { class: 'panel-body flush' }, servers().map((s) => {
-      const pub = s.public || {};
-      const join = pub.address ? pub.address + ':' + (pub.port || s.gamePort || 16261) : '';
-      return el('div', { class: 'list-row' },
-        el('div', { class: 'grow' },
-          el('strong', { text: s.name }),
-          line('Players hear in', covering(s, (h) => h.audience === 'players')),
-          line('Staff hear in', covering(s, (h) => h.audience !== 'players')),
-          line('Status message in', covering(s, (h) => h.liveStatus)),
-          el('div', { class: 'sub' }, el('span', { class: 'muted', text: 'Join address: ' }),
-            join ? el('code', { text: join }) : 'not set')),
-        el('button', { class: 'btn small', type: 'button', text: 'Public info', onclick: () => editServer(s) }));
-    })));
 }
 
 function discordOptions() {
@@ -4011,17 +4054,20 @@ function hookDrafts() {
   return webhooks().map((h) => ({
     ...h, url: h.url === REDACTED ? '' : (h.url || ''), saved: h.url === REDACTED,
     events: [...(h.events || [])], servers: [...(h.servers || [])], messages: { ...(h.messages || {}) },
+    identity: { ...(h.identity || {}) },
   }));
 }
 
-async function saveWebhooks(hooks) {
+async function saveWebhooks(hooks, identity) {
   const notify = (S.state.config || {}).notify || {};
   await api.post('/api/settings', {
     notify: {
       minIntervalSeconds: notify.minIntervalSeconds || 300,
+      identity: identity || notify.identity || {},
       webhooks: hooks.map((h) => ({
         id: h.id, name: (h.name || '').trim(), enabled: h.enabled, audience: h.audience,
         url: h.url.trim() || (h.saved ? REDACTED : ''),
+        server: h.server || '', identity: { name: (h.identity.name || '').trim(), avatarUrl: (h.identity.avatarUrl || '').trim() },
         events: h.events, servers: h.servers,
         messages: h.audience === 'players' ? h.messages : {},
         liveStatus: h.liveStatus, listPlayers: h.liveStatus && h.listPlayers,
@@ -4038,10 +4084,33 @@ function editWebhook(index, audience) {
     hook = {
       id: '', name: AUDIENCE_LABELS[audience], enabled: true, url: '', audience,
       events: [...((audience === 'players' ? options.defaultPlayerEvents : options.defaultStaffEvents) || [])],
-      servers: [], messages: {}, liveStatus: audience === 'players', listPlayers: false,
+      servers: [], messages: {}, liveStatus: false, listPlayers: false, identity: {},
     };
     hooks.push(hook);
   }
+  openWebhookDialog(hooks, hook, index >= 0 ? 'Edit ' + hook.name
+    : 'Add a ' + (audience === 'players' ? 'shared' : 'staff') + ' channel', {});
+}
+
+// editServerChannel sets up or edits a server's own channel: one webhook,
+// covering only that server, named after it.
+function editServerChannel(server) {
+  const options = S.state.notifyOptions || {};
+  const hooks = hookDrafts();
+  let hook = hooks.find((h) => h.server === server.id);
+  if (!hook) {
+    hook = {
+      id: '', name: server.name, enabled: true, url: '', audience: 'players', server: server.id,
+      events: [...(options.defaultPlayerEvents || [])], servers: [server.id], messages: {},
+      liveStatus: true, listPlayers: false, identity: {},
+    };
+    hooks.push(hook);
+  }
+  openWebhookDialog(hooks, hook, server.name + '\u2019s channel', { server });
+}
+
+function openWebhookDialog(hooks, hook, title, opts) {
+  const options = S.state.notifyOptions || {};
   const error = el('div', { class: 'error' });
   const save = el('button', { class: 'btn primary', type: 'button', text: 'Save' });
   save.addEventListener('click', async () => {
@@ -4055,9 +4124,9 @@ function editWebhook(index, audience) {
     } catch (err) { error.textContent = err.message; save.disabled = false; }
   });
   openModal({
-    title: index >= 0 ? 'Edit ' + hook.name : 'Add a ' + (audience === 'players' ? 'player' : 'staff') + ' channel',
+    title,
     wide: true,
-    body: el('div', { class: 'form' }, webhookCard(hook, options), error),
+    body: el('div', { class: 'form' }, webhookCard(hook, options, opts), error),
     actions: [el('button', { class: 'btn', type: 'button', text: 'Cancel', onclick: closeModal }), save],
   });
 }
@@ -4080,7 +4149,9 @@ async function removeWebhook(index) {
   } catch (err) { toast(err.message, 'bad'); }
 }
 
-function webhookCard(hook, options) {
+function webhookCard(hook, options, opts) {
+  const own = opts && opts.server;
+  const identity = (S.state.config && S.state.config.notify && S.state.config.notify.identity) || {};
   const name = el('input', { type: 'text', value: hook.name || '', maxlength: '80' });
   name.addEventListener('input', () => { hook.name = name.value; });
 
@@ -4093,12 +4164,22 @@ function webhookCard(hook, options) {
   const audience = el('select', null, Object.keys(AUDIENCE_LABELS).map((key) =>
     el('option', { value: key, text: AUDIENCE_LABELS[key], selected: hook.audience === key })));
 
+  const shownName = el('input', { type: 'text', maxlength: '80', value: hook.identity.name || '',
+    placeholder: own ? own.name : (identity.name || 'PZAdmin') });
+  shownName.addEventListener('input', () => { hook.identity.name = shownName.value; });
+  const shownAvatar = el('input', { type: 'text', value: hook.identity.avatarUrl || '',
+    placeholder: identity.avatarUrl || 'The picture set on the Discord page' });
+  shownAvatar.addEventListener('input', () => { hook.identity.avatarUrl = shownAvatar.value; });
+  const appearance = el('div', { class: 'row' },
+    field('Name in Discord', shownName, own ? 'Defaults to the server\u2019s name.' : 'Defaults to the name set on the Discord page.'),
+    field('Picture', shownAvatar, 'An image link. Blank uses the one set on the Discord page.'));
+
   const body = el('div', { class: 'form' });
   const redraw = () => {
     clear(body);
     appendAll(body,
       webhookEvents(hook, options),
-      webhookServers(hook),
+      own ? null : webhookServers(hook),
       webhookLiveStatus(hook),
       hook.audience === 'players' ? webhookWording(hook, options) : null);
   };
@@ -4114,7 +4195,10 @@ function webhookCard(hook, options) {
   test.addEventListener('click', async () => {
     test.disabled = true;
     try {
-      const result = await api.post('/api/notify/test', { id: hook.id || '', url: hook.url.trim(), audience: hook.audience });
+      const result = await api.post('/api/notify/test', {
+        id: hook.id || '', url: hook.url.trim(), audience: hook.audience,
+        server: hook.server || '', identity: { name: (hook.identity.name || '').trim(), avatarUrl: (hook.identity.avatarUrl || '').trim() },
+      });
       toast(result.message, 'good');
     } catch (err) { toast(err.message, 'bad'); }
     test.disabled = false;
@@ -4122,10 +4206,12 @@ function webhookCard(hook, options) {
 
   redraw();
   return el('div', { class: 'form webhook-card' },
-    el('div', { class: 'row' }, field('Name', name), field('Written for', audience)),
-    field('Webhook address', url, 'In Discord: channel settings, Integrations, Webhooks, New Webhook, Copy Webhook URL.'),
+    own ? null : el('div', { class: 'row' }, field('Name', name, 'What PZAdmin calls this channel.'), field('Written for', audience)),
+    field('Webhook address', url, 'In Discord: channel settings, Integrations, Webhooks, New Webhook, Copy Webhook URL. '
+      + 'There is no need to name it or give it a picture there.'),
     el('div', { class: 'row-actions' },
       el('label', { class: 'check' }, enabled, el('span', { text: 'Send to this channel' })), test),
+    appearance,
     body);
 }
 
@@ -4175,13 +4261,13 @@ function webhookLiveStatus(hook) {
   names.addEventListener('change', () => { hook.listPlayers = names.checked; });
   return el('div', { class: 'form' },
     el('label', { class: 'check' }, live, el('span', null,
-      el('span', { text: 'Post a status message for each server' }),
+      el('span', { text: hook.server ? 'Post a status message' : 'Post a status message for each server' }),
       el('span', { class: 'hint', text: discord
-        ? 'One message per server, edited only when something changes: it goes online, restarts or goes down, '
-          + 'or the player count moves. Pin it in the channel.'
+        ? (hook.server ? 'One message' : 'One message per server') + ', edited only when something changes: it goes '
+          + 'online, restarts or goes down, or the player count moves. Pin it in the channel.'
         : 'Only a Discord webhook can edit its messages.' }))),
     el('label', { class: 'check' }, names, el('span', { text: 'List who is playing in it' })),
-    el('p', { class: 'hint', text: 'Each server\u2019s description and join address come from its Public info.' }));
+    el('p', { class: 'hint', text: 'The description and join address come from each server\u2019s Public info.' }));
 }
 
 function webhookWording(hook, options) {

@@ -1346,9 +1346,13 @@ func (a *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if p.Notify != nil {
 			n := *p.Notify
-			// A form that only changes the throttle leaves the webhooks alone.
+			// A form that only changes the throttle leaves the webhooks and
+			// identity alone.
 			if n.Webhooks == nil {
 				n.Webhooks = prev.Notify.Webhooks
+			}
+			if n.Identity == (config.Identity{}) && p.Notify.Webhooks == nil {
+				n.Identity = prev.Notify.Identity
 			}
 			hooks, err := validateWebhooks(n.Webhooks, prev.Notify.Webhooks, c.Servers)
 			if err != nil {
@@ -1358,6 +1362,11 @@ func (a *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 			n.Webhooks = hooks
+			identity, err := cleanIdentity(n.Identity, "PZAdmin")
+			if err != nil {
+				return err
+			}
+			n.Identity = identity
 			n.Enabled, n.WebhookURL, n.Events = false, "", nil
 			c.Notify = n
 		}
@@ -1396,14 +1405,23 @@ func (a *App) handleNotifyTest(w http.ResponseWriter, r *http.Request) {
 		ID       string `json:"id"`
 		URL      string `json:"url"`
 		Audience string `json:"audience"`
+		// Server and Identity are the channel as it stands in the form, so
+		// the test shows the name and picture real messages will have.
+		Server   string          `json:"server"`
+		Identity config.Identity `json:"identity"`
 	}
 	if !decodeJSON(w, r, &p) {
 		return
 	}
-	dest := notify.Destination{URL: strings.TrimSpace(p.URL), Audience: p.Audience}
+	cfg := a.cfg.Get()
+	if h := webhookByID(cfg, p.ID); h != nil && p.Server == "" && p.Identity == (config.Identity{}) {
+		p.Server, p.Identity = h.Server, h.Identity
+	}
+	name, avatar := postedAs(cfg, config.Webhook{Server: p.Server, Identity: p.Identity})
+	dest := notify.Destination{URL: strings.TrimSpace(p.URL), Audience: p.Audience, Username: name, AvatarURL: avatar}
 	if dest.URL == "" || dest.URL == config.Redacted {
 		dest.URL = ""
-		for _, h := range a.cfg.Get().Notify.Webhooks {
+		for _, h := range cfg.Notify.Webhooks {
 			if p.ID != "" && h.ID == p.ID {
 				dest.URL = h.URL
 			}

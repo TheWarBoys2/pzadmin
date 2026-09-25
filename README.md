@@ -203,25 +203,29 @@ Webhooks, metrics, backups and schedules are configured in the web interface.
 
 ## Discord
 
-PZAdmin posts to Discord through webhooks. It doesn't need a bot. Everything is on the **Discord** page in the sidebar,
-where each channel is marked as one of two kinds:
+PZAdmin posts to Discord through webhooks. It doesn't need a bot. Everything is on the **Discord** page in the sidebar.
 
-- **Staff channels** get every event you tick, with full detail: outages, watchdog restarts, failed backups, admin actions.
-- **Player channels** get short, plain messages for a public channel: when a server actually goes down for a
-  restart (and why: scheduled, mod updates, stopped responding, or the reason you typed when you pressed Restart
-  or Stop) and when it's back. Countdown warnings stay in game. You can change the wording of each message and
-  ping a role by writing `<@&role ID>` into it.
+**Give each server its own channel.** In Discord, open the channel's settings, then Integrations → Webhooks →
+New Webhook → Copy Webhook URL. You don't need to name it or give it a picture there. On the Discord page, click
+**Set up channel** next to the server and paste the link. That channel then gets:
 
-Each channel can cover every server or only some. Give each server its own channel and players only see the
-servers they have access to. The page's **By server** list shows where each server is announced.
+- short, plain announcements when the server actually goes down for a restart (and why: scheduled, mod updates,
+  stopped responding, or the reason you typed when you pressed Restart or Stop) and when it's back. Countdown
+  warnings stay in game. You can change the wording and ping a role by writing `<@&role ID>` into it.
+- a **status message**, edited only when something changes: the server comes online, restarts or goes down, or the
+  player count moves. Pin it. It shows the server's description and join address, which you type into the server's
+  **Public info**, because PZAdmin only sees the server from inside Docker.
 
-Tick **Post a status message for each server** and PZAdmin keeps one message per server in that channel, edited only
-when something changes: the server comes online, restarts or goes down, or the player count moves. Pin it. It
-shows the server's description and join address, which you type into the server's **Public info**, because
-PZAdmin only sees the server from inside Docker. If someone deletes the message, a new one is posted. When
-PZAdmin itself stops, the message says it is no longer being updated.
+Players only see the servers whose channels they can read.
 
-Scheduled jobs can post too: add a **Post to Discord** step, choose the channel and write the message.
+**Name and picture come from PZAdmin.** Messages are posted as the name and picture set under
+**How PZAdmin appears in Discord**. A server's own channel uses the server's name, and any channel can have its own
+name and picture. The picture has to be a link Discord can reach, such as an image uploaded to Discord.
+
+**Staff and shared channels** cover several servers at once: a staff channel gets outages, watchdog restarts, failed
+backups and admin actions with full detail; a shared channel announces several servers in one place.
+
+**Scheduled jobs** can post too: add a **Post to Discord** step, choose the channel and write the message.
 `{server}` and `{players}` are filled in when the job runs.
 
 Project Zomboid also has its own Discord bot, which relays in-game chat. It's set in the server ini

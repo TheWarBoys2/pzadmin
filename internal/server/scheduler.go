@@ -254,7 +254,9 @@ func (a *App) executeStep(ctx context.Context, step config.Step, srv config.Serv
 		).Replace(step.Message)
 		dctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
-		if err := a.notify.Announce(dctx, notify.Destination{URL: h.URL, Audience: h.Audience}, text); err != nil {
+		name, avatar := postedAs(a.cfg.Get(), *h)
+		dest := notify.Destination{URL: h.URL, Audience: h.Audience, Username: name, AvatarURL: avatar}
+		if err := a.notify.Announce(dctx, dest, text); err != nil {
 			return "", err
 		}
 		return "posted to " + h.Name, nil

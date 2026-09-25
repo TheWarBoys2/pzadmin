@@ -35,9 +35,12 @@ func validateWebhooks(next, prev []config.Webhook, servers []config.Server) ([]c
 		return nil, invalidf("at most 20 webhooks can be configured")
 	}
 	known := map[string]bool{}
+	names := map[string]string{}
 	for _, s := range servers {
 		known[s.ID] = true
+		names[s.ID] = s.Name
 	}
+	owned := map[string]bool{}
 	out := make([]config.Webhook, 0, len(next))
 	next = append([]config.Webhook(nil), next...)
 	config.UnredactWebhooks(next, prev)
@@ -50,6 +53,29 @@ func validateWebhooks(next, prev []config.Webhook, servers []config.Server) ([]c
 			return nil, invalidf("two webhooks share the ID %q", h.ID)
 		}
 		seen[h.ID] = true
+
+		if h.Server != "" {
+			// A server's own channel goes with the server.
+			if !known[h.Server] {
+				continue
+			}
+			if owned[h.Server] {
+				return nil, invalidf("%s already has its own channel", names[h.Server])
+			}
+			owned[h.Server] = true
+			if strings.TrimSpace(h.Name) == "" {
+				h.Name = names[h.Server]
+			}
+			h.Servers = []string{h.Server}
+			if h.Audience == "" {
+				h.Audience = config.AudiencePlayers
+			}
+		}
+		identity, err := cleanIdentity(h.Identity, h.Name)
+		if err != nil {
+			return nil, err
+		}
+		h.Identity = identity
 
 		switch h.Audience {
 		case config.AudienceStaff, config.AudiencePlayers:
@@ -94,7 +120,8 @@ func validateWebhooks(next, prev []config.Webhook, servers []config.Server) ([]c
 		}
 		h.Events = events
 
-		// A server deleted since the form loaded is simply dropped.
+		// A server deleted since the form loaded is simply dropped; a
+		// server's own channel always covers exactly that server.
 		scoped := []string{}
 		for _, id := range h.Servers {
 			if known[id] && !containsString(scoped, id) {
@@ -102,6 +129,9 @@ func validateWebhooks(next, prev []config.Webhook, servers []config.Server) ([]c
 			}
 		}
 		h.Servers = scoped
+		if h.Server != "" {
+			h.Servers = []string{h.Server}
+		}
 
 		messages := map[string]string{}
 		if h.Audience == config.AudiencePlayers {
@@ -196,4 +226,50 @@ func webhooksInUse(hooks []config.Webhook, tasks []config.Task) error {
 		}
 	}
 	return nil
+}
+
+// postedAs is the name and picture a webhook's messages appear under: its
+// own, else the server's name for a server's channel, else the global ones.
+func postedAs(cfg config.Config, h config.Webhook) (name, avatar string) {
+	name = h.Identity.Name
+	if name == "" && h.Server != "" {
+		if s, ok := serverByID(cfg.Servers, h.Server); ok {
+			name = s.Name
+		}
+	}
+	if name == "" {
+		name = cfg.Notify.Identity.Name
+	}
+	if name == "" {
+		name = "PZAdmin"
+	}
+	avatar = h.Identity.AvatarURL
+	if avatar == "" {
+		avatar = cfg.Notify.Identity.AvatarURL
+	}
+	return truncateRunes(name, 80), avatar
+}
+
+// cleanIdentity checks a name and picture against what Discord accepts, so a
+// mistake shows up in the form rather than as messages that never arrive.
+func cleanIdentity(id config.Identity, label string) (config.Identity, error) {
+	id.Name = strings.TrimSpace(id.Name)
+	id.AvatarURL = strings.TrimSpace(id.AvatarURL)
+	if len([]rune(id.Name)) > 80 {
+		return id, invalidf("%s: the name shown in Discord must be 80 characters or fewer", label)
+	}
+	lower := strings.ToLower(id.Name)
+	// Discord refuses these in a webhook's name and drops the message.
+	for _, banned := range []string{"discord", "clyde"} {
+		if strings.Contains(lower, banned) {
+			return id, invalidf("%s: Discord does not allow %q in a name", label, banned)
+		}
+	}
+	if id.AvatarURL != "" {
+		u, err := url.Parse(id.AvatarURL)
+		if err != nil || u.Scheme != "https" || u.Host == "" || len(id.AvatarURL) > 2048 {
+			return id, invalidf("%s: the picture must be an https:// link to an image Discord can reach", label)
+		}
+	}
+	return id, nil
 }

@@ -214,6 +214,9 @@ type Notify struct {
 	Webhooks []Webhook `json:"webhooks"`
 	// MinIntervalSeconds throttles identical repeated staff alerts.
 	MinIntervalSeconds int `json:"minIntervalSeconds"`
+	// Identity is the name and picture messages are posted under, so a
+	// webhook needs no setting up in Discord beyond copying its address.
+	Identity Identity `json:"identity"`
 
 	// Enabled, WebhookURL and Events are the single webhook used before
 	// destinations existed. They are read once on load and folded into
@@ -223,12 +226,27 @@ type Notify struct {
 	Events     []string `json:"events,omitempty"`
 }
 
+// Identity is how PZAdmin appears in Discord. Empty fields fall back: a
+// webhook's own identity to the global one, the global one to "PZAdmin" and
+// whatever picture the webhook has in Discord.
+type Identity struct {
+	Name string `json:"name,omitempty"`
+	// AvatarURL must be an image Discord can fetch from the internet.
+	AvatarURL string `json:"avatarUrl,omitempty"`
+}
+
 // Webhook is one notification destination.
 type Webhook struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
 	Enabled bool   `json:"enabled"`
 	URL     string `json:"url"`
+	// Server, when set, makes this that server's own channel: it covers
+	// only that server and is set up from the server's row on the Discord
+	// page. Messages default to the server's name.
+	Server string `json:"server,omitempty"`
+	// Identity overrides how messages to this webhook appear.
+	Identity Identity `json:"identity"`
 	// Audience is "staff", which gets every detail, or "players", which gets
 	// short announcements written for the people who play on the server.
 	Audience string   `json:"audience"`

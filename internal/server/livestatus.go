@@ -134,7 +134,9 @@ func (a *App) syncLiveStatus(ctx context.Context, board *liveBoard) {
 			if st.LastCheck.IsZero() && !st.Stopped {
 				continue
 			}
-			wrote, err := board.put(ctx, a.notify, h, s.ID, liveCardFor(s, st, h.ListPlayers))
+			card := liveCardFor(s, st, h.ListPlayers)
+			card.Username, card.AvatarURL = postedAs(cfg, h)
+			wrote, err := board.put(ctx, a.notify, h, s.ID, card)
 			changed = changed || wrote
 			if err != nil {
 				board.fail(h, err)
@@ -324,9 +326,11 @@ func discordTime(t time.Time) string {
 	return fmt.Sprintf("<t:%d:R>", t.Unix())
 }
 
-// cardHash identifies what a card says, ignoring when it was said.
+// cardHash identifies what a card says, ignoring when it was said and who
+// it is posted as, which an edit cannot change anyway.
 func cardHash(c notify.Card) string {
 	c.At = time.Time{}
+	c.Username, c.AvatarURL = "", ""
 	b, _ := json.Marshal(c)
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:8])

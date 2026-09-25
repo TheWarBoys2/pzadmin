@@ -283,9 +283,11 @@ func (a *App) applyNotifyConfig(cfg config.Config) {
 		if !w.Enabled || w.URL == "" {
 			continue
 		}
+		name, avatar := postedAs(cfg, w)
 		dests = append(dests, notify.Destination{
 			ID: w.ID, URL: w.URL, Audience: w.Audience,
 			Events: w.Events, Servers: w.Servers, Messages: w.Messages,
+			Username: name, AvatarURL: avatar,
 		})
 	}
 	a.notify.Configure(notify.Config{

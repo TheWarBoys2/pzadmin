@@ -12,8 +12,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/TheWarBoys2/pzadmin/internal/config"
+	"github.com/TheWarBoys2/pzadmin/internal/store"
 )
 
 func TestWebhookSettingsRoundTripWithoutLeakingAddresses(t *testing.T) {
@@ -441,6 +443,135 @@ func TestPublicInfoIsSavedAndShownOnTheCard(t *testing.T) {
 		rec := c.do(http.MethodPost, "/api/server/save", map[string]any{"id": "a", "name": "Riverside", "public": bad})
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("%v should be refused, got %d", bad, rec.Code)
+		}
+	}
+}
+
+func TestPostedAs(t *testing.T) {
+	cfg := config.Config{Servers: []config.Server{{ID: "a", Name: "Riverside"}}}
+	check := func(h config.Webhook, wantName, wantAvatar string) {
+		t.Helper()
+		name, avatar := postedAs(cfg, h)
+		if name != wantName || avatar != wantAvatar {
+			t.Errorf("got %q %q, want %q %q", name, avatar, wantName, wantAvatar)
+		}
+	}
+	check(config.Webhook{}, "PZAdmin", "")
+	check(config.Webhook{Server: "a"}, "Riverside", "")
+	cfg.Notify.Identity = config.Identity{Name: "Knox Radio", AvatarURL: "https://cdn.example/radio.png"}
+	check(config.Webhook{}, "Knox Radio", "https://cdn.example/radio.png")
+	check(config.Webhook{Server: "a"}, "Riverside", "https://cdn.example/radio.png")
+	check(config.Webhook{Server: "a", Identity: config.Identity{Name: "Riverside Radio", AvatarURL: "https://cdn.example/r.png"}},
+		"Riverside Radio", "https://cdn.example/r.png")
+}
+
+func TestServerChannelsAndIdentityAreValidated(t *testing.T) {
+	app, handler, _ := newTestApp(t)
+	c := &client{t: t, handler: handler}
+	c.setup("rick", "a-long-enough-password")
+	seedServer(t, app, `{"id":"a","name":"Riverside","enabled":true}`)
+	seedServer(t, app, `{"id":"b","name":"Louisville","enabled":true}`)
+	save := func(notify map[string]any) *httptest.ResponseRecorder {
+		notify["minIntervalSeconds"] = 300
+		return c.do(http.MethodPost, "/api/settings", map[string]any{"notify": notify})
+	}
+	own := func(server string, extra map[string]any) map[string]any {
+		h := map[string]any{"enabled": true, "url": "https://discord.com/api/webhooks/1/" + server,
+			"server": server, "events": []string{"server.up"}, "servers": []string{"a", "b"}}
+		for k, v := range extra {
+			h[k] = v
+		}
+		return h
+	}
+
+	rec := save(map[string]any{
+		"identity": map[string]any{"name": " Knox Radio ", "avatarUrl": "https://cdn.example/radio.png"},
+		"webhooks": []any{own("a", nil), own("gone", nil)},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save failed: %s", rec.Body.String())
+	}
+	n := app.cfg.Get().Notify
+	if n.Identity.Name != "Knox Radio" {
+		t.Fatalf("identity not saved: %#v", n.Identity)
+	}
+	if len(n.Webhooks) != 1 {
+		t.Fatalf("a channel for a server that does not exist should be dropped: %#v", n.Webhooks)
+	}
+	h := n.Webhooks[0]
+	if h.Name != "Riverside" || h.Audience != config.AudiencePlayers || len(h.Servers) != 1 || h.Servers[0] != "a" {
+		t.Fatalf("a server's channel should be named after it and cover only it: %#v", h)
+	}
+
+	// A throttle-only save keeps the identity.
+	if rec := c.do(http.MethodPost, "/api/settings", map[string]any{"notify": map[string]any{"minIntervalSeconds": 60}}); rec.Code != http.StatusOK {
+		t.Fatal(rec.Body.String())
+	}
+	if app.cfg.Get().Notify.Identity.Name != "Knox Radio" {
+		t.Fatal("a throttle-only save should keep the identity")
+	}
+
+	for name, notify := range map[string]map[string]any{
+		"two channels for one server": {"webhooks": []any{own("a", nil), own("a", nil)}},
+		"banned global name":          {"identity": map[string]any{"name": "Discord Bot"}, "webhooks": []any{}},
+		"banned channel name":         {"webhooks": []any{own("a", map[string]any{"identity": map[string]any{"name": "clyde"}})}},
+		"picture not https": {"webhooks": []any{own("a", map[string]any{
+			"identity": map[string]any{"avatarUrl": "http://cdn.example/x.png"}})}},
+	} {
+		if rec := save(notify); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: expected 400, got %d %s", name, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// Every message a server's channel gets is posted under the server's name,
+// including its status message.
+func TestServerChannelPostsUnderTheServersName(t *testing.T) {
+	app, _, dir := newTestApp(t)
+	var mu sync.Mutex
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var m map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&m)
+		mu.Lock()
+		bodies = append(bodies, m)
+		mu.Unlock()
+		_, _ = io.WriteString(w, `{"id":"9"}`)
+	}))
+	defer srv.Close()
+	seedServer(t, app, `{"id":"a","name":"Riverside","enabled":true}`)
+	if _, err := app.cfg.Update(func(c *config.Config) error {
+		c.Notify.Identity.AvatarURL = "https://cdn.example/logo.png"
+		c.Notify.Webhooks = []config.Webhook{{ID: "r", Name: "Riverside", Enabled: true, URL: srv.URL + "/api/webhooks/1/x",
+			Server: "a", Servers: []string{"a"}, Audience: config.AudiencePlayers,
+			Events: []string{"server.up"}, LiveStatus: true}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app.applyNotifyConfig(app.cfg.Get())
+	app.updateStatus("a", func(st *Status) { st.Online, st.LastCheck = true, TimeNow() })
+	app.syncLiveStatus(context.Background(), loadLiveBoard(filepath.Join(dir, "livestatus.json")))
+	app.event(store.Event{Kind: "server.up", Severity: store.SevSuccess, ServerID: "a", Server: "Riverside"})
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		mu.Lock()
+		n := len(bodies)
+		mu.Unlock()
+		if n >= 2 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) != 2 {
+		t.Fatalf("expected a status message and an announcement, got %d", len(bodies))
+	}
+	for _, b := range bodies {
+		if b["username"] != "Riverside" || b["avatar_url"] != "https://cdn.example/logo.png" {
+			t.Fatalf("posted as %v / %v", b["username"], b["avatar_url"])
 		}
 	}
 }

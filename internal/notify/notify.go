@@ -71,6 +71,21 @@ type Destination struct {
 	Servers []string
 	// Messages overrides player wording by event kind.
 	Messages map[string]string
+	// Username and AvatarURL are what the message is posted as. Empty means
+	// whatever the webhook is set to in Discord.
+	Username  string
+	AvatarURL string
+}
+
+// identify sets who a message is posted as.
+func (d Destination) identify(payload map[string]any) map[string]any {
+	if d.Username != "" {
+		payload["username"] = d.Username
+	}
+	if d.AvatarURL != "" {
+		payload["avatar_url"] = d.AvatarURL
+	}
+	return payload
 }
 
 // Config is the notifier's runtime configuration, refreshed on every send so
@@ -275,15 +290,15 @@ func (n *Notifier) Test(d Destination) error {
 		return fmt.Errorf("the webhook address must start with http:// or https://")
 	}
 	if d.Audience == Players {
-		return n.post(d.URL, map[string]any{
+		return n.post(d.URL, d.identify(map[string]any{
 			"content":          "👋 This channel will get server announcements from PZAdmin.",
 			"allowed_mentions": map[string]any{"parse": []string{}},
-		})
+		}))
 	}
-	return n.post(d.URL, staffPayload(Message{
+	return n.post(d.URL, d.identify(staffPayload(Message{
 		Kind: "test", Title: "PZAdmin test notification",
 		Body: "If you can read this, notifications are working.", Severity: "success", At: time.Now(),
-	}))
+	})))
 }
 
 func (n *Notifier) deliver(d delivery) {
@@ -293,6 +308,7 @@ func (n *Notifier) deliver(d delivery) {
 	} else {
 		payload = staffPayload(d.msg)
 	}
+	payload = d.dest.identify(payload)
 	// One retry: most failures are a momentary network blip.
 	if err := n.post(d.dest.URL, payload); err != nil {
 		time.Sleep(3 * time.Second)
@@ -378,10 +394,10 @@ func (n *Notifier) Announce(ctx context.Context, d Destination, text string) err
 	if !strings.HasPrefix(d.URL, "http") {
 		return fmt.Errorf("the webhook has no address")
 	}
-	resp, err := n.do(ctx, http.MethodPost, d.URL, map[string]any{
+	resp, err := n.do(ctx, http.MethodPost, d.URL, d.identify(map[string]any{
 		"content":          truncate(text, 2000),
 		"allowed_mentions": map[string]any{"parse": []string{"roles"}},
-	})
+	}))
 	if err != nil {
 		return err
 	}
@@ -476,6 +492,10 @@ type Card struct {
 	Colour      int
 	Footer      string
 	At          time.Time
+	// Username and AvatarURL are who the card is posted as. Discord fixes
+	// them when the message is created; edits cannot change them.
+	Username  string
+	AvatarURL string
 }
 
 func (c Card) payload() map[string]any {
@@ -531,7 +551,9 @@ func (n *Notifier) PostCard(ctx context.Context, webhook string, c Card) (string
 	// Without wait=true Discord answers 204 and never says what it created.
 	q.Set("wait", "true")
 	u.RawQuery = q.Encode()
-	resp, err := n.do(ctx, http.MethodPost, u.String(), c.payload())
+	payload := c.payload()
+	Destination{Username: c.Username, AvatarURL: c.AvatarURL}.identify(payload)
+	resp, err := n.do(ctx, http.MethodPost, u.String(), payload)
 	if err != nil {
 		return "", err
 	}

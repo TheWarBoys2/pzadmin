@@ -85,7 +85,7 @@ const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8')
   'renderModIssues, confirmModChange, modIssueTone, ' +
   'stackStatusPanel, stackServersPanel, stackCreatePanel, paintPlan, buildControl, StackState, ' +
   'newWizard, applyWizardMods, settingsEditor, wizardRequest, ' +
-  'commandAvailability, isStopped, powerButton, editWebhook, viewDiscord };\n';
+  'commandAvailability, isStopped, powerButton, editWebhook, viewDiscord, editServerChannel };\n';
 
 vm.createContext(sandbox);
 vm.runInContext(source, sandbox, { filename: 'app.js' });
@@ -98,7 +98,7 @@ const {
   renderModIssues, confirmModChange, modIssueTone,
   stackStatusPanel, stackServersPanel, stackCreatePanel, paintPlan, buildControl, StackState,
   newWizard, applyWizardMods, settingsEditor, wizardRequest,
-  commandAvailability, isStopped, powerButton, editWebhook, viewDiscord,
+  commandAvailability, isStopped, powerButton, editWebhook, viewDiscord, editServerChannel,
 } = sandbox.__exports__;
 
 // The views read from S, so give it the shape a loaded page would have.
@@ -895,34 +895,62 @@ test('a saved webhook address stays hidden and is kept on save', () => withDisco
   }
 }));
 
-test('a new player channel starts with restarts, back online and a status message', () => withDiscordState([], () => {
-  closeAllModals();
-  editWebhook(-1, 'players');
-  const modal = overlay().children[overlay().children.length - 1];
-  const labels = modal.querySelectorAll('label.check')
-    .filter((l) => l.children[0] && l.children[0].checked)
-    .map((l) => l.textContent);
-  assert.ok(labels.includes('The server goes down for a restart'), labels.join(', '));
-  assert.ok(labels.includes('The server is back online'), labels.join(', '));
-  assert.ok(!labels.includes('The server goes down unexpectedly'), labels.join(', '));
-  assert.ok(labels.some((t) => t.startsWith('Post a status message')), labels.join(', '));
+// Setting up a server's own channel is one paste: it is scoped to that
+// server, named after it, and starts with the useful announcements on.
+test('a server channel starts scoped, named and with a status message', () => withDiscordState([], async () => {
+  const sent = [];
+  const fetchBefore = sandbox.fetch;
+  sandbox.fetch = (path, opts) => {
+    if (opts.method === 'POST') {
+      sent.push(JSON.parse(opts.body));
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{"ok":true}') });
+    }
+    return Promise.reject(new Error('no state in tests'));
+  };
+  try {
+    closeAllModals();
+    editServerChannel(S.state.servers[0]);
+    const modal = overlay().children[overlay().children.length - 1];
+    const labels = modal.querySelectorAll('label.check')
+      .filter((l) => l.children[0] && l.children[0].checked)
+      .map((l) => l.textContent);
+    assert.ok(labels.includes('The server goes down for a restart'), labels.join(', '));
+    assert.ok(labels.includes('The server is back online'), labels.join(', '));
+    assert.ok(labels.some((t) => t.startsWith('Post a status message')), labels.join(', '));
+    assert.ok(!labels.includes('Every server'), 'a server channel has no server picker');
+
+    const address = modal.querySelectorAll('input').find((i) => (i.attributes.placeholder || '').startsWith('https://discord'));
+    address.value = 'https://discord.com/api/webhooks/1/x';
+    address.dispatch('input');
+    modal.querySelectorAll('button').find((b) => b.textContent === 'Save').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const hook = sent[0].notify.webhooks[0];
+    assert.strictEqual(hook.server, 'a');
+    assertList(hook.servers, ['a']);
+    assert.strictEqual(hook.name, 'Riverside');
+    assert.strictEqual(hook.url, 'https://discord.com/api/webhooks/1/x');
+  } finally {
+    sandbox.fetch = fetchBefore;
+  }
 }));
 
-// Per-server channels: the page says which channel each server posts to.
+// The page is organised by server: each says where it is announced.
 test('the Discord page shows where each server is announced', () => withDiscordState([
-  { id: 'r', name: 'riverside-chat', enabled: true, url: '__pzadmin_unchanged__', audience: 'players',
-    events: ['server.up'], servers: ['a'], liveStatus: true },
+  { id: 'r', name: 'Riverside', enabled: true, url: '__pzadmin_unchanged__', audience: 'players',
+    events: ['server.up'], servers: ['a'], server: 'a', liveStatus: true },
   { id: 's', name: 'staff', enabled: true, url: '__pzadmin_unchanged__', audience: 'staff', events: ['server.down'], servers: [] },
 ], () => {
   const main = el('main');
   viewDiscord(main);
-  const text = main.textContent;
-  assert.ok(text.includes('riverside-chat'), text);
-  assert.ok(text.includes('play.example.com:16261'), 'the join address should be shown: ' + text);
   const rows = main.querySelectorAll('.list-row').map((r) => r.textContent);
+  const riverside = rows.find((r) => r.startsWith('Riverside'));
+  assert.ok(riverside.includes('Own channel'), riverside);
+  assert.ok(riverside.includes('play.example.com:16261'), 'the join address should be shown: ' + riverside);
   const louisville = rows.find((r) => r.startsWith('Louisville'));
-  assert.ok(louisville.includes('Players hear in: nowhere'), louisville);
-  assert.ok(louisville.includes('Staff hear in: staff'), louisville);
+  assert.ok(louisville.includes('no channel yet') && louisville.includes('Set up channel'), louisville);
+  assert.ok(louisville.includes('Staff alerts in: staff'), louisville);
+  // A server's own channel is listed with its server, not among the shared ones.
+  assert.strictEqual(rows.filter((r) => r.startsWith('Riverside')).length, 1, rows.join(' / '));
 }));
 
 test('a Discord step names its channel', () => withDiscordState([
