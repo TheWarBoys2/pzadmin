@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Discord
+- Any number of webhooks, each written for staff or for players, with its own
+  events and servers. An existing webhook carries over as a staff webhook.
+- Player announcements in plain words: when a server actually goes down for a
+  restart (and why: scheduled, mod updates, not responding) and when it is
+  back. Not every countdown warning. The wording can be changed per event,
+  including a role ping.
+- A live status message per server, edited in place as it goes online,
+  restarts or goes down, optionally listing who is playing.
+- Stopping and starting a server are now their own events instead of being
+  reported as restarts, and a mod-update restart is announced once, not twice.
+- Alerts can no longer ping @everyone through a player's name.
+- The settings form knows Project Zomboid's own Discord bot keys
+  (`DiscordEnable`, `DiscordToken`, and the Build 42 chat, log and command
+  channels). The bot token is treated as a secret, like the RCON password.
+
 ## 1.0.0
 
 First public release.

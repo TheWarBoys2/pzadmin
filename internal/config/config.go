@@ -192,12 +192,47 @@ var StepKinds = []string{"save", "broadcast", "restart", "backup", "command", "a
 
 // Notify configures outbound webhooks (Discord-compatible).
 type Notify struct {
-	Enabled    bool     `json:"enabled"`
-	WebhookURL string   `json:"webhookUrl"`
-	Events     []string `json:"events"`
-	// MinIntervalSeconds throttles identical repeated notifications.
+	// Webhooks are the destinations. Each has its own audience, events and
+	// servers, so staff alerts and player announcements can go to different
+	// channels.
+	Webhooks []Webhook `json:"webhooks"`
+	// MinIntervalSeconds throttles identical repeated staff alerts.
 	MinIntervalSeconds int `json:"minIntervalSeconds"`
+
+	// Enabled, WebhookURL and Events are the single webhook used before
+	// destinations existed. They are read once on load and folded into
+	// Webhooks, then left empty.
+	Enabled    bool     `json:"enabled,omitempty"`
+	WebhookURL string   `json:"webhookUrl,omitempty"`
+	Events     []string `json:"events,omitempty"`
 }
+
+// Webhook is one notification destination.
+type Webhook struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
+	URL     string `json:"url"`
+	// Audience is "staff", which gets every detail, or "players", which gets
+	// short announcements written for the people who play on the server.
+	Audience string   `json:"audience"`
+	Events   []string `json:"events"`
+	// Servers limits the webhook to these server IDs. Empty means every server.
+	Servers []string `json:"servers"`
+	// Messages overrides the wording of player announcements, by event.
+	Messages map[string]string `json:"messages,omitempty"`
+	// LiveStatus keeps one message per server in the channel and edits it
+	// as the server changes, instead of posting a new one. Discord only.
+	LiveStatus bool `json:"liveStatus,omitempty"`
+	// ListPlayers adds who is online to the live status message.
+	ListPlayers bool `json:"listPlayers,omitempty"`
+}
+
+// Webhook audiences.
+const (
+	AudienceStaff   = "staff"
+	AudiencePlayers = "players"
+)
 
 // Metrics configures the Prometheus endpoint.
 type Metrics struct {
@@ -213,12 +248,24 @@ type Interface struct {
 	RetainDays int `json:"retainDays"`
 }
 
-// NotifyEvents enumerates every notifiable event key.
+// NotifyEvents enumerates every event a staff webhook can be sent.
 var NotifyEvents = []string{
 	"server.down", "server.up", "server.recovered", "server.restart",
+	"server.stop", "server.start",
 	"player.join", "player.leave", "mods.update", "backup.done", "backup.failed",
 	"admin.action",
 }
+
+// PlayerEvents enumerates the events a player webhook can be sent. The rest
+// are staff business.
+var PlayerEvents = []string{"server.restart", "server.up", "server.down", "server.stop", "mods.update"}
+
+// DefaultStaffEvents is what a new staff webhook is sent.
+var DefaultStaffEvents = []string{"server.down", "server.up", "server.recovered", "mods.update", "backup.failed"}
+
+// DefaultPlayerEvents is what a new player webhook is sent: when a server
+// actually goes down for a restart and when it is back, not every warning.
+var DefaultPlayerEvents = []string{"server.restart", "server.up"}
 
 // Defaults returns a Config suitable for a brand new installation.
 func Defaults() Config {
@@ -230,7 +277,7 @@ func Defaults() Config {
 		Servers:      []Server{},
 		Schedules:    []Task{},
 		Notify: Notify{
-			Events:             []string{"server.down", "server.up", "server.recovered", "mods.update", "backup.failed"},
+			Webhooks:           []Webhook{},
 			MinIntervalSeconds: 300,
 		},
 		Metrics:   Metrics{Enabled: true},
@@ -301,9 +348,7 @@ func Normalise(c Config) Config {
 	if c.Schedules == nil {
 		c.Schedules = []Task{}
 	}
-	if c.Notify.Events == nil {
-		c.Notify.Events = d.Notify.Events
-	}
+	c.Notify = normaliseNotify(c.Notify)
 	for i := range c.Schedules {
 		t := &c.Schedules[i]
 		// Fold a pre-multi-step task into a single step so nothing an operator
@@ -344,6 +389,59 @@ func Normalise(c Config) Config {
 	}
 	c.Version = 8
 	return c
+}
+
+// normaliseNotify folds the old single webhook into the list and fills in
+// what each webhook needs to be delivered.
+func normaliseNotify(n Notify) Notify {
+	if n.WebhookURL != "" && len(n.Webhooks) == 0 {
+		events := n.Events
+		if events == nil {
+			events = DefaultStaffEvents
+		}
+		// server.restart used to cover stops and starts as well, so anyone
+		// who asked for restarts keeps hearing about them.
+		if contains(events, "server.restart") {
+			for _, k := range []string{"server.stop", "server.start"} {
+				if !contains(events, k) {
+					events = append(events, k)
+				}
+			}
+		}
+		n.Webhooks = []Webhook{{
+			ID: "alerts", Name: "Alerts", Enabled: n.Enabled, URL: n.WebhookURL,
+			Audience: AudienceStaff, Events: events,
+		}}
+	}
+	n.Enabled, n.WebhookURL, n.Events = false, "", nil
+	if n.Webhooks == nil {
+		n.Webhooks = []Webhook{}
+	}
+	for i := range n.Webhooks {
+		w := &n.Webhooks[i]
+		if w.ID == "" {
+			w.ID = RandomToken(6)
+		}
+		if w.Audience != AudiencePlayers {
+			w.Audience = AudienceStaff
+		}
+		if w.Events == nil {
+			w.Events = []string{}
+		}
+		if w.Servers == nil {
+			w.Servers = []string{}
+		}
+	}
+	return n
+}
+
+func contains(list []string, v string) bool {
+	for _, s := range list {
+		if s == v {
+			return true
+		}
+	}
+	return false
 }
 
 // Get returns a deep copy of the current configuration.
@@ -473,8 +571,13 @@ func Redact(c Config) Config {
 			out.Servers[i].RCONPassword = Redacted
 		}
 	}
-	if out.Notify.WebhookURL != "" {
-		out.Notify.WebhookURL = Redacted
+	// Normalise folds the old field away, but a config that has not been
+	// through it must not leak it either.
+	out.Notify.WebhookURL = ""
+	for i := range out.Notify.Webhooks {
+		if out.Notify.Webhooks[i].URL != "" {
+			out.Notify.Webhooks[i].URL = Redacted
+		}
 	}
 	if out.Metrics.Token != "" {
 		out.Metrics.Token = Redacted
@@ -489,7 +592,9 @@ func Export(c Config) Config {
 	for i := range out.Servers {
 		out.Servers[i].RCONPassword = ""
 	}
-	out.Notify.WebhookURL = ""
+	for i := range out.Notify.Webhooks {
+		out.Notify.Webhooks[i].URL = ""
+	}
 	out.Metrics.Token = ""
 	out.Username = ""
 	out.SetupComplete = false
@@ -508,9 +613,7 @@ func Unredact(next *Config, prev Config) {
 			next.Servers[i].RCONPassword = byID[next.Servers[i].ID].RCONPassword
 		}
 	}
-	if next.Notify.WebhookURL == Redacted {
-		next.Notify.WebhookURL = prev.Notify.WebhookURL
-	}
+	UnredactWebhooks(next.Notify.Webhooks, prev.Notify.Webhooks)
 	if next.Metrics.Token == Redacted {
 		next.Metrics.Token = prev.Metrics.Token
 	}
@@ -519,6 +622,21 @@ func Unredact(next *Config, prev Config) {
 	next.PasswordIter = prev.PasswordIter
 	next.Username = prev.Username
 	next.SetupComplete = prev.SetupComplete
+}
+
+// UnredactWebhooks restores each webhook address the browser sent back as the
+// placeholder, matching on ID. A placeholder with no match becomes empty
+// rather than being saved as an address.
+func UnredactWebhooks(next, prev []Webhook) {
+	byID := map[string]string{}
+	for _, w := range prev {
+		byID[w.ID] = w.URL
+	}
+	for i := range next {
+		if next[i].URL == Redacted {
+			next[i].URL = byID[next[i].ID]
+		}
+	}
 }
 
 // --- password hashing -------------------------------------------------------

@@ -875,3 +875,10 @@ details.setting-group > summary {
 }
 .setting.changed { background: var(--sunken); }
 .mod-list { margin-top: 12px; }
+
+/* ------------------------------------------------------------- webhooks */
+.webhook-list { display: grid; gap: 14px; }
+.webhook-card > legend { color: var(--bone); }
+.check-grid { display: grid; gap: 7px; }
+.webhook-wording > summary { cursor: pointer; font-size: 12.5px; color: var(--dust); margin-bottom: 10px; }
+.webhook-wording .field textarea { min-height: 54px; }

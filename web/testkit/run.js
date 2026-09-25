@@ -85,7 +85,7 @@ const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8')
   'renderModIssues, confirmModChange, modIssueTone, ' +
   'stackStatusPanel, stackServersPanel, stackCreatePanel, paintPlan, buildControl, StackState, ' +
   'newWizard, applyWizardMods, settingsEditor, wizardRequest, ' +
-  'commandAvailability, isStopped, powerButton };\n';
+  'commandAvailability, isStopped, powerButton, settingsNotify };\n';
 
 vm.createContext(sandbox);
 vm.runInContext(source, sandbox, { filename: 'app.js' });
@@ -98,7 +98,7 @@ const {
   renderModIssues, confirmModChange, modIssueTone,
   stackStatusPanel, stackServersPanel, stackCreatePanel, paintPlan, buildControl, StackState,
   newWizard, applyWizardMods, settingsEditor, wizardRequest,
-  commandAvailability, isStopped, powerButton,
+  commandAvailability, isStopped, powerButton, settingsNotify,
 } = sandbox.__exports__;
 
 // The views read from S, so give it the shape a loaded page would have.
@@ -834,6 +834,74 @@ test('Start is offered for a stopped server and Stop for a running one', () => {
   assert.strictEqual(powerButton(server, { stopped: true }, 'btn').textContent, 'Start');
   assert.strictEqual(powerButton(server, { online: true }, 'btn').textContent, 'Stop');
   assert.strictEqual(powerButton({ id: 'x', name: 'X' }, { online: true }, 'btn'), null);
+});
+
+// --- notifications ----------------------------------------------------------
+
+// A saved webhook address is never shown, and saving the form without
+// touching it must send the placeholder back so the server keeps it.
+test('a saved webhook address stays hidden and is kept on save', async () => {
+  const REDACTED = '__pzadmin_unchanged__';
+  const saved = S.state;
+  S.state = Object.assign({}, saved, {
+    servers: [{ id: 'a', name: 'Riverside' }],
+    notifyOptions: {
+      staffEvents: ['server.down', 'server.up'], playerEvents: ['server.restart', 'server.up'],
+      defaultStaffEvents: ['server.down'], defaultPlayerEvents: ['server.restart', 'server.up'],
+      playerTemplates: { 'server.restart': '{server} restarting', 'server.up': '{server} is back' },
+    },
+  });
+  const sent = [];
+  const fetchBefore = sandbox.fetch;
+  sandbox.fetch = (path, opts) => {
+    if (opts.method === 'POST') {
+      sent.push({ path, body: JSON.parse(opts.body) });
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{"ok":true}') });
+    }
+    return Promise.reject(new Error('no state in tests'));
+  };
+  try {
+    const panel = settingsNotify({ notify: { minIntervalSeconds: 300, webhooks: [{
+      id: 'p', name: 'Players', enabled: true, url: REDACTED, audience: 'players',
+      events: ['server.restart'], servers: [], liveStatus: true,
+    }] } });
+    const inputs = panel.querySelectorAll('input');
+    assert.ok(!inputs.some((i) => i.value === REDACTED), 'the placeholder must not be shown as an address');
+
+    const save = panel.querySelectorAll('button').find((b) => b.textContent === 'Save');
+    save.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.strictEqual(sent.length, 1, 'save should post once');
+    const hook = sent[0].body.notify.webhooks[0];
+    assert.strictEqual(hook.url, REDACTED, 'an untouched address is sent back as the placeholder');
+    assert.strictEqual(hook.id, 'p');
+    assert.strictEqual(hook.liveStatus, true);
+    assertList(hook.events, ['server.restart']);
+  } finally {
+    sandbox.fetch = fetchBefore;
+    S.state = saved;
+  }
+});
+
+test('adding player announcements starts with restarts, back online and live status', () => {
+  const saved = S.state;
+  S.state = Object.assign({}, saved, { notifyOptions: {
+    staffEvents: ['server.down'], playerEvents: ['server.restart', 'server.up', 'server.down'],
+    defaultStaffEvents: ['server.down'], defaultPlayerEvents: ['server.restart', 'server.up'], playerTemplates: {},
+  } });
+  try {
+    const panel = settingsNotify({ notify: { webhooks: [] } });
+    panel.querySelectorAll('button').find((b) => b.textContent === '+ Player announcements').click();
+    const labels = panel.querySelectorAll('label.check')
+      .filter((l) => l.children[0] && l.children[0].checked)
+      .map((l) => l.textContent);
+    assert.ok(labels.includes('The server goes down for a restart'), labels.join(', '));
+    assert.ok(labels.includes('The server is back online'), labels.join(', '));
+    assert.ok(!labels.includes('The server goes down unexpectedly'), labels.join(', '));
+    assert.ok(labels.some((t) => t.startsWith('Keep a live status message')), labels.join(', '));
+  } finally {
+    S.state = saved;
+  }
 });
 
 // --- report -----------------------------------------------------------------

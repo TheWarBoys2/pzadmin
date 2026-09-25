@@ -14,6 +14,7 @@ import (
 
 	"github.com/TheWarBoys2/pzadmin/internal/config"
 	"github.com/TheWarBoys2/pzadmin/internal/cronx"
+	"github.com/TheWarBoys2/pzadmin/internal/notify"
 	"github.com/TheWarBoys2/pzadmin/internal/pz"
 	"github.com/TheWarBoys2/pzadmin/internal/store"
 )
@@ -265,6 +266,13 @@ func (a *App) snapshot() map[string]any {
 		"version":    Version,
 		"serverTime": time.Now().Format(time.RFC3339),
 		"timezone":   cfg.Timezone,
+		"notifyOptions": map[string]any{
+			"staffEvents":         config.NotifyEvents,
+			"playerEvents":        config.PlayerEvents,
+			"defaultStaffEvents":  config.DefaultStaffEvents,
+			"defaultPlayerEvents": config.DefaultPlayerEvents,
+			"playerTemplates":     notify.PlayerTemplates,
+		},
 	}
 }
 
@@ -769,7 +777,7 @@ func (a *App) handleLifecycle(w http.ResponseWriter, r *http.Request) {
 			st.ContainerState = "exited"
 		})
 		a.dropRCON(srv.ID)
-		a.event(store.Event{Kind: "server.restart", Severity: store.SevWarn, Source: "ui", Actor: actor(r),
+		a.event(store.Event{Kind: "server.stop", Severity: store.SevWarn, Source: "ui", Actor: actor(r),
 			ServerID: srv.ID, Server: srv.Name, Message: srv.Name + " stopped", Detail: reason})
 		ok(w, map[string]any{"message": "Stopped."})
 
@@ -809,7 +817,7 @@ func (a *App) handleLifecycle(w http.ResponseWriter, r *http.Request) {
 			detail += ". Note: " + drift
 			msg = "Started. Note: " + drift + "."
 		}
-		a.event(store.Event{Kind: "server.restart", Severity: store.SevInfo, Source: "ui", Actor: actor(r),
+		a.event(store.Event{Kind: "server.start", Severity: store.SevInfo, Source: "ui", Actor: actor(r),
 			ServerID: srv.ID, Server: srv.Name, Message: srv.Name + " started", Detail: detail})
 		ok(w, map[string]any{"message": msg, "drift": drift})
 
@@ -1319,9 +1327,16 @@ func (a *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if p.Notify != nil {
 			n := *p.Notify
-			if n.WebhookURL == config.Redacted {
-				n.WebhookURL = prev.Notify.WebhookURL
+			// A form that only changes the throttle leaves the webhooks alone.
+			if n.Webhooks == nil {
+				n.Webhooks = prev.Notify.Webhooks
 			}
+			hooks, err := validateWebhooks(n.Webhooks, prev.Notify.Webhooks, c.Servers)
+			if err != nil {
+				return err
+			}
+			n.Webhooks = hooks
+			n.Enabled, n.WebhookURL, n.Events = false, "", nil
 			c.Notify = n
 		}
 		if p.Metrics != nil {
@@ -1336,6 +1351,11 @@ func (a *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	})
+	var invalid *settingsError
+	if errors.As(err, &invalid) {
+		httpError(w, http.StatusBadRequest, invalid.Error())
+		return
+	}
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1349,20 +1369,29 @@ func (a *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleNotifyTest(w http.ResponseWriter, r *http.Request) {
 	var p struct {
-		URL string `json:"url"`
+		// ID names a saved webhook, whose address is used when URL is blank
+		// or the placeholder the browser was given instead of it.
+		ID       string `json:"id"`
+		URL      string `json:"url"`
+		Audience string `json:"audience"`
 	}
 	if !decodeJSON(w, r, &p) {
 		return
 	}
-	url := strings.TrimSpace(p.URL)
-	if url == "" || url == config.Redacted {
-		url = a.cfg.Get().Notify.WebhookURL
+	dest := notify.Destination{URL: strings.TrimSpace(p.URL), Audience: p.Audience}
+	if dest.URL == "" || dest.URL == config.Redacted {
+		dest.URL = ""
+		for _, h := range a.cfg.Get().Notify.Webhooks {
+			if p.ID != "" && h.ID == p.ID {
+				dest.URL = h.URL
+			}
+		}
 	}
-	if url == "" {
+	if dest.URL == "" {
 		httpError(w, http.StatusBadRequest, "enter a webhook address first")
 		return
 	}
-	if err := a.notify.Test(url); err != nil {
+	if err := a.notify.Test(dest); err != nil {
 		httpError(w, http.StatusBadGateway, "the webhook did not accept the message: "+err.Error())
 		return
 	}

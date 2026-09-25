@@ -237,11 +237,12 @@ func New(opts Options) (*App, error) {
 func (a *App) Start() {
 	a.rescan()
 	a.syncMonitors()
-	a.wg.Add(4)
+	a.wg.Add(5)
 	go a.discoveryLoop()
 	go a.schedulerLoop()
 	go a.housekeepingLoop()
 	go a.monitorSupervisor()
+	go a.liveStatusLoop()
 
 	a.event(store.Event{
 		Kind: "system.start", Severity: store.SevInfo, Source: "system",
@@ -277,25 +278,40 @@ func (a *App) Close() {
 }
 
 func (a *App) applyNotifyConfig(cfg config.Config) {
+	var dests []notify.Destination
+	for _, w := range cfg.Notify.Webhooks {
+		if !w.Enabled || w.URL == "" {
+			continue
+		}
+		dests = append(dests, notify.Destination{
+			ID: w.ID, URL: w.URL, Audience: w.Audience,
+			Events: w.Events, Servers: w.Servers, Messages: w.Messages,
+		})
+	}
 	a.notify.Configure(notify.Config{
-		Enabled:     cfg.Notify.Enabled,
-		URL:         cfg.Notify.WebhookURL,
-		Events:      cfg.Notify.Events,
-		MinInterval: time.Duration(cfg.Notify.MinIntervalSeconds) * time.Second,
+		Destinations: dests,
+		MinInterval:  time.Duration(cfg.Notify.MinIntervalSeconds) * time.Second,
 	})
 }
 
-// event records an event and mirrors it to the webhook.
+// event records an event and mirrors it to the webhooks.
 func (a *App) event(e store.Event) {
 	a.store.Append(e)
 	sev := string(e.Severity)
 	if sev == "" {
 		sev = "info"
 	}
-	a.notify.Send(notify.Message{
+	m := notify.Message{
 		Kind: e.Kind, Title: e.Message, Body: e.Detail,
-		Server: e.Server, Severity: sev, At: e.At,
-	})
+		Server: e.Server, ServerID: e.ServerID, Severity: sev, At: e.At,
+	}
+	if reason, ok := e.Meta["reason"].(string); ok {
+		m.Reason = reason
+	}
+	if minutes, ok := e.Meta["restartIn"].(int); ok {
+		m.Minutes = minutes
+	}
+	a.notify.Send(m)
 }
 
 // rconFor returns the pooled RCON client for a server, rebuilding it if the

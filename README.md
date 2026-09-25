@@ -39,7 +39,8 @@ image, one Compose stack per server, managed through [Arcane](https://getarcane.
 - Scheduled jobs made of steps, e.g. *announce → wait 1 min → save → back up → restart*
 - Mod update detection, with an optional countdown and automatic restart
 - Backups with retention, download and restore
-- Discord webhook alerts, Prometheus metrics and an audit log of every action
+- Discord: staff alerts, player announcements when a server restarts and comes back, and a live status message per server
+- Prometheus metrics and an audit log of every action
 
 ---
 
@@ -199,6 +200,27 @@ Everything is set in `docker-compose.yml`. Settings with a default can be left o
 Webhooks, metrics, backups and schedules are configured in the web interface.
 
 ---
+
+## Discord
+
+PZAdmin posts to Discord through webhooks. It doesn't need a bot. Add them under **Settings → Notifications**.
+Each webhook is written for one of two audiences:
+
+- **Staff alerts** get every event you tick, with full detail: outages, watchdog restarts, failed backups, admin actions.
+- **Player announcements** get short, plain messages for a public channel: when a server actually goes down for a
+  restart (and whether it was scheduled, for mod updates or because it stopped responding) and when it's back.
+  Countdown warnings stay in game. You can change the wording of each message and ping a role by writing
+  `<@&role ID>` into it.
+
+Tick **Keep a live status message** on a Discord webhook and PZAdmin keeps one message per server in that channel,
+edited as the server comes online, restarts or goes down. Pin it. If someone deletes it, a new one is posted. When
+PZAdmin itself stops, the message says it is no longer being updated.
+
+Project Zomboid also has its own Discord bot, which relays in-game chat. It's set in the server ini
+(`DiscordEnable`, `DiscordToken`, and on Build 42 `DiscordChatChannel`, `DiscordLogChannel` and
+`DiscordCommandChannel`), and the settings form has a Discord group for it. The two work side by side: the game's bot
+relays chat, and PZAdmin announces restarts. Anyone who can post in the command channel can run admin commands, so
+keep that channel to staff.
 
 ## Security
 

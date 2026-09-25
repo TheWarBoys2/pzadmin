@@ -3512,6 +3512,8 @@ const EVENT_FILTERS = [
   ['admin.console', 'Console commands'],
   ['server.down', 'Outages'],
   ['server.restart', 'Restarts'],
+  ['server.stop', 'Stops'],
+  ['server.start', 'Starts'],
   ['player.join', 'Joins'],
   ['player.chat', 'Chat'],
   ['backup.done', 'Backups'],
@@ -3804,39 +3806,82 @@ function settingsGeneral(cfg) {
       el('div', { class: 'form-actions' }, save))));
 }
 
+const STAFF_EVENT_LABELS = {
+  'server.down': 'A server stops answering',
+  'server.up': 'A server comes back',
+  'server.recovered': 'The watchdog restarts something',
+  'server.restart': 'A server restarts',
+  'server.stop': 'A server is stopped from PZAdmin',
+  'server.start': 'A server is started from PZAdmin',
+  'player.join': 'A player joins',
+  'player.leave': 'A player leaves',
+  'mods.update': 'Mods need updating',
+  'backup.done': 'A backup finishes',
+  'backup.failed': 'A backup fails',
+  'admin.action': 'An admin action is run',
+};
+
+const PLAYER_EVENT_LABELS = {
+  'server.restart': 'The server goes down for a restart',
+  'server.up': 'The server is back online',
+  'server.down': 'The server goes down unexpectedly',
+  'server.stop': 'The server is shut down',
+  'mods.update': 'Mods have updated and a restart is counting down',
+};
+
+const AUDIENCE_LABELS = { staff: 'Staff alerts', players: 'Player announcements' };
+
+// Secrets arrive from the server as this placeholder, and sending it back
+// means "keep what is stored".
+const REDACTED = '__pzadmin_unchanged__';
+
+function looksLikeDiscord(url) {
+  return /^https:\/\/(ptb\.|canary\.)?discord(app)?\.com\/api\/webhooks\//.test(url || '');
+}
+
 function settingsNotify(cfg) {
   const notify = cfg.notify || {};
-  const enabled = el('input', { type: 'checkbox', checked: notify.enabled });
-  const url = el('input', { type: 'text', value: notify.webhookUrl || '', placeholder: 'https://discord.com/api/webhooks/…' });
+  const options = S.state.notifyOptions || {};
+  // Each webhook is edited in place in this list and sent whole on save.
+  // Saved addresses arrive as a placeholder, which the server swaps back.
+  const hooks = (notify.webhooks || []).map((h) => ({
+    ...h, url: h.url === REDACTED ? '' : (h.url || ''), saved: h.url === REDACTED,
+    events: [...(h.events || [])], servers: [...(h.servers || [])], messages: { ...(h.messages || {}) },
+  }));
+  const list = el('div', { class: 'webhook-list' });
   const throttle = el('input', { type: 'number', min: '0', max: '3600', value: notify.minIntervalSeconds || 300 });
-  const boxes = {};
-  const chosen = new Set(notify.events || []);
+  const save = el('button', { class: 'btn primary', type: 'button', text: 'Save' });
 
-  const eventLabels = {
-    'server.down': 'A server stops answering',
-    'server.up': 'A server comes back',
-    'server.recovered': 'The watchdog restarts something',
-    'server.restart': 'A restart happens',
-    'player.join': 'A player joins',
-    'player.leave': 'A player leaves',
-    'mods.update': 'Mods need updating',
-    'backup.done': 'A backup finishes',
-    'backup.failed': 'A backup fails',
-    'admin.action': 'An admin action is run',
+  const draw = () => {
+    clear(list);
+    if (!hooks.length) {
+      list.append(el('p', { class: 'muted', text: 'No webhooks yet. Add one for your staff, your players, or both.' }));
+    }
+    hooks.forEach((hook, i) => list.append(webhookCard(hook, options, () => { hooks.splice(i, 1); draw(); })));
   };
 
-  const save = el('button', { class: 'btn primary', type: 'button', text: 'Save' });
-  const test = el('button', { class: 'btn', type: 'button', text: 'Send a test' });
+  const add = (audience) => {
+    hooks.push({
+      id: '', name: AUDIENCE_LABELS[audience], enabled: true, url: '', audience,
+      events: [...((audience === 'players' ? options.defaultPlayerEvents : options.defaultStaffEvents) || [])],
+      servers: [], messages: {}, liveStatus: audience === 'players', listPlayers: false,
+    });
+    draw();
+  };
 
   save.addEventListener('click', async () => {
     save.disabled = true;
     try {
       await api.post('/api/settings', {
         notify: {
-          enabled: enabled.checked,
-          webhookUrl: url.value.trim(),
-          events: Object.keys(boxes).filter((k) => boxes[k].checked),
           minIntervalSeconds: parseInt(throttle.value, 10) || 0,
+          webhooks: hooks.map((h) => ({
+            id: h.id, name: (h.name || '').trim(), enabled: h.enabled, audience: h.audience,
+            url: h.url.trim() || (h.saved ? REDACTED : ''),
+            events: h.events, servers: h.servers,
+            messages: h.audience === 'players' ? h.messages : {},
+            liveStatus: h.liveStatus, listPlayers: h.liveStatus && h.listPlayers,
+          })),
         },
       });
       toast('Notification settings saved.', 'good');
@@ -3844,31 +3889,143 @@ function settingsNotify(cfg) {
     } catch (err) { toast(err.message, 'bad'); save.disabled = false; }
   });
 
+  draw();
+  return el('div', { class: 'panel' },
+    el('div', { class: 'panel-head' }, el('h3', { text: 'Notifications' })),
+    el('div', { class: 'panel-body' }, el('div', { class: 'form' },
+      el('p', { class: 'muted', text: 'Send events to Discord webhooks. Staff alerts carry every detail; player '
+        + 'announcements say only that a server is restarting or back, in plain words, and can keep a live '
+        + 'status message up to date in the channel.' }),
+      list,
+      el('div', { class: 'row-actions' },
+        el('button', { class: 'btn small', type: 'button', text: '+ Staff alerts', onclick: () => add('staff') }),
+        el('button', { class: 'btn small', type: 'button', text: '+ Player announcements', onclick: () => add('players') })),
+      field('Do not repeat the same staff alert within', throttle,
+        'Seconds. Stops a flapping server filling your staff channel. Player announcements are never held back '
+        + 'for longer than a minute, so a second real restart is still announced.'),
+      el('div', { class: 'form-actions' }, save))));
+}
+
+function webhookCard(hook, options, remove) {
+  const name = el('input', { type: 'text', value: hook.name || '', maxlength: '80' });
+  name.addEventListener('input', () => { hook.name = name.value; });
+
+  const enabled = el('input', { type: 'checkbox', checked: hook.enabled });
+  enabled.addEventListener('change', () => { hook.enabled = enabled.checked; });
+
+  const url = el('input', { type: 'text', value: hook.url || '',
+    placeholder: hook.saved ? 'Saved. Paste a new address to replace it.' : 'https://discord.com/api/webhooks/…' });
+
+  const audience = el('select', null, Object.keys(AUDIENCE_LABELS).map((key) =>
+    el('option', { value: key, text: AUDIENCE_LABELS[key], selected: hook.audience === key })));
+
+  const body = el('div', { class: 'form' });
+  const redraw = () => {
+    clear(body);
+    appendAll(body,
+      webhookEvents(hook, options),
+      webhookServers(hook),
+      webhookLiveStatus(hook),
+      hook.audience === 'players' ? webhookWording(hook, options) : null);
+  };
+  audience.addEventListener('change', () => {
+    hook.audience = audience.value;
+    // What one audience is sent rarely suits the other.
+    hook.events = [...((hook.audience === 'players' ? options.defaultPlayerEvents : options.defaultStaffEvents) || [])];
+    redraw();
+  });
+  url.addEventListener('input', () => { hook.url = url.value; redraw(); });
+
+  const test = el('button', { class: 'btn small', type: 'button', text: 'Send a test' });
   test.addEventListener('click', async () => {
     test.disabled = true;
     try {
-      const result = await api.post('/api/notify/test', { url: url.value.trim() });
+      const result = await api.post('/api/notify/test', { id: hook.id || '', url: hook.url.trim(), audience: hook.audience });
       toast(result.message, 'good');
     } catch (err) { toast(err.message, 'bad'); }
     test.disabled = false;
   });
 
-  return el('div', { class: 'panel' },
-    el('div', { class: 'panel-head' }, el('h3', { text: 'Notifications' })),
-    el('div', { class: 'panel-body' }, el('div', { class: 'form' },
-      el('label', { class: 'check' }, enabled,
-        el('span', null, el('span', { text: 'Send notifications' }),
-          el('span', { class: 'hint', text: 'Works with any Discord-compatible webhook.' }))),
-      field('Webhook address', url),
-      field('Do not repeat the same alert within', throttle, 'Seconds. Stops a flapping server filling your channel.'),
-      el('fieldset', null, el('legend', { text: 'Tell me when' }),
-        el('div', { style: { display: 'grid', gap: '7px' } },
-          Object.keys(eventLabels).map((key) => {
-            const box = el('input', { type: 'checkbox', checked: chosen.has(key) });
-            boxes[key] = box;
-            return el('label', { class: 'check' }, box, el('span', { text: eventLabels[key] }));
-          }))),
-      el('div', { class: 'form-actions' }, test, save))));
+  redraw();
+  return el('fieldset', { class: 'webhook-card' },
+    el('legend', { text: AUDIENCE_LABELS[hook.audience] || 'Webhook' }),
+    el('div', { class: 'form' },
+      el('div', { class: 'row' }, field('Name', name), field('Written for', audience)),
+      field('Webhook address', url, 'In Discord: channel settings, Integrations, Webhooks, New Webhook, Copy Webhook URL.'),
+      el('label', { class: 'check' }, enabled, el('span', { text: 'Send to this webhook' })),
+      body,
+      el('div', { class: 'row-actions' }, test,
+        el('button', { class: 'btn small danger', type: 'button', text: 'Remove', onclick: remove }))));
+}
+
+function webhookEvents(hook, options) {
+  const players = hook.audience === 'players';
+  const keys = (players ? options.playerEvents : options.staffEvents) || [];
+  const labels = players ? PLAYER_EVENT_LABELS : STAFF_EVENT_LABELS;
+  return el('fieldset', null, el('legend', { text: players ? 'Announce when' : 'Tell staff when' }),
+    el('div', { class: 'check-grid' }, keys.map((key) => {
+      const box = el('input', { type: 'checkbox', checked: hook.events.includes(key) });
+      box.addEventListener('change', () => {
+        hook.events = hook.events.filter((k) => k !== key);
+        if (box.checked) hook.events.push(key);
+      });
+      return el('label', { class: 'check' }, box, el('span', { text: labels[key] || key }));
+    })));
+}
+
+function webhookServers(hook) {
+  const all = el('input', { type: 'checkbox', checked: !hook.servers.length });
+  const picks = el('div', { class: 'check-grid' });
+  const drawPicks = () => {
+    clear(picks);
+    if (all.checked) return;
+    for (const s of servers()) {
+      const box = el('input', { type: 'checkbox', checked: hook.servers.includes(s.id) });
+      box.addEventListener('change', () => {
+        hook.servers = hook.servers.filter((id) => id !== s.id);
+        if (box.checked) hook.servers.push(s.id);
+      });
+      picks.append(el('label', { class: 'check' }, box, el('span', { text: s.name })));
+    }
+  };
+  all.addEventListener('change', () => { if (all.checked) hook.servers = []; drawPicks(); });
+  drawPicks();
+  return el('fieldset', null, el('legend', { text: 'Servers' }),
+    el('label', { class: 'check' }, all, el('span', { text: 'Every server' })), picks);
+}
+
+function webhookLiveStatus(hook) {
+  // A saved address is never sent to the browser, so only a typed one can be
+  // checked here. The server has the final say.
+  const discord = !hook.url.trim() || looksLikeDiscord(hook.url.trim());
+  const live = el('input', { type: 'checkbox', checked: hook.liveStatus, disabled: !discord && !hook.liveStatus });
+  const names = el('input', { type: 'checkbox', checked: hook.listPlayers, disabled: !hook.liveStatus });
+  live.addEventListener('change', () => { hook.liveStatus = live.checked; names.disabled = !live.checked; });
+  names.addEventListener('change', () => { hook.listPlayers = names.checked; });
+  return el('div', { class: 'form' },
+    el('label', { class: 'check' }, live, el('span', null,
+      el('span', { text: 'Keep a live status message' }),
+      el('span', { class: 'hint', text: discord
+        ? 'One message per server, edited as it goes online, restarts or goes down. Pin it in the channel.'
+        : 'Only a Discord webhook can edit its messages.' }))),
+    el('label', { class: 'check' }, names, el('span', { text: 'List who is playing in it' })));
+}
+
+function webhookWording(hook, options) {
+  const templates = options.playerTemplates || {};
+  const keys = (options.playerEvents || []).filter((k) => hook.events.includes(k));
+  if (!keys.length) return null;
+  return el('details', { class: 'webhook-wording', open: Object.keys(hook.messages).length > 0 },
+    el('summary', { text: 'Change the wording' }),
+    el('div', { class: 'form' },
+      el('p', { class: 'hint', text: '{server} is the server’s name, {reason} says why it is restarting, '
+        + '{minutes} is the countdown. To ping a role, write <@&role ID>. Leave a box empty for the default.' }),
+      keys.map((key) => {
+        const box = el('textarea', { rows: '2', maxlength: '1500', placeholder: templates[key] || '' });
+        box.value = hook.messages[key] || '';
+        box.addEventListener('input', () => { hook.messages[key] = box.value; });
+        return field(PLAYER_EVENT_LABELS[key] || key, box);
+      })));
 }
 
 function settingsMetrics(cfg) {
