@@ -245,7 +245,7 @@ func (a *App) executeStep(ctx context.Context, step config.Step, srv config.Serv
 		switch {
 		case h == nil:
 			return "", fmt.Errorf("the Discord channel this posts to has been removed")
-		case !h.Enabled || h.URL == "":
+		case !h.Enabled || !a.targetFor(a.cfg.Get(), *h).Valid():
 			return "", fmt.Errorf("the Discord channel %q is switched off", h.Name)
 		}
 		text := strings.NewReplacer(
@@ -255,7 +255,9 @@ func (a *App) executeStep(ctx context.Context, step config.Step, srv config.Serv
 		dctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
 		name, avatar := postedAs(a.cfg.Get(), *h)
-		dest := notify.Destination{URL: h.URL, Audience: h.Audience, Username: name, AvatarURL: avatar}
+		t := a.targetFor(a.cfg.Get(), *h)
+		dest := notify.Destination{URL: t.Webhook, ChannelID: t.ChannelID, BotToken: t.BotToken, API: t.API,
+			Audience: h.Audience, Username: name, AvatarURL: avatar}
 		if err := a.notify.Announce(dctx, dest, text); err != nil {
 			return "", err
 		}

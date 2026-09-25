@@ -18,6 +18,13 @@
 - Messages are posted under a name and picture set in PZAdmin, so a webhook
   needs no setting up in Discord. A server's own channel uses the server's
   name; any channel can have its own name and picture.
+- An optional Discord bot, alongside webhooks: connect it once and pick
+  each channel from a list instead of pasting a webhook. An existing bot
+  works. PZAdmin keeps no connection open; it brings a new bot online once
+  when it is connected, which Discord requires before a bot can post.
+- With the bot, a server's channel can show 🟢 or 🔴 in its name. Renames
+  follow the server's settled state and stay within Discord's limit of two
+  per ten minutes; turning it off restores the plain name.
 - Restart and Stop ask for an optional reason, which players see in the
   announcement.
 - Each server has public info (description, join address and port) typed in

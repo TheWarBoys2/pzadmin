@@ -99,6 +99,10 @@ type App struct {
 	custom  *customCatalogue
 	// steamBase is overridden by tests; empty means the public Steam API.
 	steamBase string
+	// discordAPI and discordGateway are overridden by tests; empty means
+	// Discord itself.
+	discordAPI     string
+	discordGateway string
 	// gameRoot is a Project Zomboid installation shared by every server, used
 	// only when a server has no installation of its own. It comes from
 	// PZADMIN_GAME_ROOT.
@@ -280,12 +284,13 @@ func (a *App) Close() {
 func (a *App) applyNotifyConfig(cfg config.Config) {
 	var dests []notify.Destination
 	for _, w := range cfg.Notify.Webhooks {
-		if !w.Enabled || w.URL == "" {
+		t := a.targetFor(cfg, w)
+		if !w.Enabled || !t.Valid() {
 			continue
 		}
 		name, avatar := postedAs(cfg, w)
 		dests = append(dests, notify.Destination{
-			ID: w.ID, URL: w.URL, Audience: w.Audience,
+			ID: w.ID, URL: t.Webhook, ChannelID: t.ChannelID, BotToken: t.BotToken, API: t.API, Audience: w.Audience,
 			Events: w.Events, Servers: w.Servers, Messages: w.Messages,
 			Username: name, AvatarURL: avatar,
 		})
@@ -474,6 +479,9 @@ func (a *App) Handler() http.Handler {
 	post("/api/player/note", a.handlePlayerNote)
 	post("/api/player/forget", a.handlePlayerForget)
 	post("/api/notify/test", a.handleNotifyTest)
+	post("/api/discord/bot", a.handleBotConnect)
+	post("/api/discord/bot/remove", a.handleBotRemove)
+	get("/api/discord/channels", a.handleBotChannels)
 	post("/api/import", a.handleImport)
 	post("/api/sessions/revoke", a.handleRevokeSessions)
 

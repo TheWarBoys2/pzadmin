@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/TheWarBoys2/pzadmin/internal/config"
+	"github.com/TheWarBoys2/pzadmin/internal/discord"
 	"github.com/TheWarBoys2/pzadmin/internal/notify"
 )
 
@@ -30,7 +31,10 @@ const maxTemplate = 1500
 // validateWebhooks checks the webhook list from the settings form and returns
 // it cleaned up. Addresses the browser sent back as the placeholder are
 // restored from prev.
-func validateWebhooks(next, prev []config.Webhook, servers []config.Server) ([]config.Webhook, error) {
+//
+// hasBot says whether a bot is connected, which channels picked by ID and
+// status dots in channel names need.
+func validateWebhooks(next, prev []config.Webhook, servers []config.Server, hasBot bool) ([]config.Webhook, error) {
 	if len(next) > 20 {
 		return nil, invalidf("at most 20 webhooks can be configured")
 	}
@@ -95,14 +99,25 @@ func validateWebhooks(next, prev []config.Webhook, servers []config.Server) ([]c
 		}
 
 		h.URL = strings.TrimSpace(h.URL)
+		h.ChannelID = strings.TrimSpace(h.ChannelID)
+		if h.ChannelID != "" {
+			// Through the bot: the channel is the address.
+			if !discord.IsID(h.ChannelID) {
+				return nil, invalidf("%s: %q is not a Discord channel ID", h.Name, h.ChannelID)
+			}
+			if !hasBot {
+				return nil, invalidf("%s: connect the bot before choosing a channel for it", h.Name)
+			}
+			h.URL = ""
+		}
 		if h.URL != "" {
 			u, err := url.Parse(h.URL)
 			if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
 				return nil, invalidf("%s: the webhook address must start with https://", h.Name)
 			}
 		}
-		if h.Enabled && h.URL == "" {
-			return nil, invalidf("%s: add a webhook address or switch it off", h.Name)
+		if h.Enabled && h.URL == "" && h.ChannelID == "" {
+			return nil, invalidf("%s: add a webhook address, choose a channel for the bot, or switch it off", h.Name)
 		}
 
 		allowed := config.NotifyEvents
@@ -154,9 +169,17 @@ func validateWebhooks(next, prev []config.Webhook, servers []config.Server) ([]c
 			h.Messages = messages
 		}
 
-		if h.LiveStatus && !notify.IsDiscord(h.URL) {
-			return nil, invalidf("%s: live status edits its message in place, which only a Discord webhook "+
-				"(https://discord.com/api/webhooks/…) can do", h.Name)
+		if h.LiveStatus && h.ChannelID == "" && !notify.IsDiscord(h.URL) {
+			return nil, invalidf("%s: a status message is edited in place, which only a Discord webhook "+
+				"(https://discord.com/api/webhooks/…) or the bot can do", h.Name)
+		}
+		if h.RenameChannel {
+			switch {
+			case h.Server == "":
+				return nil, invalidf("%s: only a server's own channel can show its status in the name", h.Name)
+			case !hasBot:
+				return nil, invalidf("%s: renaming a channel needs the bot; a webhook cannot do it", h.Name)
+			}
 		}
 		if !h.LiveStatus {
 			h.ListPlayers = false
@@ -272,4 +295,21 @@ func cleanIdentity(id config.Identity, label string) (config.Identity, error) {
 		}
 	}
 	return id, nil
+}
+
+// targetFor is where a channel's messages go: through the bot when it has a
+// channel ID, through its webhook otherwise.
+func (a *App) targetFor(cfg config.Config, h config.Webhook) notify.Target {
+	if h.ChannelID != "" {
+		return notify.Target{ChannelID: h.ChannelID, BotToken: cfg.Notify.Bot.Token, API: a.discordAPI}
+	}
+	return notify.Target{Webhook: h.URL}
+}
+
+// targetFromKey rebuilds a target from what a status message's record kept.
+func (a *App) targetFromKey(cfg config.Config, key string) notify.Target {
+	if id, ok := strings.CutPrefix(key, "channel:"); ok {
+		return notify.Target{ChannelID: id, BotToken: cfg.Notify.Bot.Token, API: a.discordAPI}
+	}
+	return notify.Target{Webhook: key}
 }

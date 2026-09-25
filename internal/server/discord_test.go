@@ -575,3 +575,255 @@ func TestServerChannelPostsUnderTheServersName(t *testing.T) {
 		}
 	}
 }
+
+// fakeBotAPI is enough of Discord's API for the bot: one channel whose name
+// can be read and changed, and a webhook that says it belongs to it.
+type fakeBotAPI struct {
+	mu      sync.Mutex
+	srv     *httptest.Server
+	name    string
+	renames int
+	limited bool
+}
+
+func newFakeBotAPI(t *testing.T) *fakeBotAPI {
+	f := &fakeBotAPI{name: "riverside"}
+	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		switch r.Method + " " + r.URL.Path {
+		case "GET /api/webhooks/1/x":
+			_, _ = io.WriteString(w, `{"channel_id":"123456789012345678"}`)
+		case "GET /channels/123456789012345678":
+			_ = json.NewEncoder(w).Encode(map[string]string{"id": "123456789012345678", "name": f.name})
+		case "PATCH /channels/123456789012345678":
+			if f.limited {
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = io.WriteString(w, `{"retry_after": 300}`)
+				return
+			}
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			f.name = body["name"]
+			f.renames++
+			_, _ = io.WriteString(w, `{}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(f.srv.Close)
+	return f
+}
+
+func (f *fakeBotAPI) state() (string, int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.name, f.renames
+}
+
+func TestChannelNameFollowsSettledState(t *testing.T) {
+	app, _, dir := newTestApp(t)
+	api := newFakeBotAPI(t)
+	app.discordAPI = api.srv.URL
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	clock = func() time.Time { return now }
+	t.Cleanup(func() { clock = time.Now })
+
+	seedServer(t, app, `{"id":"a","name":"Riverside","enabled":true}`)
+	if _, err := app.cfg.Update(func(c *config.Config) error {
+		c.Notify.Bot = config.Bot{Token: "tok"}
+		// A webhook channel: the bot only renames it, and finds its ID from
+		// the webhook.
+		c.Notify.Webhooks = []config.Webhook{{ID: "r", Name: "Riverside", Enabled: true,
+			URL: api.srv.URL + "/api/webhooks/1/x", Server: "a", Servers: []string{"a"},
+			Audience: config.AudiencePlayers, RenameChannel: true}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	board := loadLiveBoard(filepath.Join(dir, "livestatus.json"))
+	sync := func(advance time.Duration) (string, int) {
+		now = now.Add(advance)
+		app.syncChannelNames(context.Background(), board)
+		return api.state()
+	}
+	set := func(fn func(*Status)) { app.updateStatus("a", fn) }
+
+	// Not checked yet: the name is left alone.
+	if name, n := sync(0); name != "riverside" || n != 0 {
+		t.Fatalf("an unchecked server should not be named: %q %d", name, n)
+	}
+	// The first state shows straight away.
+	set(func(st *Status) { st.Online, st.LastCheck = true, TimeNow() })
+	if name, _ := sync(0); name != "🟢-riverside" {
+		t.Fatalf("got %q", name)
+	}
+
+	// A restart PZAdmin asked for does not touch the name.
+	app.markRestarting("a", "scheduled job")
+	set(func(st *Status) { st.Online = false })
+	sync(time.Minute)
+	app.clearRestarting("a")
+	set(func(st *Status) { st.Online = true })
+	if name, n := sync(time.Minute); name != "🟢-riverside" || n != 1 {
+		t.Fatalf("a restart should leave the name alone: %q after %d renames", name, n)
+	}
+
+	// A blip shorter than the settle time does not either.
+	set(func(st *Status) { st.Online = false })
+	sync(30 * time.Second)
+	set(func(st *Status) { st.Online = true })
+	if name, n := sync(30 * time.Second); name != "🟢-riverside" || n != 1 {
+		t.Fatalf("a short blip should not rename: %q %d", name, n)
+	}
+
+	// A real outage does, once it has lasted.
+	set(func(st *Status) { st.Online = false })
+	sync(0)
+	if name, _ := sync(dotSettle); name != "🔴-riverside" {
+		t.Fatalf("an outage should show red, got %q", name)
+	}
+
+	// That was the second rename in ten minutes: coming back has to wait,
+	// and then shows what is true by then.
+	set(func(st *Status) { st.Online = true })
+	if name, _ := sync(dotSettle); name != "🔴-riverside" {
+		t.Fatalf("the rate limit should hold the name, got %q", name)
+	}
+	if name, n := sync(renameWindow); name != "🟢-riverside" || n != 3 {
+		t.Fatalf("once allowed, the name should catch up: %q %d", name, n)
+	}
+
+	// Discord saying wait is respected.
+	api.mu.Lock()
+	api.limited = true
+	api.mu.Unlock()
+	set(func(st *Status) { st.Online = false })
+	sync(0)
+	sync(dotSettle)
+	api.mu.Lock()
+	api.limited = false
+	api.mu.Unlock()
+	if name, _ := sync(time.Minute); name != "🟢-riverside" {
+		t.Fatalf("a rate-limited rename should wait out Discord's retry_after, got %q", name)
+	}
+	if name, _ := sync(5 * time.Minute); name != "🔴-riverside" {
+		t.Fatalf("after the wait the rename should go through, got %q", name)
+	}
+
+	// Turning it off restores the plain name.
+	if _, err := app.cfg.Update(func(c *config.Config) error {
+		c.Notify.Webhooks[0].RenameChannel = false
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if name, _ := sync(renameWindow); name != "riverside" {
+		t.Fatalf("switching off should restore the name, got %q", name)
+	}
+}
+
+// Connecting a bot checks the token, brings the bot online once, and keeps
+// the token out of everything sent to the browser.
+func TestBotConnect(t *testing.T) {
+	app, handler, _ := newTestApp(t)
+	c := &client{t: t, handler: handler}
+	c.setup("rick", "a-long-enough-password")
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bot good-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		switch r.URL.Path {
+		case "/users/@me":
+			_, _ = io.WriteString(w, `{"id":"42","username":"Knox Radio"}`)
+		case "/users/@me/guilds":
+			_, _ = io.WriteString(w, `[{"id":"100000000000000001","name":"Zomboid Crew"}]`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer api.Close()
+	app.discordAPI = api.URL
+	// No gateway to reach here: connecting still works, with a warning.
+	app.discordGateway = "ws://127.0.0.1:1"
+
+	if rec := c.do(http.MethodPost, "/api/discord/bot", map[string]string{"token": "wrong"}); rec.Code != http.StatusBadRequest {
+		t.Fatalf("a bad token should be refused, got %d", rec.Code)
+	}
+	rec := c.do(http.MethodPost, "/api/discord/bot", map[string]string{"token": "Bot good-token"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("connect failed: %s", rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Knox Radio") || !strings.Contains(body, "Zomboid Crew") || !strings.Contains(body, "could not come online") {
+		t.Fatalf("unexpected response: %s", body)
+	}
+	if got := app.cfg.Get().Notify.Bot; got.Token != "good-token" || got.Name != "Knox Radio" {
+		t.Fatalf("bot not saved: %#v", got)
+	}
+	for _, path := range []string{"/api/state", "/api/export"} {
+		if strings.Contains(c.do(http.MethodGet, path, nil).Body.String(), "good-token") {
+			t.Fatalf("%s leaked the bot token", path)
+		}
+	}
+
+	// A settings save cannot change or drop the bot.
+	if rec := c.do(http.MethodPost, "/api/settings", map[string]any{"notify": map[string]any{
+		"minIntervalSeconds": 300, "webhooks": []any{}, "bot": map[string]string{"token": "evil"}}}); rec.Code != http.StatusOK {
+		t.Fatal(rec.Body.String())
+	}
+	if app.cfg.Get().Notify.Bot.Token != "good-token" {
+		t.Fatal("the settings form must not be able to change the bot token")
+	}
+
+	// A channel through the bot needs a channel ID; with one it saves.
+	rec = c.do(http.MethodPost, "/api/settings", map[string]any{"notify": map[string]any{
+		"minIntervalSeconds": 300, "webhooks": []any{map[string]any{
+			"name": "Chat", "enabled": true, "audience": "players", "channelId": "123456789012345678",
+			"url": "https://discord.com/api/webhooks/9/ignored", "liveStatus": true, "events": []string{"server.up"}}}}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("a bot channel should save: %s", rec.Body.String())
+	}
+	if h := app.cfg.Get().Notify.Webhooks[0]; h.URL != "" || h.ChannelID != "123456789012345678" {
+		t.Fatalf("a bot channel should not keep a webhook address: %#v", h)
+	}
+
+	// The bot cannot be removed while a channel uses it.
+	if rec := c.do(http.MethodPost, "/api/discord/bot/remove", map[string]any{}); rec.Code != http.StatusBadRequest ||
+		!strings.Contains(rec.Body.String(), "Chat") {
+		t.Fatalf("removing a bot in use should be refused naming the channel: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestBotOnlyOptionsNeedTheBot(t *testing.T) {
+	app, handler, _ := newTestApp(t)
+	c := &client{t: t, handler: handler}
+	c.setup("rick", "a-long-enough-password")
+	seedServer(t, app, `{"id":"a","name":"Riverside","enabled":true}`)
+	for name, hook := range map[string]map[string]any{
+		"channel ID without a bot": {"enabled": true, "channelId": "123456789012345678", "audience": "players"},
+		"rename without a bot": {"enabled": true, "url": "https://discord.com/api/webhooks/1/a", "server": "a",
+			"renameChannel": true},
+	} {
+		rec := c.do(http.MethodPost, "/api/settings", map[string]any{"notify": map[string]any{
+			"minIntervalSeconds": 300, "webhooks": []any{hook}}})
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: expected 400, got %d", name, rec.Code)
+		}
+	}
+	if _, err := app.cfg.Update(func(c *config.Config) error { c.Notify.Bot.Token = "tok"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	for name, hook := range map[string]map[string]any{
+		"not a channel ID": {"enabled": true, "channelId": "general", "audience": "players"},
+		"rename on a shared channel": {"enabled": true, "url": "https://discord.com/api/webhooks/1/a",
+			"renameChannel": true, "audience": "players"},
+	} {
+		rec := c.do(http.MethodPost, "/api/settings", map[string]any{"notify": map[string]any{
+			"minIntervalSeconds": 300, "webhooks": []any{hook}}})
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: expected 400, got %d", name, rec.Code)
+		}
+	}
+}

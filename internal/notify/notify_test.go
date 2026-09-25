@@ -218,7 +218,7 @@ func TestCards(t *testing.T) {
 	n := New()
 	defer n.Close()
 	ctx := context.Background()
-	url := h.srv.URL + "/api/webhooks/1/abc?thread_id=77"
+	url := Target{Webhook: h.srv.URL + "/api/webhooks/1/abc?thread_id=77"}
 
 	id, err := n.PostCard(ctx, url, Card{Title: "Riverside", Description: "🟢 Online"})
 	if err != nil || id != "1001" {
@@ -289,5 +289,63 @@ func TestOperatorReasonIsShownToPlayers(t *testing.T) {
 	text = RenderPlayer(nil, Message{Kind: "server.stop", Server: "Riverside"})
 	if text != "⏸️ **Riverside** has been shut down for now." {
 		t.Fatalf("without a reason nothing is added, got %q", text)
+	}
+}
+
+// Through a bot, messages go to the channel's API address with the bot's
+// token, and carry no username: a bot always posts as itself.
+func TestBotTarget(t *testing.T) {
+	var mu sync.Mutex
+	var seen []string
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var m map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&m)
+		mu.Lock()
+		seen = append(seen, r.Method+" "+r.URL.Path+" "+r.Header.Get("Authorization"))
+		bodies = append(bodies, m)
+		mu.Unlock()
+		_, _ = io.WriteString(w, `{"id":"77"}`)
+	}))
+	defer srv.Close()
+	n := New()
+	defer n.Close()
+	dest := Destination{ID: "b", Audience: Players, ChannelID: "123", BotToken: "tok", API: srv.URL,
+		Events: []string{"server.up"}, Username: "Riverside"}
+	n.Configure(Config{Destinations: []Destination{dest}})
+	n.Send(Message{Kind: "server.up", Server: "Riverside", Severity: "success"})
+
+	id, err := n.PostCard(context.Background(), dest.Target(), Card{Title: "Riverside", Username: "Riverside"})
+	if err != nil || id != "77" {
+		t.Fatalf("post card: %q %v", id, err)
+	}
+	if err := n.EditCard(context.Background(), dest.Target(), id, Card{Title: "Riverside"}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		mu.Lock()
+		count := len(seen)
+		mu.Unlock()
+		if count >= 3 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	want := map[string]bool{
+		"POST /channels/123/messages Bot tok":     true,
+		"PATCH /channels/123/messages/77 Bot tok": true,
+	}
+	for _, s := range seen {
+		if !want[s] {
+			t.Fatalf("unexpected request %q in %v", s, seen)
+		}
+	}
+	for _, b := range bodies {
+		if _, named := b["username"]; named {
+			t.Fatal("a bot cannot post under another name")
+		}
 	}
 }

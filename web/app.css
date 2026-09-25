@@ -883,3 +883,4 @@ details.setting-group > summary {
 .webhook-wording > summary { cursor: pointer; font-size: 12.5px; color: var(--dust); margin-bottom: 10px; }
 .webhook-wording .field textarea { min-height: 54px; }
 p.hint { margin: 0; font-size: 11.5px; color: var(--faint); }
+ol.steps { margin: 0; padding-left: 18px; display: grid; gap: 4px; }

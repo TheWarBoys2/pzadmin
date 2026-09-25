@@ -18,20 +18,18 @@ function assertList(actual, expected, message) {
 }
 
 const results = [];
-const pending = [];
+// Tests run one after another, async ones included. Started together, two
+// async tests interleave and swap each other's fake fetch mid-flight.
+let queue = Promise.resolve();
 function test(name, fn) {
-  try {
-    const out = fn();
-    if (out && typeof out.then === 'function') {
-      pending.push(out.then(
-        () => results.push(['pass', name]),
-        (err) => results.push(['FAIL', name, err.message])));
-    } else {
+  queue = queue.then(async () => {
+    try {
+      await fn();
       results.push(['pass', name]);
+    } catch (err) {
+      results.push(['FAIL', name, err.message]);
     }
-  } catch (err) {
-    results.push(['FAIL', name, err.message]);
-  }
+  });
 }
 
 // --- load app.js into a sandbox with the browser globals it expects ---------
@@ -953,6 +951,56 @@ test('the Discord page shows where each server is announced', () => withDiscordS
   assert.strictEqual(rows.filter((r) => r.startsWith('Riverside')).length, 1, rows.join(' / '));
 }));
 
+// With a bot, a server's channel is picked from a list and can show its
+// status in its name; what is saved is the channel ID, not a webhook.
+test('a server channel can go through the bot and show a status dot', () => withDiscordState([], async () => {
+  const sent = [];
+  const fetchBefore = sandbox.fetch;
+  S.state.config.notify.bot = { token: '__pzadmin_unchanged__', name: 'Knox Radio' };
+  S.botChannels = null;
+  sandbox.fetch = (path, opts) => {
+    if (opts.method === 'POST') {
+      sent.push(JSON.parse(opts.body));
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{"ok":true}') });
+    }
+    if (path === '/api/discord/channels') {
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ channels: [
+        { id: '111111111111111111', name: 'riverside', guild: 'Zomboid Crew', category: 'Servers' },
+      ] })) });
+    }
+    return Promise.reject(new Error('no state in tests'));
+  };
+  try {
+    closeAllModals();
+    editServerChannel(S.state.servers[0]);
+    const modal = overlay().children[overlay().children.length - 1];
+    const via = modal.querySelectorAll('select').find((sel) => sel.children.some((o) => o.attributes.value === 'bot'));
+    via.value = 'bot';
+    via.dispatch('change');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const picker = modal.querySelectorAll('select').find((sel) =>
+      sel.children.some((o) => o.textContent === 'Zomboid Crew › Servers › #riverside'));
+    assert.ok(picker, 'the bot’s channels should be listed');
+    picker.value = '111111111111111111';
+    picker.dispatch('change');
+    const dot = modal.querySelectorAll('label.check').find((l) => l.textContent.includes('in the channel’s name'));
+    dot.children[0].checked = true;
+    dot.children[0].dispatch('change');
+    modal.querySelectorAll('button').find((b) => b.textContent === 'Save').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.strictEqual(sent.length, 1, 'save should post: ' + modal.querySelector('.error').textContent);
+    const hook = sent[0].notify.webhooks[0];
+    assert.strictEqual(hook.channelId, '111111111111111111');
+    assert.strictEqual(hook.url, '');
+    assert.strictEqual(hook.renameChannel, true);
+    assert.strictEqual(hook.server, 'a');
+  } finally {
+    sandbox.fetch = fetchBefore;
+    S.botChannels = null;
+  }
+}));
+
 test('a Discord step names its channel', () => withDiscordState([
   { id: 'r', name: 'riverside-chat', enabled: true, audience: 'players', events: [], servers: [] },
 ], () => {
@@ -964,7 +1012,7 @@ test('a Discord step names its channel', () => withDiscordState([
 
 
 (async () => {
-  await Promise.all(pending);
+  await queue;
   let failed = 0;
   for (const [status, name, message] of results) {
     if (status === 'pass') {

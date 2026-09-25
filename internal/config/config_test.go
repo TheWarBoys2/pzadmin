@@ -53,9 +53,10 @@ func TestRedactRemovesEverySecret(t *testing.T) {
 	c.Notify.WebhookURL = "https://discord.example/hook"
 	c.Notify.Webhooks = []Webhook{{ID: "p", URL: "https://discord.example/players"}}
 	c.Metrics.Token = "metricsecret"
+	c.Notify.Bot.Token = "bottokensecret"
 
 	blob := marshalForTest(t, Redact(c))
-	for _, secret := range []string{"hash", "salt", "rconsecret", "discord.example", "metricsecret"} {
+	for _, secret := range []string{"hash", "salt", "rconsecret", "discord.example", "metricsecret", "bottokensecret"} {
 		if strings.Contains(blob, secret) {
 			t.Fatalf("redacted config still contains %q: %s", secret, blob)
 		}

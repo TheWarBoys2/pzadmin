@@ -217,6 +217,9 @@ type Notify struct {
 	// Identity is the name and picture messages are posted under, so a
 	// webhook needs no setting up in Discord beyond copying its address.
 	Identity Identity `json:"identity"`
+	// Bot is an optional Discord bot. With it, channels can be picked from a
+	// list instead of pasting webhooks, and channel names can show status.
+	Bot Bot `json:"bot"`
 
 	// Enabled, WebhookURL and Events are the single webhook used before
 	// destinations existed. They are read once on load and folded into
@@ -224,6 +227,14 @@ type Notify struct {
 	Enabled    bool     `json:"enabled,omitempty"`
 	WebhookURL string   `json:"webhookUrl,omitempty"`
 	Events     []string `json:"events,omitempty"`
+}
+
+// Bot is a Discord bot PZAdmin posts through. Only the token is needed; the
+// rest is remembered from the last time it was checked, for display.
+type Bot struct {
+	Token string `json:"token,omitempty"`
+	ID    string `json:"id,omitempty"`
+	Name  string `json:"name,omitempty"`
 }
 
 // Identity is how PZAdmin appears in Discord. Empty fields fall back: a
@@ -241,6 +252,12 @@ type Webhook struct {
 	Name    string `json:"name"`
 	Enabled bool   `json:"enabled"`
 	URL     string `json:"url"`
+	// ChannelID, when set, sends through the bot to this channel instead of
+	// through the webhook URL.
+	ChannelID string `json:"channelId,omitempty"`
+	// RenameChannel puts a green or red dot in front of the channel's name as
+	// the server comes and goes. It needs the bot, on a server's own channel.
+	RenameChannel bool `json:"renameChannel,omitempty"`
 	// Server, when set, makes this that server's own channel: it covers
 	// only that server and is set up from the server's row on the Discord
 	// page. Messages default to the server's name.
@@ -617,6 +634,9 @@ func Redact(c Config) Config {
 	if out.Metrics.Token != "" {
 		out.Metrics.Token = Redacted
 	}
+	if out.Notify.Bot.Token != "" {
+		out.Notify.Bot.Token = Redacted
+	}
 	return out
 }
 
@@ -631,6 +651,7 @@ func Export(c Config) Config {
 		out.Notify.Webhooks[i].URL = ""
 	}
 	out.Metrics.Token = ""
+	out.Notify.Bot = Bot{}
 	out.Username = ""
 	out.SetupComplete = false
 	return out
@@ -649,6 +670,9 @@ func Unredact(next *Config, prev Config) {
 		}
 	}
 	UnredactWebhooks(next.Notify.Webhooks, prev.Notify.Webhooks)
+	if next.Notify.Bot.Token == Redacted {
+		next.Notify.Bot.Token = prev.Notify.Bot.Token
+	}
 	if next.Metrics.Token == Redacted {
 		next.Metrics.Token = prev.Metrics.Token
 	}

@@ -3905,7 +3905,7 @@ function viewDiscord(main) {
       el('button', { class: 'btn', type: 'button', text: '+ Staff channel', onclick: () => editWebhook(-1, 'staff') }),
       el('button', { class: 'btn', type: 'button', text: '+ Shared channel', onclick: () => editWebhook(-1, 'players') }))));
 
-  main.append(discordIdentity());
+  main.append(el('div', { class: 'grid halves' }, discordIdentity(), discordBot()));
 
   if (servers().length) {
     main.append(el('div', { class: 'panel', style: { marginTop: '18px' } },
@@ -3922,6 +3922,58 @@ function viewDiscord(main) {
 
   main.append(el('div', { class: 'grid halves', style: { marginTop: '18px' } },
     discordOptions(), discordGameBot()));
+}
+
+/* discordBot connects an optional bot. Webhooks do everything else on
+   their own; the bot adds picking channels from a list and the status dot in
+   channel names, which a webhook cannot do. */
+function discordBot() {
+  const bot = botInfo();
+  const connected = !!bot.token;
+  const token = el('input', { type: 'password', autocomplete: 'off',
+    placeholder: connected ? 'Saved. Paste a new token to replace it.' : 'The bot\u2019s token' });
+  const status = el('div', { class: 'hint' });
+  const connect = el('button', { class: 'btn primary', type: 'button', text: connected ? 'Check again' : 'Connect' });
+  connect.addEventListener('click', async () => {
+    connect.disabled = true;
+    status.textContent = 'Checking with Discord\u2026';
+    try {
+      const r = await api.post('/api/discord/bot', { token: token.value.trim() });
+      S.botChannels = null;
+      toast('Connected as ' + r.name + '.', 'good');
+      if (r.warning) toast(r.warning, 'bad');
+      await refreshState();
+    } catch (err) { status.textContent = ''; toast(err.message, 'bad'); connect.disabled = false; }
+  });
+  const remove = connected ? el('button', { class: 'btn danger', type: 'button', text: 'Remove bot' }) : null;
+  if (remove) {
+    remove.addEventListener('click', async () => {
+      const ok = await confirmDialog({ title: 'Remove the bot?', confirmLabel: 'Remove', danger: true,
+        message: 'PZAdmin forgets the token. Channels that use the bot have to be switched to a webhook first.' });
+      if (!ok) return;
+      try {
+        await api.post('/api/discord/bot/remove', {});
+        S.botChannels = null;
+        toast('Bot removed.', 'good');
+        await refreshState();
+      } catch (err) { toast(err.message, 'bad'); }
+    });
+  }
+  return el('div', { class: 'panel' },
+    el('div', { class: 'panel-head' }, el('h3', { text: 'Discord bot (optional)' }),
+      connected ? el('span', { class: 'pill on', text: 'Connected as ' + (bot.name || 'a bot') }) : null),
+    el('div', { class: 'panel-body' }, el('div', { class: 'form' },
+      el('p', { class: 'muted', text: 'Webhooks need no bot. A bot lets you pick channels from a list instead of '
+        + 'pasting a webhook for each, and can show \ud83d\udfe2 or \ud83d\udd34 in a server\u2019s channel name. '
+        + 'An existing bot works too.' }),
+      connected ? null : el('ol', { class: 'hint steps' },
+        el('li', { text: 'At discord.com/developers, New Application, then Bot, Reset Token, and copy it.' }),
+        el('li', { text: 'OAuth2, URL Generator: tick bot, then View Channels, Send Messages, Embed Links, Read '
+          + 'Message History, and Manage Channels if you want the status dot. Open the link to invite it.' }),
+        el('li', { text: 'Paste the token here and connect.' })),
+      field('Token', token),
+      status,
+      el('div', { class: 'form-actions' }, remove, connect))));
 }
 
 // discordIdentity is the name and picture every message is posted under,
@@ -3977,7 +4029,9 @@ function serverChannelRow(server, hooks) {
       el('div', { class: 'webhook-title' },
         el('strong', { text: server.name }),
         own ? el('span', { class: 'pill ' + (own.enabled ? 'on' : 'off'), text: own.enabled ? 'Own channel' : 'Channel off' }) : null,
-        own && own.liveStatus ? el('span', { class: 'pill', text: 'Status message' }) : null),
+        own && own.liveStatus ? el('span', { class: 'pill', text: 'Status message' }) : null,
+        own && own.channelId ? el('span', { class: 'pill', text: 'Via bot' }) : null,
+        own && own.renameChannel ? el('span', { class: 'pill', text: '\ud83d\udfe2 in name' }) : null),
       line('Announces', announced),
       alsoPlayers.length ? line('Also announced in', alsoPlayers.join(', ')) : null,
       line('Staff alerts in', staff.length ? staff.join(', ') : 'nowhere'),
@@ -4054,7 +4108,7 @@ function hookDrafts() {
   return webhooks().map((h) => ({
     ...h, url: h.url === REDACTED ? '' : (h.url || ''), saved: h.url === REDACTED,
     events: [...(h.events || [])], servers: [...(h.servers || [])], messages: { ...(h.messages || {}) },
-    identity: { ...(h.identity || {}) },
+    identity: { ...(h.identity || {}) }, channelId: h.channelId || '', renameChannel: !!h.renameChannel,
   }));
 }
 
@@ -4064,14 +4118,19 @@ async function saveWebhooks(hooks, identity) {
     notify: {
       minIntervalSeconds: notify.minIntervalSeconds || 300,
       identity: identity || notify.identity || {},
-      webhooks: hooks.map((h) => ({
-        id: h.id, name: (h.name || '').trim(), enabled: h.enabled, audience: h.audience,
-        url: h.url.trim() || (h.saved ? REDACTED : ''),
-        server: h.server || '', identity: { name: (h.identity.name || '').trim(), avatarUrl: (h.identity.avatarUrl || '').trim() },
-        events: h.events, servers: h.servers,
-        messages: h.audience === 'players' ? h.messages : {},
-        liveStatus: h.liveStatus, listPlayers: h.liveStatus && h.listPlayers,
-      })),
+      webhooks: hooks.map((h) => {
+        // A channel sends through the bot or its webhook, never both.
+        const bot = h.via ? h.via === 'bot' : !!h.channelId;
+        return {
+          id: h.id, name: (h.name || '').trim(), enabled: h.enabled, audience: h.audience,
+          url: bot ? '' : (h.url.trim() || (h.saved ? REDACTED : '')),
+          channelId: bot ? (h.channelId || '') : '', renameChannel: !!h.renameChannel && !!h.server,
+          server: h.server || '', identity: { name: (h.identity.name || '').trim(), avatarUrl: (h.identity.avatarUrl || '').trim() },
+          events: h.events, servers: h.servers,
+          messages: h.audience === 'players' ? h.messages : {},
+          liveStatus: h.liveStatus, listPlayers: h.liveStatus && h.listPlayers,
+        };
+      }),
     },
   });
 }
@@ -4160,6 +4219,13 @@ function webhookCard(hook, options, opts) {
 
   const url = el('input', { type: 'text', value: hook.url || '',
     placeholder: hook.saved ? 'Saved. Paste a new address to replace it.' : 'https://discord.com/api/webhooks/…' });
+  const hasBot = !!botInfo().token;
+  hook.via = hook.channelId ? 'bot' : 'webhook';
+  const via = el('select', null,
+    el('option', { value: 'webhook', text: 'A webhook (paste its link)', selected: hook.via === 'webhook' }),
+    el('option', { value: 'bot', text: hasBot ? 'The bot (pick a channel)' : 'The bot (connect it on the Discord page first)',
+      selected: hook.via === 'bot', disabled: !hasBot && hook.via !== 'bot' }));
+  const delivery = el('div');
 
   const audience = el('select', null, Object.keys(AUDIENCE_LABELS).map((key) =>
     el('option', { value: key, text: AUDIENCE_LABELS[key], selected: hook.audience === key })));
@@ -4174,15 +4240,33 @@ function webhookCard(hook, options, opts) {
     field('Name in Discord', shownName, own ? 'Defaults to the server\u2019s name.' : 'Defaults to the name set on the Discord page.'),
     field('Picture', shownAvatar, 'An image link. Blank uses the one set on the Discord page.'));
 
+  const drawDelivery = () => {
+    clear(delivery);
+    delivery.append(hook.via === 'bot'
+      ? field('Channel', botChannelPicker(hook), 'The bot needs View Channel, Send Messages and Embed Links there.')
+      : field('Webhook address', url, 'In Discord: channel settings, Integrations, Webhooks, New Webhook, Copy Webhook URL. '
+        + 'There is no need to name it or give it a picture there.'));
+  };
+
   const body = el('div', { class: 'form' });
   const redraw = () => {
     clear(body);
     appendAll(body,
+      hook.via === 'bot'
+        ? el('p', { class: 'hint', text: 'The bot posts under its own name and picture, set in the Discord developer portal.' })
+        : appearance,
       webhookEvents(hook, options),
       own ? null : webhookServers(hook),
       webhookLiveStatus(hook),
+      own ? webhookChannelDot(hook) : null,
       hook.audience === 'players' ? webhookWording(hook, options) : null);
   };
+  via.addEventListener('change', () => {
+    hook.via = via.value;
+    if (hook.via === 'webhook') hook.channelId = '';
+    drawDelivery();
+    redraw();
+  });
   audience.addEventListener('change', () => {
     hook.audience = audience.value;
     // What one audience is sent rarely suits the other.
@@ -4196,7 +4280,8 @@ function webhookCard(hook, options, opts) {
     test.disabled = true;
     try {
       const result = await api.post('/api/notify/test', {
-        id: hook.id || '', url: hook.url.trim(), audience: hook.audience,
+        id: hook.id || '', url: hook.via === 'bot' ? '' : hook.url.trim(), audience: hook.audience,
+        channelId: hook.via === 'bot' ? (hook.channelId || '') : '',
         server: hook.server || '', identity: { name: (hook.identity.name || '').trim(), avatarUrl: (hook.identity.avatarUrl || '').trim() },
       });
       toast(result.message, 'good');
@@ -4204,15 +4289,56 @@ function webhookCard(hook, options, opts) {
     test.disabled = false;
   });
 
+  drawDelivery();
   redraw();
   return el('div', { class: 'form webhook-card' },
     own ? null : el('div', { class: 'row' }, field('Name', name, 'What PZAdmin calls this channel.'), field('Written for', audience)),
-    field('Webhook address', url, 'In Discord: channel settings, Integrations, Webhooks, New Webhook, Copy Webhook URL. '
-      + 'There is no need to name it or give it a picture there.'),
+    field('Send with', via),
+    delivery,
     el('div', { class: 'row-actions' },
       el('label', { class: 'check' }, enabled, el('span', { text: 'Send to this channel' })), test),
-    appearance,
     body);
+}
+
+function botInfo() { return (S.state && S.state.config && S.state.config.notify && S.state.config.notify.bot) || {}; }
+
+// botChannelPicker lists the channels the bot can post in. The list comes
+// from Discord, so it is fetched once per page load and kept.
+function botChannelPicker(hook) {
+  const select = el('select', null, el('option', { value: hook.channelId || '', text: hook.channelId
+    ? 'Loading channels\u2026 (currently ' + hook.channelId + ')' : 'Loading channels\u2026' }));
+  select.addEventListener('change', () => { hook.channelId = select.value; });
+  if (!S.botChannels) S.botChannels = api.get('/api/discord/channels').then((r) => r.channels || []);
+  S.botChannels.then((chans) => {
+    clear(select);
+    select.append(el('option', { value: '', text: chans.length ? 'Choose a channel\u2026' : 'The bot cannot see any channels yet' }));
+    if (hook.channelId && !chans.some((c) => c.id === hook.channelId)) {
+      select.append(el('option', { value: hook.channelId, text: 'Channel ' + hook.channelId + ' (the bot cannot see it)' }));
+    }
+    for (const c of chans) {
+      select.append(el('option', { value: c.id,
+        text: c.guild + ' \u203a ' + (c.category ? c.category + ' \u203a ' : '') + '#' + c.name }));
+    }
+    select.value = hook.channelId || '';
+  }).catch((err) => {
+    S.botChannels = null;
+    clear(select);
+    select.append(el('option', { value: hook.channelId || '', text: 'Could not list channels: ' + err.message }));
+  });
+  return select;
+}
+
+function webhookChannelDot(hook) {
+  const hasBot = !!botInfo().token;
+  const box = el('input', { type: 'checkbox', checked: !!hook.renameChannel, disabled: !hasBot && !hook.renameChannel });
+  box.addEventListener('change', () => { hook.renameChannel = box.checked; });
+  return el('label', { class: 'check' }, box, el('span', null,
+    el('span', { text: 'Show \ud83d\udfe2 / \ud83d\udd34 in the channel\u2019s name' }),
+    el('span', { class: 'hint', text: hasBot
+      ? 'Needs Manage Channels for the bot on this channel. Discord allows two renames every ten minutes, so the '
+        + 'dot follows the server\u2019s settled state: a restart leaves it alone, and a change has to last a '
+        + 'minute and a half before it shows.'
+      : 'Needs the bot: a webhook cannot rename a channel. Connect one on the Discord page.' })));
 }
 
 function webhookEvents(hook, options) {
@@ -4254,7 +4380,7 @@ function webhookServers(hook) {
 function webhookLiveStatus(hook) {
   // A saved address is never sent to the browser, so only a typed one can be
   // checked here. The server has the final say.
-  const discord = !hook.url.trim() || looksLikeDiscord(hook.url.trim());
+  const discord = hook.via === 'bot' || !hook.url.trim() || looksLikeDiscord(hook.url.trim());
   const live = el('input', { type: 'checkbox', checked: hook.liveStatus, disabled: !discord && !hook.liveStatus });
   const names = el('input', { type: 'checkbox', checked: hook.listPlayers, disabled: !hook.liveStatus });
   live.addEventListener('change', () => { hook.liveStatus = live.checked; names.disabled = !live.checked; });

@@ -1354,7 +1354,11 @@ func (a *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 			if n.Identity == (config.Identity{}) && p.Notify.Webhooks == nil {
 				n.Identity = prev.Notify.Identity
 			}
-			hooks, err := validateWebhooks(n.Webhooks, prev.Notify.Webhooks, c.Servers)
+			// The bot is connected and removed through its own endpoints,
+			// which check the token with Discord; the settings form only
+			// ever carries it redacted.
+			n.Bot = prev.Notify.Bot
+			hooks, err := validateWebhooks(n.Webhooks, prev.Notify.Webhooks, c.Servers, n.Bot.Token != "")
 			if err != nil {
 				return err
 			}
@@ -1409,6 +1413,8 @@ func (a *App) handleNotifyTest(w http.ResponseWriter, r *http.Request) {
 		// the test shows the name and picture real messages will have.
 		Server   string          `json:"server"`
 		Identity config.Identity `json:"identity"`
+		// ChannelID tests posting through the bot.
+		ChannelID string `json:"channelId"`
 	}
 	if !decodeJSON(w, r, &p) {
 		return
@@ -1419,6 +1425,20 @@ func (a *App) handleNotifyTest(w http.ResponseWriter, r *http.Request) {
 	}
 	name, avatar := postedAs(cfg, config.Webhook{Server: p.Server, Identity: p.Identity})
 	dest := notify.Destination{URL: strings.TrimSpace(p.URL), Audience: p.Audience, Username: name, AvatarURL: avatar}
+	if id := strings.TrimSpace(p.ChannelID); id != "" {
+		if cfg.Notify.Bot.Token == "" {
+			httpError(w, http.StatusBadRequest, "connect the bot first")
+			return
+		}
+		t := a.targetFor(cfg, config.Webhook{ChannelID: id})
+		dest.URL, dest.ChannelID, dest.BotToken, dest.API = "", t.ChannelID, t.BotToken, t.API
+		if err := a.notify.Test(dest); err != nil {
+			httpError(w, http.StatusBadGateway, "the bot could not post there: "+err.Error())
+			return
+		}
+		ok(w, map[string]any{"message": "Test message sent."})
+		return
+	}
 	if dest.URL == "" || dest.URL == config.Redacted {
 		dest.URL = ""
 		for _, h := range cfg.Notify.Webhooks {

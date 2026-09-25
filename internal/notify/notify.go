@@ -61,12 +61,89 @@ type Message struct {
 	At      time.Time
 }
 
-// Destination is one webhook and what it should be sent.
+// Target is where messages go: a webhook address, or a channel a bot posts
+// in.
+type Target struct {
+	Webhook   string
+	ChannelID string
+	BotToken  string
+	// API is Discord's API root for bot requests. Empty means Discord.
+	API string
+}
+
+// Bot reports whether messages go through a bot rather than a webhook.
+func (t Target) Bot() bool { return t.ChannelID != "" }
+
+// Valid reports whether the target has what it needs to be posted to.
+func (t Target) Valid() bool {
+	if t.Bot() {
+		return t.BotToken != ""
+	}
+	return strings.HasPrefix(t.Webhook, "http")
+}
+
+// Key identifies where a message lives, whichever way it was posted.
+func (t Target) Key() string {
+	if t.Bot() {
+		return "channel:" + t.ChannelID
+	}
+	return t.Webhook
+}
+
+func (t Target) api() string {
+	if t.API != "" {
+		return strings.TrimSuffix(t.API, "/")
+	}
+	return "https://discord.com/api/v10"
+}
+
+func (t Target) auth() string {
+	if t.Bot() {
+		return "Bot " + t.BotToken
+	}
+	return ""
+}
+
+// createURL is where a new message is posted.
+func (t Target) createURL() (string, error) {
+	if t.Bot() {
+		return t.api() + "/channels/" + url.PathEscape(t.ChannelID) + "/messages", nil
+	}
+	u, err := url.Parse(t.Webhook)
+	if err != nil {
+		return "", err
+	}
+	q := u.Query()
+	// Without wait=true Discord answers 204 and never says what it created.
+	q.Set("wait", "true")
+	u.RawQuery = q.Encode()
+	return u.String(), nil
+}
+
+// messageURL addresses one message, keeping a webhook's thread_id so edits
+// land in the same thread.
+func (t Target) messageURL(id string) (string, error) {
+	if t.Bot() {
+		return t.api() + "/channels/" + url.PathEscape(t.ChannelID) + "/messages/" + url.PathEscape(id), nil
+	}
+	u, err := url.Parse(t.Webhook)
+	if err != nil {
+		return "", err
+	}
+	u.Path = strings.TrimSuffix(u.Path, "/") + "/messages/" + url.PathEscape(id)
+	return u.String(), nil
+}
+
+// Destination is one channel and what it should be sent.
 type Destination struct {
 	ID       string
 	URL      string
 	Audience string
-	Events   []string
+	// ChannelID and BotToken send through a bot instead of the webhook URL.
+	ChannelID string
+	BotToken  string
+	API       string
+	Events    []string
 	// Servers limits delivery to these server IDs. Empty means every server.
 	Servers []string
 	// Messages overrides player wording by event kind.
@@ -77,8 +154,16 @@ type Destination struct {
 	AvatarURL string
 }
 
-// identify sets who a message is posted as.
+// Target is where the destination's messages go.
+func (d Destination) Target() Target {
+	return Target{Webhook: d.URL, ChannelID: d.ChannelID, BotToken: d.BotToken, API: d.API}
+}
+
+// identify sets who a message is posted as. A bot always posts as itself.
 func (d Destination) identify(payload map[string]any) map[string]any {
+	if d.ChannelID != "" {
+		return payload
+	}
 	if d.Username != "" {
 		payload["username"] = d.Username
 	}
@@ -190,7 +275,7 @@ func (d Destination) kindFor(m Message) string {
 	if d.Audience == Players {
 		kind = PlayerKind(m)
 	}
-	if kind == "" || !strings.HasPrefix(d.URL, "http") {
+	if kind == "" || !d.Target().Valid() {
 		return ""
 	}
 	for _, e := range d.Events {
@@ -286,16 +371,19 @@ func (n *Notifier) run() {
 // Test sends a message immediately and reports the outcome, for the "send a
 // test notification" button.
 func (n *Notifier) Test(d Destination) error {
-	if !strings.HasPrefix(d.URL, "http") {
+	if !d.Target().Valid() {
+		if d.ChannelID != "" {
+			return fmt.Errorf("connect the bot first")
+		}
 		return fmt.Errorf("the webhook address must start with http:// or https://")
 	}
 	if d.Audience == Players {
-		return n.post(d.URL, d.identify(map[string]any{
+		return n.post(d.Target(), d.identify(map[string]any{
 			"content":          "👋 This channel will get server announcements from PZAdmin.",
 			"allowed_mentions": map[string]any{"parse": []string{}},
 		}))
 	}
-	return n.post(d.URL, d.identify(staffPayload(Message{
+	return n.post(d.Target(), d.identify(staffPayload(Message{
 		Kind: "test", Title: "PZAdmin test notification",
 		Body: "If you can read this, notifications are working.", Severity: "success", At: time.Now(),
 	})))
@@ -310,9 +398,9 @@ func (n *Notifier) deliver(d delivery) {
 	}
 	payload = d.dest.identify(payload)
 	// One retry: most failures are a momentary network blip.
-	if err := n.post(d.dest.URL, payload); err != nil {
+	if err := n.post(d.dest.Target(), payload); err != nil {
 		time.Sleep(3 * time.Second)
-		_ = n.post(d.dest.URL, payload)
+		_ = n.post(d.dest.Target(), payload)
 	}
 }
 
@@ -391,10 +479,15 @@ func reasonPhrase(m Message) string {
 // Announce posts a message written by the operator straight away, for a
 // scheduled job. Unlike Send it reports failure, so the job can.
 func (n *Notifier) Announce(ctx context.Context, d Destination, text string) error {
-	if !strings.HasPrefix(d.URL, "http") {
-		return fmt.Errorf("the webhook has no address")
+	t := d.Target()
+	if !t.Valid() {
+		return fmt.Errorf("the channel has no webhook address or bot")
 	}
-	resp, err := n.do(ctx, http.MethodPost, d.URL, d.identify(map[string]any{
+	target, err := t.createURL()
+	if err != nil {
+		return err
+	}
+	resp, err := n.do(ctx, http.MethodPost, target, t.auth(), d.identify(map[string]any{
 		"content":          truncate(text, 2000),
 		"allowed_mentions": map[string]any{"parse": []string{"roles"}},
 	}))
@@ -405,8 +498,15 @@ func (n *Notifier) Announce(ctx context.Context, d Destination, text string) err
 	return nil
 }
 
-func (n *Notifier) post(url string, payload map[string]any) error {
-	resp, err := n.do(context.Background(), http.MethodPost, url, payload)
+func (n *Notifier) post(t Target, payload map[string]any) error {
+	target := t.Webhook
+	if t.Bot() {
+		var err error
+		if target, err = t.createURL(); err != nil {
+			return err
+		}
+	}
+	resp, err := n.do(context.Background(), http.MethodPost, target, t.auth(), payload)
 	if err != nil {
 		return err
 	}
@@ -415,7 +515,7 @@ func (n *Notifier) post(url string, payload map[string]any) error {
 }
 
 // do sends a request and turns any non-2xx response into an error.
-func (n *Notifier) do(ctx context.Context, method, url string, payload any) (*http.Response, error) {
+func (n *Notifier) do(ctx context.Context, method, url, auth string, payload any) (*http.Response, error) {
 	var body io.Reader
 	if payload != nil {
 		b, err := json.Marshal(payload)
@@ -432,6 +532,10 @@ func (n *Notifier) do(ctx context.Context, method, url string, payload any) (*ht
 	}
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if auth != "" {
+		req.Header.Set("Authorization", auth)
+		req.Header.Set("User-Agent", "DiscordBot (https://github.com/TheWarBoys2/pzadmin, 1)")
 	}
 	resp, err := n.client.Do(req)
 	if err != nil {
@@ -472,6 +576,10 @@ func statusError(resp *http.Response) error {
 	switch resp.StatusCode {
 	case http.StatusNotFound:
 		return ErrGone
+	case http.StatusUnauthorized:
+		return fmt.Errorf("Discord did not accept the bot token")
+	case http.StatusForbidden:
+		return fmt.Errorf("the bot is not allowed to post in that channel: give it View Channel, Send Messages and Embed Links there")
 	case http.StatusTooManyRequests:
 		wait := 5 * time.Second
 		if s, err := strconv.ParseFloat(resp.Header.Get("Retry-After"), 64); err == nil && s > 0 {
@@ -530,30 +638,15 @@ func IsDiscord(raw string) bool {
 	return false
 }
 
-// messageURL addresses one message sent through a webhook, keeping any
-// thread_id so edits land in the same thread.
-func messageURL(webhook, id string) (string, error) {
-	u, err := url.Parse(webhook)
-	if err != nil {
-		return "", err
-	}
-	u.Path = strings.TrimSuffix(u.Path, "/") + "/messages/" + url.PathEscape(id)
-	return u.String(), nil
-}
-
 // PostCard posts a new card and returns its message ID.
-func (n *Notifier) PostCard(ctx context.Context, webhook string, c Card) (string, error) {
-	u, err := url.Parse(webhook)
+func (n *Notifier) PostCard(ctx context.Context, t Target, c Card) (string, error) {
+	target, err := t.createURL()
 	if err != nil {
 		return "", err
 	}
-	q := u.Query()
-	// Without wait=true Discord answers 204 and never says what it created.
-	q.Set("wait", "true")
-	u.RawQuery = q.Encode()
 	payload := c.payload()
-	Destination{Username: c.Username, AvatarURL: c.AvatarURL}.identify(payload)
-	resp, err := n.do(ctx, http.MethodPost, u.String(), payload)
+	Destination{ChannelID: t.ChannelID, Username: c.Username, AvatarURL: c.AvatarURL}.identify(payload)
+	resp, err := n.do(ctx, http.MethodPost, target, t.auth(), payload)
 	if err != nil {
 		return "", err
 	}
@@ -562,19 +655,19 @@ func (n *Notifier) PostCard(ctx context.Context, webhook string, c Card) (string
 		ID string `json:"id"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&msg); err != nil || msg.ID == "" {
-		return "", fmt.Errorf("the webhook did not say which message it created; live status needs a Discord webhook")
+		return "", fmt.Errorf("Discord did not say which message it created; a status message needs a Discord webhook or the bot")
 	}
 	return msg.ID, nil
 }
 
 // EditCard replaces the content of a card posted earlier. It returns ErrGone
 // when someone has deleted the message.
-func (n *Notifier) EditCard(ctx context.Context, webhook, id string, c Card) error {
-	target, err := messageURL(webhook, id)
+func (n *Notifier) EditCard(ctx context.Context, t Target, id string, c Card) error {
+	target, err := t.messageURL(id)
 	if err != nil {
 		return err
 	}
-	resp, err := n.do(ctx, http.MethodPatch, target, c.payload())
+	resp, err := n.do(ctx, http.MethodPatch, target, t.auth(), c.payload())
 	if err != nil {
 		return err
 	}
@@ -583,12 +676,12 @@ func (n *Notifier) EditCard(ctx context.Context, webhook, id string, c Card) err
 }
 
 // DeleteCard removes a card. A message that is already gone is not an error.
-func (n *Notifier) DeleteCard(ctx context.Context, webhook, id string) error {
-	target, err := messageURL(webhook, id)
+func (n *Notifier) DeleteCard(ctx context.Context, t Target, id string) error {
+	target, err := t.messageURL(id)
 	if err != nil {
 		return err
 	}
-	resp, err := n.do(ctx, http.MethodDelete, target, nil)
+	resp, err := n.do(ctx, http.MethodDelete, target, t.auth(), nil)
 	if errors.Is(err, ErrGone) {
 		return nil
 	}

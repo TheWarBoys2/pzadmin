@@ -34,9 +34,9 @@ const liveStatusEvery = 20 * time.Second
 // liveCard is one message PZAdmin owns in a channel.
 type liveCard struct {
 	MessageID string `json:"messageId"`
-	// URL is the webhook the message was posted through. When the operator
-	// points the webhook at another channel, the old message is removed
-	// through this address.
+	// URL is where the message lives: the webhook it was posted through, or
+	// "channel:<id>" for the bot. When the operator points the channel
+	// somewhere else, the old message is removed through this.
 	URL string `json:"url"`
 	// Hash is what the card last said, so an unchanged card is not re-sent.
 	Hash string `json:"hash"`
@@ -45,8 +45,11 @@ type liveCard struct {
 // liveBoard is every card PZAdmin owns, by webhook ID and server ID. It is
 // only touched by the live status loop.
 type liveBoard struct {
-	path    string
-	Cards   map[string]map[string]*liveCard `json:"cards"`
+	path  string
+	Cards map[string]map[string]*liveCard `json:"cards"`
+	// Names is the status-dot state of each channel PZAdmin renames, by
+	// webhook ID.
+	Names   map[string]*nameState `json:"names,omitempty"`
 	backoff map[string]time.Time
 }
 
@@ -90,6 +93,9 @@ func (a *App) liveStatusLoop() {
 		case <-ticker.C:
 			ctx, cancel := context.WithTimeout(context.Background(), liveStatusEvery*3)
 			a.syncLiveStatus(ctx, board)
+			if a.syncChannelNames(ctx, board) {
+				board.save()
+			}
 			cancel()
 		case <-a.stop:
 			// Leave nothing claiming a server is up while nobody is watching.
@@ -108,7 +114,7 @@ func (a *App) syncLiveStatus(ctx context.Context, board *liveBoard) {
 	cfg := a.cfg.Get()
 	wanted := map[string]map[string]bool{}
 	for _, h := range cfg.Notify.Webhooks {
-		if !h.Enabled || !h.LiveStatus || h.URL == "" {
+		if !h.Enabled || !h.LiveStatus || !a.targetFor(cfg, h).Valid() {
 			continue
 		}
 		wanted[h.ID] = map[string]bool{}
@@ -136,7 +142,7 @@ func (a *App) syncLiveStatus(ctx context.Context, board *liveBoard) {
 			}
 			card := liveCardFor(s, st, h.ListPlayers)
 			card.Username, card.AvatarURL = postedAs(cfg, h)
-			wrote, err := board.put(ctx, a.notify, h, s.ID, card)
+			wrote, err := board.put(ctx, a.notify, a.targetFor(cfg, h), h.ID, s.ID, card)
 			changed = changed || wrote
 			if err != nil {
 				board.fail(h, err)
@@ -153,7 +159,7 @@ func (a *App) syncLiveStatus(ctx context.Context, board *liveBoard) {
 			// Switched off, out of scope or deleted: take the card down
 			// rather than leave it frozen on whatever it last said.
 			if c.MessageID != "" && c.URL != "" {
-				if err := a.notify.DeleteCard(ctx, c.URL, c.MessageID); err != nil {
+				if err := a.notify.DeleteCard(ctx, a.targetFromKey(cfg, c.URL), c.MessageID); err != nil {
 					log.Printf("live status: could not remove an old status message: %v", err)
 				}
 			}
@@ -170,26 +176,30 @@ func (a *App) syncLiveStatus(ctx context.Context, board *liveBoard) {
 }
 
 // put makes one card say what card says, reporting whether the board changed.
-func (b *liveBoard) put(ctx context.Context, n *notify.Notifier, h config.Webhook, serverID string, card notify.Card) (bool, error) {
+func (b *liveBoard) put(ctx context.Context, n *notify.Notifier, t notify.Target, hookID, serverID string, card notify.Card) (bool, error) {
 	hash := cardHash(card)
-	if b.Cards[h.ID] == nil {
-		b.Cards[h.ID] = map[string]*liveCard{}
+	if b.Cards[hookID] == nil {
+		b.Cards[hookID] = map[string]*liveCard{}
 	}
-	cur := b.Cards[h.ID][serverID]
-	if cur != nil && cur.URL == h.URL && cur.Hash == hash {
+	cur := b.Cards[hookID][serverID]
+	if cur != nil && cur.URL == t.Key() && cur.Hash == hash {
 		return false, nil
 	}
 	card.At = time.Now()
 
-	// The webhook now points somewhere else: the old message goes, and a new
+	// The channel now points somewhere else: the old message goes, and a new
 	// one is posted where the operator wants it.
-	if cur != nil && cur.URL != h.URL {
-		_ = n.DeleteCard(ctx, cur.URL, cur.MessageID)
-		delete(b.Cards[h.ID], serverID)
+	if cur != nil && cur.URL != t.Key() {
+		old := notify.Target{Webhook: cur.URL}
+		if strings.HasPrefix(cur.URL, "channel:") {
+			old = notify.Target{ChannelID: strings.TrimPrefix(cur.URL, "channel:"), BotToken: t.BotToken, API: t.API}
+		}
+		_ = n.DeleteCard(ctx, old, cur.MessageID)
+		delete(b.Cards[hookID], serverID)
 		cur = nil
 	}
 	if cur != nil {
-		err := n.EditCard(ctx, h.URL, cur.MessageID, card)
+		err := n.EditCard(ctx, t, cur.MessageID, card)
 		if err == nil {
 			cur.Hash = hash
 			return true, nil
@@ -198,13 +208,13 @@ func (b *liveBoard) put(ctx context.Context, n *notify.Notifier, h config.Webhoo
 			return false, err
 		}
 		// Someone deleted the message. Post a fresh one.
-		delete(b.Cards[h.ID], serverID)
+		delete(b.Cards[hookID], serverID)
 	}
-	id, err := n.PostCard(ctx, h.URL, card)
+	id, err := n.PostCard(ctx, t, card)
 	if err != nil {
 		return true, err
 	}
-	b.Cards[h.ID][serverID] = &liveCard{MessageID: id, URL: h.URL, Hash: hash}
+	b.Cards[hookID][serverID] = &liveCard{MessageID: id, URL: t.Key(), Hash: hash}
 	return true, nil
 }
 
@@ -242,7 +252,7 @@ func (a *App) pauseLiveStatus(ctx context.Context, board *liveBoard) {
 				Footer:      "Updated by PZAdmin",
 				At:          time.Now(),
 			}
-			if err := a.notify.EditCard(ctx, c.URL, c.MessageID, card); err == nil {
+			if err := a.notify.EditCard(ctx, a.targetFromKey(cfg, c.URL), c.MessageID, card); err == nil {
 				// Whatever the server is doing next time, it is news.
 				c.Hash = ""
 			}

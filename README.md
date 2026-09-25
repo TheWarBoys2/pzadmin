@@ -203,7 +203,8 @@ Webhooks, metrics, backups and schedules are configured in the web interface.
 
 ## Discord
 
-PZAdmin posts to Discord through webhooks. It doesn't need a bot. Everything is on the **Discord** page in the sidebar.
+PZAdmin posts to Discord through webhooks, or through a bot if you have one. Everything is on the **Discord** page in
+the sidebar.
 
 **Give each server its own channel.** In Discord, open the channel's settings, then Integrations → Webhooks →
 New Webhook → Copy Webhook URL. You don't need to name it or give it a picture there. On the Discord page, click
@@ -221,6 +222,25 @@ Players only see the servers whose channels they can read.
 **Name and picture come from PZAdmin.** Messages are posted as the name and picture set under
 **How PZAdmin appears in Discord**. A server's own channel uses the server's name, and any channel can have its own
 name and picture. The picture has to be a link Discord can reach, such as an image uploaded to Discord.
+
+**Or use a bot.** Webhooks need no bot, but if you'd rather not make a webhook per channel, or you already run a
+bot, connect it under **Discord bot** on the same page:
+
+1. At [discord.com/developers](https://discord.com/developers/applications): New Application → Bot → Reset Token, and
+   copy the token.
+2. OAuth2 → URL Generator: tick **bot**, then View Channels, Send Messages, Embed Links and Read Message History, plus
+   **Manage Channels** if you want the status dot. Open the generated link to invite the bot.
+3. Paste the token into PZAdmin and click **Connect**.
+
+Each channel can then send with the bot, and you pick the channel from a list. Messages sent by the bot use the
+bot's own name and picture. PZAdmin never keeps a connection to Discord open: it only brings a new bot online once
+when you connect it, because Discord won't let a bot post before it has been online.
+
+**Status dot in the channel name.** With the bot connected, a server's own channel can show 🟢 or 🔴 in front of
+its name. This works whether the channel sends with a webhook or the bot, as long as the bot has Manage Channels
+there. Discord only allows two renames per channel every ten minutes, so the dot follows the server's settled state:
+a restart you started leaves it alone, and a change has to last a minute and a half before it shows. The status
+message and announcements carry the detail. Turn the dot off and the channel gets its plain name back.
 
 **Staff and shared channels** cover several servers at once: a staff channel gets outages, watchdog restarts, failed
 backups and admin actions with full detail; a shared channel announces several servers in one place.
