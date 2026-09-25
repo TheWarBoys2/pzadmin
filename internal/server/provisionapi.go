@@ -154,7 +154,7 @@ func (a *App) handleStackCreate(w http.ResponseWriter, r *http.Request) {
 			serverID = s.ID
 		}
 	}
-	a.event(store.Event{Kind: "admin.action", Severity: store.SevInfo, Source: "ui", Actor: actor(r),
+	a.event(store.Event{Kind: "admin.action", Severity: store.SevInfo, Source: source(r), Actor: actor(r),
 		ServerID: serverID, Server: plan.Name, Message: "Created stack " + plan.Name,
 		Detail: "Not started yet. Run: " + plan.Command})
 	writeJSON(w, map[string]any{
@@ -209,7 +209,7 @@ func (a *App) handleStackEnvSave(w http.ResponseWriter, r *http.Request) {
 		_ = os.WriteFile(filepath.Join(backupDir, ".env-"+time.Now().UTC().Format("20060102-150405")), previous, 0o600)
 	}
 	a.rescan()
-	a.event(store.Event{Kind: "config.edit", Severity: store.SevWarn, Source: "ui", Actor: actor(r),
+	a.event(store.Event{Kind: "config.edit", Severity: store.SevWarn, Source: source(r), Actor: actor(r),
 		ServerID: srv.ID, Server: srv.Name, Message: "Edited .env: " + strings.Join(changed, ", "),
 		Detail: "Takes effect when the container is recreated. The previous file was kept."})
 	ok(w, map[string]any{

@@ -119,9 +119,18 @@ type App struct {
 	discMu   sync.Mutex
 	lastScan stacks.Result
 	sess     *sessionStore
+	keys     *apiKeyStore
 	limiter  *loginLimiter
 	assets   fs.FS
 	dataDir  string
+
+	// apiLimit, apiFail, apiInflight and apiStreams throttle /api/v1; see
+	// apiv1.go.
+	apiLimit    *rateLimiter
+	apiFail     *loginLimiter
+	apiInflight sync.Map
+	apiStreams  sync.Map
+	apiStats    apiCounters
 
 	mu       sync.RWMutex
 	status   map[string]*Status
@@ -188,6 +197,9 @@ func New(opts Options) (*App, error) {
 		scripts:   pz.NewScriptScanner(30 * time.Minute),
 		custom:    loadCustomCatalogue(filepath.Join(opts.DataDir, "catalogue.json")),
 		sess:      newSessionStore(filepath.Join(opts.DataDir, "sessions.json")),
+		keys:      newAPIKeyStore(filepath.Join(opts.DataDir, "apikeys.json")),
+		apiLimit:  newRateLimiter(),
+		apiFail:   newLoginLimiter(),
 		limiter:   newLoginLimiter(),
 		assets:    opts.Assets,
 		dataDir:   opts.DataDir,
@@ -277,6 +289,7 @@ func (a *App) Close() {
 		}
 		a.event(store.Event{Kind: "system.stop", Source: "system", Message: "PZAdmin stopped"})
 		a.store.Flush()
+		a.keys.flush()
 		a.notify.Close()
 	})
 }
@@ -484,6 +497,15 @@ func (a *App) Handler() http.Handler {
 	get("/api/discord/channels", a.handleBotChannels)
 	post("/api/import", a.handleImport)
 	post("/api/sessions/revoke", a.handleRevokeSessions)
+	get("/api/keys", a.handleAPIKeys)
+	post("/api/keys/create", a.handleAPIKeyCreate)
+	post("/api/keys/revoke", a.handleAPIKeyRevoke)
+	post("/api/keys/revoke-all", a.handleAPIKeyRevokeAll)
+
+	// The external API. It takes an API key only, never a session cookie,
+	// and the routes above take a session only, never a key: a key cannot
+	// reach settings, the password or key management.
+	a.routeAPIv1(mux)
 
 	mux.HandleFunc("/", a.handleStatic)
 	return securityHeaders(a.logRequests(mux))
@@ -530,6 +552,17 @@ func (a *App) auth(next http.HandlerFunc, mutating bool) http.Handler {
 }
 
 type ctxUser struct{}
+
+type ctxSource struct{}
+
+// source is the event log's Source for a request: "api" for an API key,
+// "ui" for a browser session.
+func source(r *http.Request) string {
+	if v, ok := r.Context().Value(ctxSource{}).(string); ok {
+		return v
+	}
+	return "ui"
+}
 
 func actor(r *http.Request) string {
 	if v, ok := r.Context().Value(ctxUser{}).(string); ok {

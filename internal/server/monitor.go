@@ -678,7 +678,7 @@ func restartReason(source, reason string) string {
 		return notify.ReasonScheduled
 	case strings.Contains(reason, "mod update"):
 		return notify.ReasonMods
-	case source == "ui":
+	case source == "ui" || source == "api":
 		return notify.ReasonManual
 	}
 	return ""
@@ -703,6 +703,7 @@ func (a *App) housekeepingLoop() {
 		select {
 		case <-ticker.C:
 			a.sess.gc()
+			a.keys.flush()
 			a.store.Flush()
 			if n := a.store.Prune(); n > 0 {
 				log.Printf("housekeeping: removed %d expired history files", n)

@@ -38,6 +38,17 @@
   (`DiscordEnable`, `DiscordToken`, and the Build 42 chat, log and command
   channels). The bot token is treated as a secret, like the RCON password.
 
+### API
+- An HTTP API at `/api/v1` for bots and scripts: server status (with the
+  public description and join address), players, the event log, a live event
+  stream, and commands, restart, stop, start, backups and the RCON console.
+- API keys under Settings: each has read, control or console access, can be
+  limited to some servers and can expire. A key is shown once and only its
+  hash is stored. Keys cannot reach settings, the password or other keys.
+- Everything a key does is in the event log as `key:<name>`, and is announced
+  in Discord the same as the same action from the web interface.
+- Per-key rate limits, and `/metrics` counts API requests per key.
+
 ## 1.0.0
 
 First public release.

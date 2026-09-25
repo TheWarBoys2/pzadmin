@@ -310,7 +310,7 @@ func (a *App) handleCapabilitiesCheck(w http.ResponseWriter, r *http.Request) {
 			missing++
 		}
 	}
-	a.event(store.Event{Kind: "admin.action", Severity: store.SevInfo, Source: "ui", Actor: actor(r),
+	a.event(store.Event{Kind: "admin.action", Severity: store.SevInfo, Source: source(r), Actor: actor(r),
 		ServerID: srv.ID, Server: srv.Name, Message: "Checked the server's commands",
 		Detail: fmt.Sprintf("%d listed by the server; %d catalogue commands not available", caps.Listed, missing)})
 	ok(w, map[string]any{"capabilities": caps})

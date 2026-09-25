@@ -276,7 +276,7 @@ func (a *App) handleCatalogueAdd(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	a.event(store.Event{Kind: "admin.action", Severity: store.SevInfo, Source: "ui", Actor: actor(r),
+	a.event(store.Event{Kind: "admin.action", Severity: store.SevInfo, Source: source(r), Actor: actor(r),
 		Message: "Added " + p.Kind + " " + p.ID + " to the catalogue"})
 	ok(w, map[string]any{"entries": a.custom.list()})
 }
