@@ -24,6 +24,9 @@ const (
 
 	// scopeRead covers every GET under /api/v1. Every key has it.
 	scopeRead = "read"
+	// scopeRequest asks for a mod to be added to a server. The request waits
+	// for the administrator to approve it, so it changes nothing by itself.
+	scopeRequest = "request"
 	// scopeControl runs catalogue commands, restarts, stops, starts and
 	// backups: the things the dashboard buttons do.
 	scopeControl = "control"
@@ -34,7 +37,7 @@ const (
 	maxAPIKeys = 50
 )
 
-var apiScopes = []string{scopeRead, scopeControl, scopeConsole}
+var apiScopes = []string{scopeRead, scopeRequest, scopeControl, scopeConsole}
 
 // apiKey is one key that lets a script or another service call /api/v1 with
 // an Authorization: Bearer header instead of a browser session.
@@ -140,7 +143,7 @@ func normaliseScopes(in []string) ([]string, error) {
 			}
 		}
 		if !known {
-			return nil, errors.New("unknown scope " + s + `; use "read", "control" or "console"`)
+			return nil, errors.New("unknown scope " + s + `; use "read", "request", "control" or "console"`)
 		}
 		want[s] = true
 	}

@@ -150,6 +150,9 @@ func (a *App) routeAPIv1(mux *http.ServeMux) {
 	handle("GET /api/v1/servers/{id}/players", scopeRead, rateRead, a.apiPlayers)
 	handle("GET /api/v1/events", scopeRead, rateRead, a.apiEvents)
 	handle("GET /api/v1/stream", scopeRead, rateRead, a.apiStream)
+	handle("GET /api/v1/servers/{id}/mod-requests", scopeRead, rateRead, a.apiModRequestList)
+
+	handle("POST /api/v1/servers/{id}/mod-requests", scopeRequest, rateWrite, a.apiModRequestCreate)
 
 	handle("POST /api/v1/servers/{id}/actions", scopeControl, rateWrite, a.apiForward(a.handleAction))
 	handle("POST /api/v1/servers/{id}/lifecycle", scopeControl, rateWrite, a.apiLifecycle)
@@ -220,12 +223,22 @@ func setRetryAfter(w http.ResponseWriter, wait time.Duration) {
 	w.Header().Set("Retry-After", strconv.Itoa(secs))
 }
 
-// apiServerFor resolves the {id} in the path. A server the key may not see is
-// reported as missing, so a limited key cannot learn which servers exist.
+// apiServerFor resolves the {id} in the path, which may be a server's ID or,
+// failing that, its name in any case, so a bot can use the name people know.
+// A server the key may not see is reported as missing, so a limited key
+// cannot learn which servers exist.
 func (a *App) apiServerFor(w http.ResponseWriter, r *http.Request) (config.Server, bool) {
 	id := r.PathValue("id")
 	srv, found := a.cfg.Server(id)
-	if !found || !apiKeyFrom(r).allows(id) {
+	if !found {
+		for _, s := range a.cfg.Get().Servers {
+			if strings.EqualFold(strings.TrimSpace(s.Name), strings.TrimSpace(id)) {
+				srv, found = s, true
+				break
+			}
+		}
+	}
+	if !found || !apiKeyFrom(r).allows(srv.ID) {
 		httpError(w, http.StatusNotFound, "no such server")
 		return config.Server{}, false
 	}

@@ -84,7 +84,7 @@ const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8')
   'stackStatusPanel, stackServersPanel, stackCreatePanel, paintPlan, buildControl, StackState, ' +
   'newWizard, applyWizardMods, settingsEditor, wizardRequest, ' +
   'commandAvailability, isStopped, powerButton, editWebhook, viewDiscord, editServerChannel, ' +
-  'apiKeyCreateDialog, apiKeysBody };\n';
+  'apiKeyCreateDialog, apiKeysBody, modRequestsPanel };\n';
 
 vm.createContext(sandbox);
 vm.runInContext(source, sandbox, { filename: 'app.js' });
@@ -98,7 +98,7 @@ const {
   stackStatusPanel, stackServersPanel, stackCreatePanel, paintPlan, buildControl, StackState,
   newWizard, applyWizardMods, settingsEditor, wizardRequest,
   commandAvailability, isStopped, powerButton, editWebhook, viewDiscord, editServerChannel,
-  apiKeyCreateDialog, apiKeysBody,
+  apiKeyCreateDialog, apiKeysBody, modRequestsPanel,
 } = sandbox.__exports__;
 
 // The views read from S, so give it the shape a loaded page would have.
@@ -1066,6 +1066,23 @@ test('an API key list keeps a hostile key name as text', () => {
   assert.ok(host.textContent.includes('<img src=x onerror=alert(1)>'));
   assert.strictEqual(host.querySelectorAll('img').length, 0);
   assert.ok(host.textContent.includes('Console'));
+});
+
+test('mod requests from a bot render as text, pending first with buttons', () => {
+  const panel = modRequestsPanel({ id: 's1', name: 'Riverside' }, 'riv.ini', [
+    { id: 'r1', workshopId: '2169435993', title: '<img src=x onerror=alert(1)>', modIds: ['A'],
+      requestedBy: '<script>x</script>', note: HOSTILE[0], via: 'cog', status: 'pending',
+      created: new Date().toISOString() },
+    { id: 'r2', workshopId: '1', title: '', modIds: [], requestedBy: 'Glenn', status: 'rejected',
+      reason: 'Too heavy', created: new Date().toISOString() },
+  ], () => false);
+  assert.strictEqual(panel.querySelectorAll('img').length + panel.querySelectorAll('script').length, 0);
+  assert.ok(panel.textContent.includes('<script>x</script>'), 'requester shown literally');
+  assert.ok(panel.textContent.includes('1 waiting'));
+  assert.ok(panel.textContent.includes('Workshop item 1'), 'an untitled request is named by its ID');
+  assert.ok(panel.textContent.includes('Reason: Too heavy'));
+  const buttons = Array.from(panel.querySelectorAll('button')).map((b) => b.textContent);
+  assertList(buttons, ['Approve', 'Reject'], 'only the pending request has buttons');
 });
 
 // --- report -----------------------------------------------------------------

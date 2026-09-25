@@ -305,7 +305,7 @@ var NotifyEvents = []string{
 	"server.down", "server.up", "server.recovered", "server.restart",
 	"server.stop", "server.start",
 	"player.join", "player.leave", "mods.update", "backup.done", "backup.failed",
-	"admin.action",
+	"admin.action", "mods.request",
 }
 
 // PlayerEvents enumerates the events a player webhook can be sent. The rest
