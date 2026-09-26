@@ -34,8 +34,8 @@ Most of this update needs nothing from you. These do:
 - The log says clearly what doesn't work when Arcane isn't set up.
 - A fresh install works with any `user:` in the compose file, not only
   1000:1000.
-- The compose file has log rotation and a stop grace period, so PZAdmin always
-  gets to finish saving when it's stopped.
+- The compose file has log rotation, and a 30-second stop grace period that
+  gives PZAdmin time to finish saving when it's stopped.
 
 ### Backups
 - `PZADMIN_BACKUP_DIR` puts backups in a folder you choose, as plain files.
