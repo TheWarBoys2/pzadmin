@@ -39,19 +39,40 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          # The same Go as the Dockerfile's builder (golang:1.24-bookworm),
+          # The same Go as the Dockerfile's builder (golang:1.27-trixie),
           # so the tests here and inside the image build agree.
-          go-version: "1.24.x"
+          go-version: "1.27.x"
           # No third-party modules, so there is nothing worth caching.
           cache: false
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
 
       - name: go vet
         run: go vet ./...
 
+      # Pinned versions, run straight from the module proxy; nothing is
+      # added to go.mod.
+      - name: staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
+
+      # The standard library is PZAdmin's whole dependency tree, so this is
+      # what catches a Go release that needs bumping.
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+
       # The runner has node, so the frontend suite in web/testkit runs too
-      # (TestFrontend skips only when node is missing).
-      - name: go test
-        run: go test ./...
+      # (TestFrontend fails in CI if node is missing, and skips elsewhere).
+      - name: go test (race detector)
+        env:
+          CI: "true"
+        run: go test -race ./...
 
   image:
     name: build and publish

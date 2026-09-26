@@ -11,10 +11,10 @@
 # Pin the builder hard. GO_IMAGE is an argument so you can pin by digest without
 # editing this file:
 #
-#   docker pull golang:1.24-bookworm
-#   docker image inspect golang:1.24-bookworm -f '{{index .RepoDigests 0}}'
+#   docker pull golang:1.27-trixie
+#   docker image inspect golang:1.27-trixie -f '{{index .RepoDigests 0}}'
 #   docker build --build-arg GO_IMAGE=golang@sha256:... .
-ARG GO_IMAGE=golang:1.24-bookworm
+ARG GO_IMAGE=golang:1.27-trixie
 
 # The builder always runs on the machine doing the build and cross-compiles
 # for the target. Go needs no emulator for that, so an arm64 image is built as

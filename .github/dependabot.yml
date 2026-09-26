@@ -1,0 +1,12 @@
+# Keeps the pinned actions and the builder image current. PZAdmin has no Go
+# modules to update, so only these two are watched.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: monthly

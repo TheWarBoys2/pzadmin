@@ -347,7 +347,7 @@ func cardHash(c notify.Card) string {
 }
 
 var markdownEscaper = strings.NewReplacer(
-	`\`, `\\`, `*`, `\*`, `_`, `\_`, "`", "\\`", `~`, `\~`, `|`, `\|`, `>`, `\>`, `#`, `\#`, `<`, `\<`, `@`, "@​",
+	`\`, `\\`, `*`, `\*`, `_`, `\_`, "`", "\\`", `~`, `\~`, `|`, `\|`, `>`, `\>`, `#`, `\#`, `<`, `\<`, `@`, "@\u200b",
 )
 
 // escapeMarkdown stops a player name from formatting or mentioning anything.

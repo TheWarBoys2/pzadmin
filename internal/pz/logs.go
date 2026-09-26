@@ -188,7 +188,7 @@ func parseLogLine(line, source string) (LogEntry, bool) {
 	if trimmed == "" {
 		return LogEntry{}, false
 	}
-	e := LogEntry{At: parseLogTime(trimmed), Text: trimmed, Source: strings.Trim(source, "_.txt"), Kind: LogOther}
+	e := LogEntry{At: parseLogTime(trimmed), Text: trimmed, Source: strings.TrimSuffix(strings.TrimPrefix(source, "_"), ".txt"), Kind: LogOther}
 	if e.At.IsZero() {
 		e.At = time.Now()
 	}
