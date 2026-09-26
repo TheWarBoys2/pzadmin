@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Known-answer tests for PBKDF2-HMAC-SHA256. If these pass, the hand-rolled
@@ -240,5 +241,51 @@ func TestUnredactWebhooksMatchesByID(t *testing.T) {
 	UnredactWebhooks(next, prev)
 	if next[0].URL != "https://two" || next[1].URL != "" || next[2].URL != "https://new" {
 		t.Fatalf("got %#v", next)
+	}
+}
+
+func TestQuietHoursContains(t *testing.T) {
+	at := func(clock string) time.Time {
+		v, _ := time.Parse("15:04", clock)
+		return time.Date(2026, 9, 25, v.Hour(), v.Minute(), 0, 0, time.UTC)
+	}
+	overnight := QuietHours{Enabled: true, Start: "23:00", End: "08:00"}
+	daytime := QuietHours{Enabled: true, Start: "09:30", End: "17:00"}
+	for _, tc := range []struct {
+		q     QuietHours
+		clock string
+		want  bool
+	}{
+		{overnight, "23:00", true},
+		{overnight, "03:00", true},
+		{overnight, "07:59", true},
+		{overnight, "08:00", false},
+		{overnight, "22:59", false},
+		{daytime, "09:30", true},
+		{daytime, "16:59", true},
+		{daytime, "17:00", false},
+		{daytime, "03:00", false},
+		{QuietHours{Start: "23:00", End: "08:00"}, "03:00", false},
+		{QuietHours{Enabled: true, Start: "08:00", End: "08:00"}, "08:00", false},
+		{QuietHours{Enabled: true, Start: "nope", End: "08:00"}, "03:00", false},
+	} {
+		if got := tc.q.Contains(at(tc.clock)); got != tc.want {
+			t.Errorf("%+v at %s: got %v, want %v", tc.q, tc.clock, got, tc.want)
+		}
+	}
+}
+
+func TestQuietHoursFromBeforeTheChoiceCoverScheduledJobs(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{"notify":{"quietHours":{"enabled":true,"start":"23:00","end":"08:00"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q := s.Get().Notify.QuietHours; !q.Scheduled || q.Manual {
+		t.Fatalf("older quiet hours should keep covering scheduled jobs only: %#v", q)
 	}
 }

@@ -4103,7 +4103,7 @@ function viewDiscord(main) {
         + 'restarts and failed backups for every server. A shared channel announces several servers in one place.' }))));
 
   main.append(el('div', { class: 'grid halves', style: { marginTop: '18px' } },
-    discordOptions(), discordGameBot()));
+    discordQuietHours(), discordOptions(), discordGameBot()));
 }
 
 /* discordBot connects an optional bot. Webhooks do everything else on
@@ -4146,7 +4146,7 @@ function discordBot() {
       connected ? el('span', { class: 'pill on', text: 'Connected as ' + (bot.name || 'a bot') }) : null),
     el('div', { class: 'panel-body' }, el('div', { class: 'form' },
       el('p', { class: 'muted', text: 'Webhooks need no bot. A bot lets you pick channels from a list instead of '
-        + 'pasting a webhook for each, and can show \ud83d\udfe2 or \ud83d\udd34 in a server\u2019s channel name. '
+        + 'pasting a webhook for each, and can show \ud83d\udfe2, \ud83d\udfe0 or \ud83d\udd34 in a server\u2019s channel name. '
         + 'An existing bot works too.' }),
       connected ? null : el('ol', { class: 'hint steps' },
         el('li', { text: 'At discord.com/developers, New Application, then Bot, Reset Token, and copy it.' }),
@@ -4251,6 +4251,43 @@ function webhookRow(hook, index) {
       webhookTestButton(hook),
       el('button', { class: 'btn small', type: 'button', text: 'Edit', onclick: () => editWebhook(index) }),
       el('button', { class: 'btn small danger', type: 'button', text: 'Remove', onclick: () => removeWebhook(index) })));
+}
+
+// discordQuietHours sets a nightly window when routine restarts, scheduled,
+// asked for by hand, or both, post nothing to Discord.
+function discordQuietHours() {
+  const quiet = ((S.state.config || {}).notify || {}).quietHours || {};
+  const fresh = !quiet.enabled && !quiet.scheduled && !quiet.manual;
+  const enabled = el('input', { type: 'checkbox', checked: !!quiet.enabled });
+  const scheduled = el('input', { type: 'checkbox', checked: fresh || !!quiet.scheduled });
+  const manual = el('input', { type: 'checkbox', checked: !!quiet.manual });
+  const start = el('input', { type: 'time', value: quiet.start || '23:00' });
+  const end = el('input', { type: 'time', value: quiet.end || '08:00' });
+  const save = el('button', { class: 'btn primary', type: 'button', text: 'Save' });
+  save.addEventListener('click', async () => {
+    save.disabled = true;
+    try {
+      await api.post('/api/settings', { notify: { quietHours: {
+        enabled: enabled.checked, scheduled: scheduled.checked, manual: manual.checked,
+        start: start.value, end: end.value,
+      } } });
+      toast('Saved.', 'good');
+      await refreshState();
+    } catch (err) { toast(err.message, 'bad'); save.disabled = false; }
+  });
+  return el('div', { class: 'panel' },
+    el('div', { class: 'panel-head' }, el('h3', { text: 'Quiet hours' })),
+    el('div', { class: 'panel-body' }, el('div', { class: 'form' },
+      el('label', { class: 'check' }, enabled, el('span', { text: 'Keep Discord quiet overnight' })),
+      el('label', { class: 'check' }, scheduled, el('span', { text: 'Scheduled jobs' })),
+      el('label', { class: 'check' }, manual, el('span', { text: 'Restarts, stops and starts I do myself' })),
+      el('p', { class: 'muted', text: 'Ticked actions still happen, and players in game still see any countdown, '
+        + 'but their restart, stop, start and back-online posts are not sent. For scheduled jobs that also covers backups and '
+        + 'Discord steps. Crashes, outages and failed backups always post.' }),
+      field('From', start, 'Times use ' + (S.state.timezone || 'UTC') + '. A window that ends earlier than it '
+        + 'starts runs past midnight.'),
+      field('Until', end),
+      el('div', { class: 'form-actions' }, save))));
 }
 
 function discordOptions() {
@@ -4515,11 +4552,11 @@ function webhookChannelDot(hook) {
   const box = el('input', { type: 'checkbox', checked: !!hook.renameChannel, disabled: !hasBot && !hook.renameChannel });
   box.addEventListener('change', () => { hook.renameChannel = box.checked; });
   return el('label', { class: 'check' }, box, el('span', null,
-    el('span', { text: 'Show \ud83d\udfe2 / \ud83d\udd34 in the channel\u2019s name' }),
+    el('span', { text: 'Show \ud83d\udfe2 / \ud83d\udfe0 / \ud83d\udd34 in the channel\u2019s name' }),
     el('span', { class: 'hint', text: hasBot
       ? 'Needs Manage Channels for the bot on this channel. Discord allows two renames every ten minutes, so the '
-        + 'dot follows the server\u2019s settled state: a restart leaves it alone, and a change has to last a '
-        + 'minute and a half before it shows.'
+        + 'dot shows \ud83d\udfe0 straight away for a restart PZAdmin does and \ud83d\udfe2 once it is back, while '
+        + 'an outage or recovery has to last a minute and a half before it shows.'
       : 'Needs the bot: a webhook cannot rename a channel. Connect one on the Discord page.' })));
 }
 

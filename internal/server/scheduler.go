@@ -245,6 +245,9 @@ func (a *App) executeStep(ctx context.Context, step config.Step, srv config.Serv
 		return fmt.Sprintf("archived %d files, %s", res.Archive.Files, humanBytes(res.Archive.Size)), nil
 
 	case "discord":
+		if q := a.cfg.Get().Notify.QuietHours; q.Scheduled && a.quietNow() {
+			return "skipped, quiet hours", nil
+		}
 		h := webhookByID(a.cfg.Get(), step.Webhook)
 		switch {
 		case h == nil:

@@ -46,6 +46,9 @@ type Status struct {
 	// restartWindow overrides how long Restarting may last; zero is the
 	// default window.
 	restartWindow time.Duration
+	// restartSource is who asked for the restart in progress ("schedule",
+	// "ui", "api"), so quiet hours can treat its back-online post the same.
+	restartSource string
 
 	// Deploying is set while Arcane runs docker compose up for the server.
 	Deploying bool `json:"deploying,omitempty"`
@@ -430,6 +433,9 @@ func (a *App) applyNotifyConfig(cfg config.Config) {
 // event records an event and mirrors it to the webhooks.
 func (a *App) event(e store.Event) {
 	a.store.Append(e)
+	if a.quietNotice(e) {
+		return
+	}
 	sev := string(e.Severity)
 	if sev == "" {
 		sev = "info"
@@ -448,6 +454,38 @@ func (a *App) event(e store.Event) {
 		m.Minutes = minutes
 	}
 	a.notify.Send(m)
+}
+
+// quietNotice reports whether an event is routine news arriving during quiet
+// hours, from a scheduled job or a restart, stop or start someone asked for,
+// whichever the
+// operator chose to silence. It is still logged, just not posted to Discord.
+// Anything that needs a person, such as a failed backup or a crash, still posts.
+func (a *App) quietNotice(e store.Event) bool {
+	var by string
+	switch e.Kind {
+	case "server.restart", "server.stop", "server.start":
+		by = e.Source
+	case "backup.done":
+		if e.Source == "schedule" {
+			by = e.Source
+		}
+	case "server.up":
+		by, _ = e.Meta["restartedBy"].(string)
+	}
+	q := a.cfg.Get().Notify.QuietHours
+	switch by {
+	case "schedule":
+		return q.Scheduled && a.quietNow()
+	case "ui", "api":
+		return q.Manual && a.quietNow()
+	}
+	return false
+}
+
+// quietNow reports whether it is currently quiet hours.
+func (a *App) quietNow() bool {
+	return a.cfg.Get().Notify.QuietHours.Contains(time.Now().In(a.cfg.Location()))
 }
 
 // rconFor returns the pooled RCON client for a server, rebuilding it if the

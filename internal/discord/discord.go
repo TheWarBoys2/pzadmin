@@ -271,8 +271,9 @@ func IsID(s string) bool { return snowflake.MatchString(s) }
 
 // Dots PZAdmin puts at the front of a channel name.
 const (
-	DotOnline  = "🟢"
-	DotOffline = "🔴"
+	DotOnline     = "🟢"
+	DotOffline    = "🔴"
+	DotRestarting = "🟠"
 )
 
 var dotPrefix = regexp.MustCompile(`^(?:🟢|🔴|🟡|⚫|⚪|🟠)[\s\-_|┃・•]*`)

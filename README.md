@@ -237,10 +237,11 @@ Each channel can then send with the bot, and you pick the channel from a list. M
 bot's own name and picture. PZAdmin never keeps a connection to Discord open: it only brings a new bot online once
 when you connect it, because Discord won't let a bot post before it has been online.
 
-**Status dot in the channel name.** With the bot connected, a server's own channel can show 🟢 or 🔴 in front of
-its name. This works whether the channel sends with a webhook or the bot, as long as the bot has Manage Channels
-there. Discord only allows two renames per channel every ten minutes, so the dot follows the server's settled state:
-a restart you started leaves it alone, and a change has to last a minute and a half before it shows. The status
+**Status dot in the channel name.** With the bot connected, a server's own channel can show 🟢 (up), 🟠 (restarting)
+or 🔴 (down) in front of its name. This works whether the channel sends with a webhook or the bot, as long as the bot
+has Manage Channels there. Discord only allows two renames per channel every ten minutes. A restart or deploy
+PZAdmin does shows 🟠 straight away and 🟢 once the server answers again, which uses both. An outage or recovery has to
+last a minute and a half before it shows, so a short blip doesn't spend a rename. The status
 message and announcements carry the detail. Turn the dot off and the channel gets its plain name back.
 
 **Staff and shared channels** cover several servers at once: a staff channel gets outages, watchdog restarts, failed
@@ -248,6 +249,12 @@ backups and admin actions with full detail; a shared channel announces several s
 
 **Scheduled jobs** can post too: add a **Post to Discord** step, choose the channel and write the message.
 `{server}` and `{players}` are filled in when the job runs.
+
+**Quiet hours** keep Discord quiet overnight. Switch them on under **Quiet hours** on the Discord page, pick the
+times in PZAdmin's timezone (23:00 until 08:00 runs overnight), and tick what to keep quiet: **Scheduled jobs**, **Restarts,
+stops and starts I do myself** (from the dashboard or the API), or both. Ticked actions still happen and players in game
+still see any countdown, but their restart, stop, start and back-online posts aren't sent; for scheduled jobs that also covers backups and **Post
+to Discord** steps. Crashes, outages and failed backups always post.
 
 Project Zomboid also has its own Discord bot, which relays in-game chat. It's set in the server ini
 (`DiscordEnable`, `DiscordToken`, and on Build 42 `DiscordChatChannel`, `DiscordLogChannel` and

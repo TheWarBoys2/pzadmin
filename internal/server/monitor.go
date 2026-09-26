@@ -206,6 +206,7 @@ func (a *App) probe(ctx context.Context, s config.Server) {
 			st.Restarting = false
 			st.RestartingSince = NoTime
 			st.RestartReason = ""
+			st.restartSource = ""
 			st.Container = s.DockerContainer
 			st.BackupRunning = a.backup.Running(s.ID)
 		})
@@ -221,6 +222,7 @@ func (a *App) probe(ctx context.Context, s config.Server) {
 			a.event(store.Event{
 				Kind: "server.up", Severity: store.SevSuccess, Source: "monitor",
 				ServerID: s.ID, Server: s.Name, Message: message, Detail: detail,
+				Meta: map[string]any{"restartedBy": restartedBy(prev)},
 			})
 		}
 		for _, n := range joined {
@@ -253,6 +255,7 @@ func (a *App) probe(ctx context.Context, s config.Server) {
 			st.Restarting = false
 			st.RestartingSince = NoTime
 			st.RestartReason = ""
+			st.restartSource = ""
 		}
 		st.Name = s.Name
 		st.Enabled = true
@@ -617,6 +620,7 @@ func (a *App) markRestartingFor(serverID, reason string, window time.Duration) {
 		st.RestartingSince = TimeNow()
 		st.RestartReason = reason
 		st.restartWindow = window
+		st.restartSource = ""
 	})
 }
 
@@ -627,6 +631,7 @@ func (a *App) clearRestarting(serverID string) {
 		st.RestartingSince = NoTime
 		st.RestartReason = ""
 		st.restartWindow = 0
+		st.restartSource = ""
 	})
 }
 
@@ -646,6 +651,7 @@ func (a *App) restartServer(ctx context.Context, s config.Server, source, reason
 			"Set restart: unless-stopped and recreate the container", s.Name, s.RestartPolicy)
 	}
 	a.markRestarting(s.ID, reason)
+	a.updateStatus(s.ID, func(st *Status) { st.restartSource = source })
 	client := a.rconFor(s)
 	if _, err := client.Exec("save"); err != nil {
 		log.Printf("restart %s: save failed (continuing to quit, which also saves): %v", s.Name, err)
@@ -671,6 +677,15 @@ func (a *App) restartServer(ctx context.Context, s config.Server, source, reason
 		Meta:    map[string]any{"reason": restartReason(source, reason), "note": note},
 	})
 	return nil
+}
+
+// restartedBy is who asked for the restart or start a server has just come back from,
+// or "" when it came back from an outage or anything else.
+func restartedBy(prev Status) string {
+	if !prev.Restarting {
+		return ""
+	}
+	return prev.restartSource
 }
 
 // restartReason sorts a restart into the reasons players are told about.
