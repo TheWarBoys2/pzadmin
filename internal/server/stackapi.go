@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -51,7 +52,7 @@ func (a *App) rescan() stacks.Result {
 
 	var added, missing []string
 	changedIDs := map[string]bool{}
-	updated, err := a.cfg.Update(func(c *config.Config) error {
+	_, err := a.cfg.Update(func(c *config.Config) error {
 		before := make(map[string]config.Server, len(c.Servers))
 		for _, s := range c.Servers {
 			before[s.ID] = s
@@ -110,7 +111,6 @@ func (a *App) rescan() stacks.Result {
 	if len(changedIDs) == 0 {
 		return res
 	}
-	_ = updated
 	for id := range changedIDs {
 		a.dropRCON(id)
 	}
@@ -186,23 +186,9 @@ func uniqueID(existing []config.Server, name string) string {
 	}
 	id := base
 	for n := 2; taken[id]; n++ {
-		id = base + "-" + itoa(n)
+		id = base + "-" + strconv.Itoa(n)
 	}
 	return id
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var b [20]byte
-	i := len(b)
-	for n > 0 {
-		i--
-		b[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(b[i:])
 }
 
 // stackFor re-reads one server's stack folder, for checks that must not

@@ -84,7 +84,7 @@ const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8')
   'stackStatusPanel, stackServersPanel, stackCreatePanel, paintPlan, buildControl, StackState, ' +
   'newWizard, applyWizardMods, settingsEditor, wizardRequest, ' +
   'commandAvailability, isStopped, powerButton, editWebhook, viewDiscord, editServerChannel, ' +
-  'apiKeyCreateDialog, apiKeysBody, modRequestsPanel, renderGate, renderSetup };\n';
+  'apiKeyCreateDialog, apiKeysBody, modRequestsPanel, renderGate, renderSetup, showImportResult };\n';
 
 vm.createContext(sandbox);
 vm.runInContext(source, sandbox, { filename: 'app.js' });
@@ -98,7 +98,7 @@ const {
   stackStatusPanel, stackServersPanel, stackCreatePanel, paintPlan, buildControl, StackState,
   newWizard, applyWizardMods, settingsEditor, wizardRequest,
   commandAvailability, isStopped, powerButton, editWebhook, viewDiscord, editServerChannel,
-  apiKeyCreateDialog, apiKeysBody, modRequestsPanel, renderGate, renderSetup,
+  apiKeyCreateDialog, apiKeysBody, modRequestsPanel, renderGate, renderSetup, showImportResult,
 } = sandbox.__exports__;
 
 // The views read from S, so give it the shape a loaded page would have.
@@ -1111,6 +1111,19 @@ async function submitGateForm(render, status, error) {
     S.authenticated = wasAuthenticated;
   }
 }
+
+test('an import result names every job it left out, as text', () => {
+  closeAllModals();
+  showImportResult({ servers: 1, skippedServers: ['Muldraugh'], schedulesReplaced: true, schedules: 2,
+    skippedSchedules: ['"<b>x</b>" step 1: wait for between 1 second and a day'], timezone: 'Europe/London' });
+  const text = document.body.textContent;
+  assert.ok(text.includes('Imported, with some things left out'));
+  assert.ok(text.includes('Muldraugh'));
+  assert.ok(text.includes('Schedules replaced with 2 jobs'));
+  assert.ok(text.includes('"<b>x</b>" step 1'), 'the reason is shown as text');
+  assert.strictEqual(document.body.querySelectorAll('b').length, 0);
+  closeAllModals();
+});
 
 test('a wrong password shows an error on the same sign-in form', async () => {
   const { form, root, sent } = await submitGateForm(renderGate, 401, 'incorrect username or password');

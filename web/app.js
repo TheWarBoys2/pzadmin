@@ -4659,20 +4659,20 @@ function settingsData(cfg) {
     if (!file) return;
     const confirmed = await confirmDialog({
       title: 'Import this configuration?',
-      message: 'Servers and schedules from the file will be merged into your current setup.',
-      detail: 'Exports never contain RCON passwords, so any new server will need its password entered afterwards.',
+      message: 'Settings from the file are copied onto servers here that have the same stack folder name. If the file has schedules, they replace all of your current schedules.',
+      detail: 'Importing never adds servers: a server in the file with no matching stack folder here is skipped. Any job the schedule editor would refuse is left out, and you will see which.',
       confirmLabel: 'Import',
     });
     if (!confirmed) { fileInput.value = ''; return; }
     try {
       const text = await file.text();
-      await request('/api/import', {
+      const result = await request('/api/import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken() },
         body: text,
       });
-      toast('Configuration imported.', 'good');
       await refreshState();
+      showImportResult(result || {});
     } catch (err) { toast(err.message, 'bad'); }
     fileInput.value = '';
   });
@@ -4689,6 +4689,36 @@ function settingsData(cfg) {
       el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
         el('a', { class: 'btn', href: '/api/export', text: 'Export configuration' }),
         importBtn, fileInput)));
+}
+
+// showImportResult says exactly what an import changed and what it left out,
+// so nobody has to guess whether their schedules made it across.
+function showImportResult(result) {
+  const lines = [];
+  const servers = result.servers || 0;
+  lines.push(el('p', { text: 'Settings applied to ' + servers + (servers === 1 ? ' server.' : ' servers.') }));
+  const skippedServers = result.skippedServers || [];
+  if (skippedServers.length) {
+    lines.push(el('p', { class: 'muted', text: 'No matching stack folder here, so skipped: ' + skippedServers.join(', ') + '.' }));
+  }
+  if (result.schedulesReplaced) {
+    const jobs = result.schedules || 0;
+    lines.push(el('p', { text: 'Schedules replaced with ' + jobs + (jobs === 1 ? ' job' : ' jobs') + ' from the file.' }));
+  }
+  const skippedJobs = result.skippedSchedules || [];
+  if (skippedJobs.length) {
+    lines.push(el('div', { class: 'notice warn' },
+      el('p', { text: 'These jobs were left out. Add them again in Schedules if you still want them:' }),
+      el('ul', {}, ...skippedJobs.map((reason) => el('li', { text: sentence(reason) })))));
+  }
+  if (result.timezone) {
+    lines.push(el('p', { class: 'muted', text: 'Timezone set to ' + result.timezone + '.' }));
+  }
+  openModal({
+    title: skippedJobs.length || skippedServers.length ? 'Imported, with some things left out' : 'Configuration imported',
+    body: el('div', { class: 'form' }, ...lines),
+    actions: [el('button', { class: 'btn primary', type: 'button', text: 'Done', onclick: closeModal })],
+  });
 }
 
 function settingsAccount() {

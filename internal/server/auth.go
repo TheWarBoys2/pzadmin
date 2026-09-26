@@ -114,9 +114,8 @@ func (s *sessionStore) revokeAll() {
 	s.save()
 }
 
-// gc removes expired sessions. The original implementation only deleted an
-// expired session if that exact token was presented again, so the map grew
-// forever.
+// gc removes expired sessions. lookup only drops an expired session when its
+// token is presented again, so without this the list would grow forever.
 func (s *sessionStore) gc() int {
 	now := time.Now()
 	s.mu.Lock()
@@ -299,9 +298,19 @@ func clearSessionCookies(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// truncate shortens s to at most n characters. It counts characters, not
+// bytes, so a Cyrillic player name or an emoji in chat is never cut in half
+// and turned into invalid text.
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n]
+	count := 0
+	for i := range s {
+		if count == n {
+			return s[:i]
+		}
+		count++
+	}
+	return s
 }

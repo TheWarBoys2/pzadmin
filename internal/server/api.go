@@ -1252,53 +1252,9 @@ func (a *App) handleSchedules(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &p) {
 		return
 	}
-	seen := map[string]bool{}
-	for i := range p.Tasks {
-		t := &p.Tasks[i]
-		t.Name = strings.TrimSpace(t.Name)
-		if t.Name == "" {
-			httpError(w, http.StatusBadRequest, "every job needs a name")
-			return
-		}
-		if err := cronx.Valid(t.Cron); err != nil {
-			httpError(w, http.StatusBadRequest, fmt.Sprintf("%q: %s", t.Name, err.Error()))
-			return
-		}
-		if _, found := a.cfg.Server(t.ServerID); !found {
-			httpError(w, http.StatusBadRequest, fmt.Sprintf("%q points at a server that no longer exists", t.Name))
-			return
-		}
-		// Fold a legacy single-action task sent by an older client.
-		if len(t.Steps) == 0 && t.Kind != "" {
-			t.Steps = []config.Step{{Kind: t.Kind, Message: t.Message, Command: t.Command}}
-		}
-		t.Kind, t.Message, t.Command = "", "", ""
-		if len(t.Steps) == 0 {
-			httpError(w, http.StatusBadRequest, fmt.Sprintf("%q has no steps: add at least one thing for it to do", t.Name))
-			return
-		}
-		if len(t.Steps) > 25 {
-			httpError(w, http.StatusBadRequest, fmt.Sprintf("%q has too many steps", t.Name))
-			return
-		}
-		for n := range t.Steps {
-			err := validateStep(&t.Steps[n])
-			if err == nil && t.Steps[n].Kind == "discord" && webhookByID(a.cfg.Get(), t.Steps[n].Webhook) == nil {
-				err = fmt.Errorf("the Discord channel it posts to has been removed")
-			}
-			if err != nil {
-				httpError(w, http.StatusBadRequest,
-					fmt.Sprintf("%q step %d: %s", t.Name, n+1, err.Error()))
-				return
-			}
-		}
-		if t.ID == "" {
-			t.ID = config.RandomToken(8)
-		}
-		if seen[t.ID] {
-			t.ID = config.RandomToken(8)
-		}
-		seen[t.ID] = true
+	if err := validateTasks(a.cfg.Get(), p.Tasks); err != nil {
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 
 	if _, err := a.cfg.Update(func(c *config.Config) error {
@@ -1322,6 +1278,61 @@ func (a *App) handleSchedules(w http.ResponseWriter, r *http.Request) {
 	a.event(store.Event{Kind: "admin.action", Severity: store.SevInfo, Source: source(r), Actor: actor(r),
 		Message: "Schedules updated", Detail: fmt.Sprintf("%d job(s) configured", len(p.Tasks))})
 	ok(w, nil)
+}
+
+// validateTasks checks and tidies a list of scheduled jobs in place: names
+// trimmed, legacy single actions folded into steps, every step checked, and
+// IDs made unique. It is shared by the schedule editor and import, so a job
+// that could not be saved by hand cannot arrive in a file either.
+func validateTasks(cfg config.Config, tasks []config.Task) error {
+	seen := map[string]bool{}
+	for i := range tasks {
+		if err := validateTask(cfg, &tasks[i]); err != nil {
+			return err
+		}
+		t := &tasks[i]
+		if t.ID == "" || seen[t.ID] {
+			t.ID = config.RandomToken(8)
+		}
+		seen[t.ID] = true
+	}
+	return nil
+}
+
+// validateTask checks one job. Its errors name the job, so they can be shown
+// as they are.
+func validateTask(cfg config.Config, t *config.Task) error {
+	t.Name = strings.TrimSpace(t.Name)
+	if t.Name == "" {
+		return errors.New("every job needs a name")
+	}
+	if err := cronx.Valid(t.Cron); err != nil {
+		return fmt.Errorf("%q: %s", t.Name, err.Error())
+	}
+	if _, found := serverByID(cfg.Servers, t.ServerID); !found {
+		return fmt.Errorf("%q points at a server that no longer exists", t.Name)
+	}
+	// Fold a legacy single-action task sent by an older client.
+	if len(t.Steps) == 0 && t.Kind != "" {
+		t.Steps = []config.Step{{Kind: t.Kind, Message: t.Message, Command: t.Command}}
+	}
+	t.Kind, t.Message, t.Command = "", "", ""
+	if len(t.Steps) == 0 {
+		return fmt.Errorf("%q has no steps: add at least one thing for it to do", t.Name)
+	}
+	if len(t.Steps) > 25 {
+		return fmt.Errorf("%q has too many steps", t.Name)
+	}
+	for n := range t.Steps {
+		err := validateStep(&t.Steps[n])
+		if err == nil && t.Steps[n].Kind == "discord" && webhookByID(cfg, t.Steps[n].Webhook) == nil {
+			err = errors.New("the Discord channel it posts to has been removed")
+		}
+		if err != nil {
+			return fmt.Errorf("%q step %d: %s", t.Name, n+1, err.Error())
+		}
+	}
+	return nil
 }
 
 func (a *App) handleScheduleRun(w http.ResponseWriter, r *http.Request) {
@@ -1521,21 +1532,37 @@ func (a *App) handleImport(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "the file contains no servers or schedules")
 		return
 	}
+	tz := strings.TrimSpace(incoming.Timezone)
+	if tz != "" {
+		if _, err := time.LoadLocation(tz); err != nil {
+			httpError(w, http.StatusBadRequest,
+				"the file's timezone "+strconv.Quote(tz)+" is not one this system knows, so nothing was imported")
+			return
+		}
+	}
 
 	// Servers come from their stack folders, so an import can only carry
 	// the operator's own settings onto servers that exist here, matched by
 	// stack folder name. Anything the files own is ignored: taking a
 	// container name from an uploaded file would put an arbitrary container
 	// on the allowlist.
-	matched, skipped := 0, 0
+	var (
+		matched         int
+		skippedServers  []string
+		importedJobs    int
+		skippedJobs     []string
+		schedulesInFile = len(incoming.Schedules) > 0
+	)
 	_, err := a.cfg.Update(func(c *config.Config) error {
+		matched, importedJobs = 0, 0
+		skippedServers, skippedJobs = nil, nil
 		idMap := map[string]string{}
 		for _, in := range incoming.Servers {
 			found := false
 			for i := range c.Servers {
 				cur := &c.Servers[i]
 				if (in.Stack != "" && cur.Stack == in.Stack) || (in.Stack == "" && cur.ID == in.ID) {
-					cur.Name = firstNonBlank(in.Name, cur.Name)
+					cur.Name = firstNonBlank(strings.TrimSpace(in.Name), cur.Name)
 					cur.Enabled = in.Enabled
 					cur.Notes = in.Notes
 					cur.SortHint = in.SortHint
@@ -1556,21 +1583,39 @@ func (a *App) handleImport(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if !found {
-				skipped++
+				skippedServers = append(skippedServers, firstNonBlank(in.Name, in.Stack, in.ID))
 			}
 		}
-		if len(incoming.Schedules) > 0 {
-			var kept []config.Task
+		if schedulesInFile {
+			// The file's schedules replace the current ones, as they do when
+			// the schedule editor saves. Each job is checked exactly as the
+			// editor checks it; one that would be refused there is left out
+			// and named in the reply rather than failing the whole import.
+			kept := []config.Task{}
+			seen := map[string]bool{}
 			for _, sc := range incoming.Schedules {
-				if id, ok := idMap[sc.ServerID]; ok {
-					sc.ServerID = id
-					kept = append(kept, sc)
+				id, ok := idMap[sc.ServerID]
+				if !ok {
+					skippedJobs = append(skippedJobs, fmt.Sprintf("%q: its server is not on this PZAdmin", strings.TrimSpace(sc.Name)))
+					continue
 				}
+				sc.ServerID = id
+				sc.LastRun, sc.LastResult = "", ""
+				if err := validateTask(*c, &sc); err != nil {
+					skippedJobs = append(skippedJobs, err.Error())
+					continue
+				}
+				if sc.ID == "" || seen[sc.ID] {
+					sc.ID = config.RandomToken(8)
+				}
+				seen[sc.ID] = true
+				kept = append(kept, sc)
 			}
 			c.Schedules = kept
+			importedJobs = len(kept)
 		}
-		if incoming.Timezone != "" {
-			c.Timezone = incoming.Timezone
+		if tz != "" {
+			c.Timezone = tz
 		}
 		return nil
 	})
@@ -1579,11 +1624,38 @@ func (a *App) handleImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.syncMonitors()
+
+	detail := fmt.Sprintf("Settings applied to %d server(s).", matched)
+	if len(skippedServers) > 0 {
+		detail += fmt.Sprintf(" %d had no matching stack folder here and were skipped: %s.",
+			len(skippedServers), strings.Join(skippedServers, ", "))
+	}
+	if schedulesInFile {
+		detail += fmt.Sprintf(" Schedules replaced with %d job(s) from the file.", importedJobs)
+		if len(skippedJobs) > 0 {
+			detail += fmt.Sprintf(" %d job(s) left out: %s.", len(skippedJobs), strings.Join(skippedJobs, "; "))
+		}
+	}
 	a.event(store.Event{Kind: "admin.action", Severity: store.SevWarn, Source: source(r), Actor: actor(r),
-		Message: "Configuration imported",
-		Detail: fmt.Sprintf("Settings applied to %d server(s); %d had no matching stack folder here and were skipped.",
-			matched, skipped)})
-	ok(w, map[string]any{"servers": matched, "skipped": skipped})
+		Message: "Configuration imported", Detail: detail})
+	ok(w, map[string]any{
+		"servers":           matched,
+		"skipped":           len(skippedServers),
+		"skippedServers":    nonNil(skippedServers),
+		"schedulesReplaced": schedulesInFile,
+		"schedules":         importedJobs,
+		"skippedSchedules":  nonNil(skippedJobs),
+		"timezone":          tz,
+		"summary":           detail,
+	})
+}
+
+// nonNil keeps an empty list as [] rather than null in JSON.
+func nonNil(v []string) []string {
+	if v == nil {
+		return []string{}
+	}
+	return v
 }
 
 func firstNonBlank(v ...string) string {
