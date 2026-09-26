@@ -320,6 +320,9 @@ func (a *App) applyNotifyConfig(cfg config.Config) {
 // event records an event and mirrors it to the webhooks.
 func (a *App) event(e store.Event) {
 	a.store.Append(e)
+	if a.quietNotice(e) {
+		return
+	}
 	sev := string(e.Severity)
 	if sev == "" {
 		sev = "info"
@@ -338,6 +341,25 @@ func (a *App) event(e store.Event) {
 		m.Minutes = minutes
 	}
 	a.notify.Send(m)
+}
+
+// quietNotice reports whether an event is routine news from a scheduled job
+// arriving during quiet hours, so it is logged but not posted to Discord.
+// Anything that needs a person, such as a failed backup or a crash, still posts.
+func (a *App) quietNotice(e store.Event) bool {
+	routine := false
+	switch e.Kind {
+	case "server.restart", "backup.done":
+		routine = e.Source == "schedule"
+	case "server.up":
+		routine, _ = e.Meta["scheduled"].(bool)
+	}
+	return routine && a.quietNow()
+}
+
+// quietNow reports whether it is currently quiet hours.
+func (a *App) quietNow() bool {
+	return a.cfg.Get().Notify.QuietHours.Contains(time.Now().In(a.cfg.Location()))
 }
 
 // rconFor returns the pooled RCON client for a server, rebuilding it if the
