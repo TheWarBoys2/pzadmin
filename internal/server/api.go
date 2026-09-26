@@ -820,7 +820,7 @@ func (a *App) handleLifecycle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.markRestarting(srv.ID, "starting")
-		a.updateStatus(srv.ID, func(st *Status) { st.Stopped = false })
+		a.updateStatus(srv.ID, func(st *Status) { st.Stopped = false; st.restartSource = source(r) })
 		if err := a.arcane.Start(ctx, srv.DockerContainer); err != nil {
 			a.clearRestarting(srv.ID)
 			httpError(w, http.StatusBadGateway, err.Error())

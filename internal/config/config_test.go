@@ -274,3 +274,18 @@ func TestQuietHoursContains(t *testing.T) {
 		}
 	}
 }
+
+func TestQuietHoursFromBeforeTheChoiceCoverScheduledJobs(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{"notify":{"quietHours":{"enabled":true,"start":"23:00","end":"08:00"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q := s.Get().Notify.QuietHours; !q.Scheduled || q.Manual {
+		t.Fatalf("older quiet hours should keep covering scheduled jobs only: %#v", q)
+	}
+}
