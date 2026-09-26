@@ -235,8 +235,8 @@ type Notify struct {
 // QuietHours is a daily window, in the configured timezone, when routine
 // restarts post nothing to Discord. Scheduled and Manual pick which: jobs
 // that run on a schedule (their restart and back-online posts, backups and
-// Discord steps), and restarts someone asks for from the dashboard or the
-// API. Outages, crashes and failed backups always post.
+// Discord steps), and restarts, stops and starts someone asks for from the
+// dashboard or the API. Outages, crashes and failed backups always post.
 type QuietHours struct {
 	Enabled   bool `json:"enabled"`
 	Scheduled bool `json:"scheduled"`

@@ -4199,9 +4199,9 @@ function discordQuietHours() {
     el('div', { class: 'panel-body' }, el('div', { class: 'form' },
       el('label', { class: 'check' }, enabled, el('span', { text: 'Keep Discord quiet overnight' })),
       el('label', { class: 'check' }, scheduled, el('span', { text: 'Scheduled jobs' })),
-      el('label', { class: 'check' }, manual, el('span', { text: 'Restarts I do myself' })),
-      el('p', { class: 'muted', text: 'Ticked restarts still happen, and players in game still see any countdown, '
-        + 'but their restart and back-online posts are not sent. For scheduled jobs that also covers backups and '
+      el('label', { class: 'check' }, manual, el('span', { text: 'Restarts, stops and starts I do myself' })),
+      el('p', { class: 'muted', text: 'Ticked actions still happen, and players in game still see any countdown, '
+        + 'but their restart, stop, start and back-online posts are not sent. For scheduled jobs that also covers backups and '
         + 'Discord steps. Crashes, outages and failed backups always post.' }),
       field('From', start, 'Times use ' + (S.state.timezone || 'UTC') + '. A window that ends earlier than it '
         + 'starts runs past midnight.'),

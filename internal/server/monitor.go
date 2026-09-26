@@ -677,7 +677,7 @@ func (a *App) restartServer(ctx context.Context, s config.Server, source, reason
 	return nil
 }
 
-// restartedBy is who asked for the restart a server has just come back from,
+// restartedBy is who asked for the restart or start a server has just come back from,
 // or "" when it came back from an outage or anything else.
 func restartedBy(prev Status) string {
 	if !prev.Restarting {

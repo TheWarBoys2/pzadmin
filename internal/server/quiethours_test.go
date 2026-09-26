@@ -78,6 +78,9 @@ func TestQuietHoursHoldBackOnlyWhatIsTicked(t *testing.T) {
 	manual := []store.Event{
 		{Kind: "server.restart", Source: "ui"},
 		{Kind: "server.restart", Source: "api"},
+		{Kind: "server.stop", Source: "ui"},
+		{Kind: "server.start", Source: "ui"},
+		{Kind: "server.stop", Source: "api"},
 		upAfter("ui"),
 		upAfter("api"),
 	}

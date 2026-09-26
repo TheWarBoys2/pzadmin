@@ -347,13 +347,14 @@ func (a *App) event(e store.Event) {
 }
 
 // quietNotice reports whether an event is routine news arriving during quiet
-// hours, from a scheduled job or a restart someone asked for, whichever the
+// hours, from a scheduled job or a restart, stop or start someone asked for,
+// whichever the
 // operator chose to silence. It is still logged, just not posted to Discord.
 // Anything that needs a person, such as a failed backup or a crash, still posts.
 func (a *App) quietNotice(e store.Event) bool {
 	var by string
 	switch e.Kind {
-	case "server.restart":
+	case "server.restart", "server.stop", "server.start":
 		by = e.Source
 	case "backup.done":
 		if e.Source == "schedule" {

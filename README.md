@@ -250,9 +250,9 @@ backups and admin actions with full detail; a shared channel announces several s
 `{server}` and `{players}` are filled in when the job runs.
 
 **Quiet hours** keep Discord quiet overnight. Switch them on under **Quiet hours** on the Discord page, pick the
-times in PZAdmin's timezone (23:00 until 08:00 runs overnight), and tick what to keep quiet: **Scheduled jobs**, **Restarts
-I do myself** (from the dashboard or the API), or both. Ticked restarts still happen and players in game still see any
-countdown, but their restart and back-online posts aren't sent; for scheduled jobs that also covers backups and **Post
+times in PZAdmin's timezone (23:00 until 08:00 runs overnight), and tick what to keep quiet: **Scheduled jobs**, **Restarts,
+stops and starts I do myself** (from the dashboard or the API), or both. Ticked actions still happen and players in game
+still see any countdown, but their restart, stop, start and back-online posts aren't sent; for scheduled jobs that also covers backups and **Post
 to Discord** steps. Crashes, outages and failed backups always post.
 
 Project Zomboid also has its own Discord bot, which relays in-game chat. It's set in the server ini
