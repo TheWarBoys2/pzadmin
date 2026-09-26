@@ -2910,9 +2910,10 @@ async function tabBackups(host, server, st) {
 async function restoreBackup(server, archive) {
   const confirmed = await confirmDialog({
     title: 'Restore ' + archive.name + '?',
-    message: 'This overwrites the current world with the contents of the archive. Anything since ' +
-      fmtDateTime(archive.createdAt) + ' will be lost.',
-    detail: 'Take a fresh backup first if there is any doubt.',
+    message: 'The world goes back to how it was at ' + fmtDateTime(archive.createdAt) +
+      '. Everything players did since then is undone.',
+    detail: 'The current world is not deleted: it is moved to a Saves.before-restore folder next to Saves, ' +
+      'replacing any copy left by an earlier restore.',
     confirmLabel: 'Restore', danger: true, requireText: server.name,
   });
   if (!confirmed) return;
@@ -4951,7 +4952,7 @@ function apiKeyCreateDialog(reload) {
         el('label', { class: 'check' }, requestScope,
           el('span', null, 'Request', el('span', { class: 'hint', text: 'Ask for Workshop mods to be added. Requests wait on the Mods tab for you to approve.' }))),
         el('label', { class: 'check' }, control,
-          el('span', null, 'Control', el('span', { class: 'hint', text: 'Run commands from the command list, restart, stop, start and take backups.' }))),
+          el('span', null, 'Control', el('span', { class: 'hint', text: 'Run commands from the command list, restart, stop, start and take backups. That includes kicking, banning, giving items and setting access levels, so only give it to bots you trust.' }))),
         el('label', { class: 'check' }, consoleScope,
           el('span', null, 'Console', el('span', { class: 'hint', text: 'Send any RCON command. Only give this to something you trust completely.' })))),
       el('div', { class: 'field' },

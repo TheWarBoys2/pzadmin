@@ -1197,7 +1197,7 @@ func (a *App) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	n, err := a.backup.Restore(srv.ID, p.Name, detectLayout(srv))
+	res, err := a.backup.Restore(srv.ID, p.Name, detectLayout(srv))
 	if err != nil {
 		a.event(store.Event{Kind: "backup.failed", Severity: store.SevError, Source: source(r), Actor: actor(r),
 			ServerID: srv.ID, Server: srv.Name, Message: "Restore failed", Detail: err.Error()})
@@ -1208,8 +1208,18 @@ func (a *App) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 	a.event(store.Event{Kind: "backup.restore", Severity: store.SevWarn, Source: source(r), Actor: actor(r),
 		ServerID: srv.ID, Server: srv.Name,
 		Message: "Restored " + srv.Name + " from " + p.Name,
-		Detail:  fmt.Sprintf("%d files written.", n)})
-	ok(w, map[string]any{"files": n, "message": fmt.Sprintf("Restored %d files. Start the server when you are ready.", n)})
+		Detail:  restoreSummary(res)})
+	ok(w, map[string]any{"files": res.Files, "setAside": res.SetAside,
+		"message": restoreSummary(res) + " Start the server when you are ready."})
+}
+
+func restoreSummary(res pz.RestoreResult) string {
+	msg := fmt.Sprintf("Restored %d files.", res.Files)
+	if res.SetAside != "" {
+		msg += " The world as it was just before is kept in " + res.SetAside +
+			" until the next restore; delete it when you no longer need it."
+	}
+	return msg
 }
 
 func (a *App) handleBackupDelete(w http.ResponseWriter, r *http.Request) {

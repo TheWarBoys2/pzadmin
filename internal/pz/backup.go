@@ -332,20 +332,52 @@ func (b *Backupper) Verify(serverID, name string) (int, int64, error) {
 	return files, bytes, nil
 }
 
-// Restore extracts an archive back over a server's directories.
+// RestoreResult says what a restore did.
+type RestoreResult struct {
+	Files int `json:"files"`
+	// SetAside is where the world as it was before the restore was moved,
+	// or "" when there was none.
+	SetAside string `json:"setAside,omitempty"`
+}
+
+// Restore puts an archive back in place of the server's world.
+//
+// The current Saves folder is moved aside first, to Saves.before-restore
+// next to it, and the archive is unpacked into an empty one. Unpacking over
+// the top would leave behind every map chunk explored since the backup,
+// mixed in with the older world. The set-aside copy replaces any earlier
+// one, so it always holds the world from just before the latest restore. If
+// unpacking fails, the set-aside world is put back.
+//
+// Config files in the archive are written over the current ones; config
+// files that are not in the archive are left alone.
 //
 // The caller is responsible for stopping the server first. Restoring into a
 // running world produces corruption, so the HTTP layer refuses unless the
 // server is offline.
-func (b *Backupper) Restore(serverID, name string, l Layout) (int, error) {
+func (b *Backupper) Restore(serverID, name string, l Layout) (RestoreResult, error) {
+	var res RestoreResult
+	b.mu.Lock()
+	if b.running[serverID] {
+		b.mu.Unlock()
+		return res, ErrBackupRunning
+	}
+	b.running[serverID] = true
+	b.mu.Unlock()
+	defer func() {
+		b.mu.Lock()
+		delete(b.running, serverID)
+		b.mu.Unlock()
+	}()
+
 	f, _, err := b.Open(serverID, name)
 	if err != nil {
-		return 0, err
+		return res, err
 	}
 	defer f.Close()
 	gz, err := gzip.NewReader(f)
 	if err != nil {
-		return 0, err
+		return res, err
 	}
 	defer gz.Close()
 
@@ -357,10 +389,49 @@ func (b *Backupper) Restore(serverID, name string, l Layout) (int, error) {
 		targets["Server"] = l.ConfigDir
 	}
 	if len(targets) == 0 {
-		return 0, errors.New("no restore target: the server layout was not detected")
+		return res, errors.New("no restore target: the server layout was not detected")
 	}
 
-	tr := tar.NewReader(gz)
+	if l.SavesDir != "" {
+		aside := filepath.Clean(l.SavesDir) + ".before-restore"
+		if _, err := os.Stat(l.SavesDir); err == nil {
+			if err := os.RemoveAll(aside); err != nil {
+				return res, fmt.Errorf("could not clear the previous set-aside world %s: %w; nothing was restored", aside, err)
+			}
+			if err := os.Rename(l.SavesDir, aside); err != nil {
+				return res, fmt.Errorf("could not set the current world aside: %w; nothing was restored", err)
+			}
+			res.SetAside = aside
+		}
+		if err := os.MkdirAll(l.SavesDir, 0o755); err != nil {
+			return res, b.putBack(l.SavesDir, res.SetAside, err)
+		}
+	}
+
+	n, err := extract(tar.NewReader(gz), targets)
+	res.Files = n
+	if err != nil {
+		return res, b.putBack(l.SavesDir, res.SetAside, err)
+	}
+	return res, nil
+}
+
+// putBack undoes a failed restore by returning the set-aside world.
+func (b *Backupper) putBack(saves, aside string, cause error) error {
+	if aside == "" {
+		return cause
+	}
+	if err := os.RemoveAll(saves); err != nil {
+		return fmt.Errorf("%w; the world from before the restore is in %s", cause, aside)
+	}
+	if err := os.Rename(aside, saves); err != nil {
+		return fmt.Errorf("%w; the world from before the restore is in %s", cause, aside)
+	}
+	return fmt.Errorf("%w; the world was put back as it was", cause)
+}
+
+// extract unpacks Saves/ and Server/ entries into their targets.
+func extract(tr *tar.Reader, targets map[string]string) (int, error) {
 	restored := 0
 	for {
 		hdr, err := tr.Next()
@@ -405,7 +476,9 @@ func (b *Backupper) Restore(serverID, name string, l Layout) (int, error) {
 				out.Close()
 				return restored, err
 			}
-			out.Close()
+			if err := out.Close(); err != nil {
+				return restored, err
+			}
 			restored++
 		}
 	}

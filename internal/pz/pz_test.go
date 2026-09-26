@@ -278,16 +278,64 @@ func TestBackupCreateVerifyRestore(t *testing.T) {
 	if err := os.RemoveAll(l.SavesDir); err != nil {
 		t.Fatal(err)
 	}
-	n, err := b.Restore("srv1", res.Archive.Name, l)
+	restored, err := b.Restore("srv1", res.Archive.Name, l)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n == 0 {
+	if restored.Files == 0 {
 		t.Fatal("restore wrote nothing")
 	}
 	got, err := os.ReadFile(savePath)
 	if err != nil || string(got) != "world" {
 		t.Fatalf("save file not restored: %v %q", err, got)
+	}
+}
+
+// Restoring must not leave behind files made after the backup: new map
+// chunks mixed into an older world break it. They go aside instead.
+func TestRestoreReplacesTheWorldAndKeepsTheOldOneAside(t *testing.T) {
+	_, base := buildServer(t)
+	l := Detect(base)
+	b := NewBackupper(t.TempDir())
+	res, err := b.Create("srv1", l, false, 3, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	world := filepath.Join(l.SavesDir, "Multiplayer", "riverside")
+	newer := filepath.Join(world, "map_99_99.bin")
+	if err := os.WriteFile(newer, []byte("explored later"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	restored, err := b.Restore("srv1", res.Archive.Name, l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(newer); !os.IsNotExist(err) {
+		t.Fatal("a chunk made after the backup survived the restore")
+	}
+	if got, _ := os.ReadFile(filepath.Join(world, "map_t.bin")); string(got) != "world" {
+		t.Fatalf("world not restored: %q", got)
+	}
+	aside := filepath.Join(restored.SetAside, "Multiplayer", "riverside", "map_99_99.bin")
+	if got, _ := os.ReadFile(aside); string(got) != "explored later" {
+		t.Fatalf("the world from before the restore should be kept aside at %s", aside)
+	}
+
+	// A broken archive leaves the world exactly as it was.
+	name := "20260101-000000.tar.gz"
+	full, _ := os.ReadFile(filepath.Join(b.Dir("srv1"), res.Archive.Name))
+	if err := os.WriteFile(filepath.Join(b.Dir("srv1"), name), full[:len(full)/2], 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(newer, []byte("still here"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Restore("srv1", name, l); err == nil {
+		t.Fatal("a truncated archive should fail")
+	}
+	if got, _ := os.ReadFile(newer); string(got) != "still here" {
+		t.Fatal("a failed restore must put the world back as it was")
 	}
 }
 

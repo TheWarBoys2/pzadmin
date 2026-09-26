@@ -2,6 +2,91 @@
 
 ## Unreleased
 
+### Upgrading an existing install
+Most of this update needs nothing from you. These do:
+
+- **Backups folder.** Backups can now live in a folder on the host instead of
+  inside PZAdmin's volume. To use it, copy the new `volumes` and
+  `PZADMIN_BACKUP_DIR` lines from the README's `docker-compose.yml`, run
+  `mkdir backups` next to your compose file, then `docker compose up -d`.
+  PZAdmin moves your existing backups into the new folder the first time it
+  starts. Without these lines, backups stay where they were.
+- **Updating is now your choice.** The compose file no longer has
+  `pull_policy: always`, so `docker compose up -d` doesn't update PZAdmin on
+  its own. Update with `docker compose pull` then `docker compose up -d`.
+- **Metrics token.** `/metrics` now only accepts the token in an
+  `Authorization: Bearer` header, not in the address. If Prometheus scrapes
+  PZAdmin, move the token into the scrape job's `authorization` setting.
+- **Behind a reverse proxy?** PZAdmin no longer believes `X-Forwarded-For`
+  from anyone, because anyone can send it. Set `PZADMIN_TRUSTED_PROXIES` to
+  your proxy's address so sign-in limits and the audit log see real visitor
+  addresses (see the README).
+
+### Setup
+- A new install asks for a one-time setup code from `docker logs pzadmin`
+  before the admin account can be created, so nobody else on the network can
+  claim a fresh install first.
+- Starting with empty server folders works: the dashboard says there are no
+  servers yet and offers to create the first one.
+- New servers use a tested, pinned game image by default
+  (`indifferentbroccoli/projectzomboid-server-docker:v1.1.9`), so the wizard
+  works without setting `PZADMIN_GAME_IMAGE`.
+- The log says clearly what doesn't work when Arcane isn't set up.
+- The compose file has log rotation and a stop grace period, so PZAdmin always
+  gets to finish saving when it's stopped.
+
+### Backups
+- `PZADMIN_BACKUP_DIR` puts backups in a folder you choose, as plain files.
+- PZAdmin checks at start that it can write to the backups folder, and says
+  how to fix it if not, instead of failing at the first scheduled backup.
+- Restore no longer leaves files from after the backup mixed into the
+  restored world. The current world is moved to `Saves.before-restore` first,
+  and put back if the restore fails.
+- Half-written archives from an interrupted backup are cleaned up.
+
+### Security
+- Sign-in is limited per address and across all addresses, and password
+  checks are capped so a flood of attempts can't overload the machine.
+- Forwarded headers are only trusted from `PZADMIN_TRUSTED_PROXIES`.
+- RCON passwords in the raw ini editor are hidden and kept as they are on save.
+- The metrics token can be replaced from Settings, and is only accepted in a
+  header.
+- Sign-in and setup requests have a small size limit, and slow requests time
+  out.
+
+### Reliability
+- Settings, sessions, API keys, mod requests and player history are saved
+  with a write-then-rename, so a crash or full disk can't leave a half-written
+  file. A file that can't be read is kept aside and reported, not silently
+  replaced.
+- Shutting down waits for running jobs and closes live connections, so a
+  final save always happens within Docker's stop timeout.
+- An import is checked the same way as settings typed in by hand. Scheduled
+  jobs that would be refused are left out and listed, an unknown timezone
+  refuses the file, and the import dialog says exactly what was changed.
+- Long names and messages in other alphabets are shortened without breaking
+  characters.
+
+### Interface
+- A wrong password or setup code is shown on the form, instead of the page
+  reloading.
+- An open tab says when PZAdmin has been updated, and new versions of the
+  page are never served from a stale cache.
+- Works on phones: no sideways scrolling, and tables scroll on their own.
+- Form labels are linked to their fields and buttons have names, for screen
+  readers.
+- When Arcane can't be reached, the message is plain, with the technical
+  detail behind a toggle.
+- The Control access for API keys says plainly how much it allows.
+
+### Project
+- MIT licence, a security policy with private reporting, contributing notes
+  and issue forms.
+- The README was rewritten to match what PZAdmin actually does, including how
+  it was built.
+- Built with Go 1.27. CI also checks formatting, runs static analysis, a
+  vulnerability scan and the race detector.
+
 ### Discord
 - Any number of webhooks, each written for staff or for players, with its own
   events and servers. An existing webhook carries over as a staff webhook.
@@ -55,9 +140,9 @@
   the server are refused with a clear reason, and a staff webhook can be told
   about new requests.
 
-## 1.0.0
+## 1.0.0-beta.1
 
-First public release.
+First beta.
 
 ### Servers
 - Live dashboard: who's online, uptime, RCON latency and problems, updated as
