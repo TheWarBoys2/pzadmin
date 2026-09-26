@@ -24,6 +24,12 @@ import (
 	"github.com/TheWarBoys2/pzadmin/internal/server"
 )
 
+// defaultGameImage is the game server image new servers are created with when
+// PZADMIN_GAME_IMAGE is not set. It is a version tag, not latest, so every
+// server made from one PZAdmin release starts from the same image. Bump it
+// in a release after checking the new image works.
+const defaultGameImage = "indifferentbroccoli/projectzomboid-server-docker:v1.1.9"
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.LUTC)
 	log.SetPrefix("pzadmin ")
@@ -49,8 +55,12 @@ func main() {
 		{"PZADMIN_DATA_ROOT", dataRoot},
 		{"PZADMIN_STACKS_ROOT", stacksRoot},
 	} {
-		if err := checkRoot(root.path); err != nil {
+		warning, err := checkRoot(root.path)
+		if err != nil {
 			log.Fatalf("%s: %v", root.name, err)
+		}
+		if warning != "" {
+			log.Printf("%s: %s", root.name, warning)
 		}
 	}
 
@@ -61,7 +71,11 @@ func main() {
 	// installation mistake, and it fails in confusing ways later. Fail now.
 	probe := dataDir + "/.writable"
 	if err := os.WriteFile(probe, []byte("ok"), 0o600); err != nil {
-		log.Fatalf("data directory %s is not writable: %v", dataDir, err)
+		log.Fatalf("data directory %s is not writable by user %d:%d: %v. "+
+			"This usually means the user: line in docker-compose.yml was changed after the data "+
+			"volume was created. Give the folder to that user, for example: "+
+			"docker run --rm -v <your data volume or folder>:/data busybox chown -R %d:%d /data",
+			dataDir, os.Getuid(), os.Getgid(), err, os.Getuid(), os.Getgid())
 	}
 	_ = os.Remove(probe)
 
@@ -77,7 +91,7 @@ func main() {
 		DataRoot:     dataRoot,
 		StacksRoot:   stacksRoot,
 		RCONHost:     env("PZADMIN_RCON_HOST", "host.docker.internal"),
-		GameImage:    env("PZADMIN_GAME_IMAGE", ""),
+		GameImage:    env("PZADMIN_GAME_IMAGE", defaultGameImage),
 		ArcaneURL:    env("PZADMIN_ARCANE_URL", ""),
 		ArcaneEnvID:  env("PZADMIN_ARCANE_ENV_ID", ""),
 		ArcaneAPIKey: env("PZADMIN_ARCANE_API_KEY", ""),
@@ -136,35 +150,37 @@ func healthcheck() int {
 	return 0
 }
 
-// checkRoot refuses a managed folder that is unset, relative, missing or
-// empty. Docker creates a missing bind source as an empty directory and mounts
-// it without complaint, so a mistyped path in docker-compose.yml would otherwise give a
-// PZAdmin that starts cleanly and shows no servers. Stopping here, with the
-// reason in the container log, is the loud version of that failure.
-func checkRoot(path string) error {
+// checkRoot refuses a managed folder that is unset, relative or missing.
+//
+// An empty folder is only a warning. It is what a brand new install looks
+// like, before the first server is created, but it is also what a mistyped
+// path looks like, because Docker creates a missing bind source as an empty
+// directory. So PZAdmin starts, and the log says which of the two to check.
+func checkRoot(path string) (warning string, err error) {
 	if path == "" {
-		return errors.New("not set. It must be the absolute path of the folder, mounted at the same path")
+		return "", errors.New("not set. It must be the absolute path of the folder, mounted at the same path")
 	}
 	if !filepath.IsAbs(path) {
-		return fmt.Errorf("%q is not an absolute path", path)
+		return "", fmt.Errorf("%q is not an absolute path", path)
 	}
 	st, err := os.Stat(path)
 	if err != nil {
-		return fmt.Errorf("%s is not mounted into the container: %v", path, err)
+		return "", fmt.Errorf("%s is not mounted into the container: %v", path, err)
 	}
 	if !st.IsDir() {
-		return fmt.Errorf("%s is not a directory", path)
+		return "", fmt.Errorf("%s is not a directory", path)
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return fmt.Errorf("%s cannot be read: %v", path, err)
+		return "", fmt.Errorf("%s cannot be read: %v", path, err)
 	}
 	defer f.Close()
 	if names, _ := f.Readdirnames(1); len(names) == 0 {
-		return fmt.Errorf("%s is empty. That is what a wrong path looks like after Docker has "+
-			"created it: check the path in docker-compose.yml against the real folder on the host", path)
+		return fmt.Sprintf("%s is empty. That is fine for a new install; create your first server "+
+			"from the dashboard. If you already have servers, check this path in docker-compose.yml "+
+			"against the real folder on the host.", path), nil
 	}
-	return nil
+	return "", nil
 }
 
 func env(key, def string) string {

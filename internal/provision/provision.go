@@ -171,7 +171,7 @@ func Make(req Request, env Env) (*Plan, error) {
 		return nil, errors.New("the server name must be letters, digits, - or _, up to 40 characters")
 	}
 	if !stacks.ImagePinned(env.Image) {
-		return nil, fmt.Errorf("the game image %q is not pinned. Set PZADMIN_GAME_IMAGE in PZAdmin's .env "+
+		return nil, fmt.Errorf("the game image %q is not pinned. Set PZADMIN_GAME_IMAGE under environment: in PZAdmin's docker-compose.yml "+
 			"to a digest (image@sha256:...) or a version tag", env.Image)
 	}
 	if env.StacksRoot == "" || env.DataRoot == "" {

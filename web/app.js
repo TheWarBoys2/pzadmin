@@ -132,6 +132,17 @@ class ApiError extends Error {
   constructor(message, status) { super(message); this.status = status; }
 }
 
+// A 401 from these means "wrong password" or "wrong setup code", not "your
+// session ended", so the form that sent them stays on screen with the error.
+const NO_SESSION_PATHS = ['/api/login', '/api/setup'];
+
+// Server errors are written as lower-case clauses so they can be joined into
+// longer messages; on their own they read better as sentences.
+function sentence(message) {
+  const text = String(message || '').trim();
+  return text ? text.charAt(0).toUpperCase() + text.slice(1) : text;
+}
+
 async function request(path, options) {
   const opts = Object.assign({ credentials: 'same-origin', headers: {} }, options || {});
   if (opts.method === 'POST') {
@@ -144,7 +155,7 @@ async function request(path, options) {
   } catch (err) {
     throw new ApiError('PZAdmin is not reachable. Check that the container is still running.', 0);
   }
-  if (response.status === 401) {
+  if (response.status === 401 && !NO_SESSION_PATHS.includes(path)) {
     S.authenticated = false;
     stopStream();
     renderGate();
@@ -154,7 +165,7 @@ async function request(path, options) {
   let payload = null;
   if (text) { try { payload = JSON.parse(text); } catch (err) { payload = null; } }
   if (!response.ok) {
-    const message = (payload && payload.error) || ('Request failed (' + response.status + ')');
+    const message = sentence((payload && payload.error) || ('Request failed (' + response.status + ')'));
     const error = new ApiError(message, response.status);
     error.payload = payload;
     throw error;
@@ -476,9 +487,13 @@ function renderSetup() {
   const root = clear($('#root'));
   root.className = 'gate';
 
+  const code = el('input', {
+    type: 'text', autocomplete: 'off', autocapitalize: 'characters', spellcheck: 'false',
+    required: true, placeholder: 'XXXX-XXXX-XXXX',
+  });
   const username = el('input', { type: 'text', autocomplete: 'username', required: true });
-  const password = el('input', { type: 'password', autocomplete: 'new-password', required: true });
-  const confirm = el('input', { type: 'password', autocomplete: 'new-password', required: true });
+  const password = el('input', { type: 'password', autocomplete: 'new-password', required: true, minlength: '10' });
+  const confirm = el('input', { type: 'password', autocomplete: 'new-password', required: true, minlength: '10' });
   const timezone = el('input', {
     type: 'text',
     value: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
@@ -495,6 +510,7 @@ function renderSetup() {
     submit.textContent = 'Creating account…';
     try {
       await api.post('/api/setup', {
+        setupCode: code.value.trim(),
         username: username.value.trim(),
         password: password.value,
         timezone: timezone.value.trim(),
@@ -506,6 +522,7 @@ function renderSetup() {
       submit.textContent = 'Create account';
     }
   } },
+    field('Setup code', code, 'PZAdmin prints this in its log when it starts. Run: docker logs pzadmin'),
     field('Username', username),
     field('Password', password, 'At least 10 characters. This is the only account, so make it a good one.'),
     field('Confirm password', confirm),
@@ -515,8 +532,9 @@ function renderSetup() {
 
   root.append(el('div', { class: 'card' },
     el('div', { class: 'brand' }, 'PZ', el('span', { text: 'ADMIN' })),
-    el('p', { class: 'lede', text: 'Set up the administrator account. PZAdmin has one account and stores it on this machine only.' }),
+    el('p', { class: 'lede', text: 'Set up the administrator account. PZAdmin has one account and stores it on this machine only. The setup code proves you can see this PZAdmin\'s log, so nobody else who reaches this page first can claim it.' }),
     form));
+  code.focus();
 }
 
 function renderGate() {
@@ -659,7 +677,7 @@ function viewDashboard(main) {
       el('div', { class: 'sub', text: describeFleet(all) })),
     el('div', { class: 'page-actions' },
       el('button', { class: 'btn', type: 'button', text: 'Refresh', onclick: refreshState }),
-      el('button', { class: 'btn primary', type: 'button', text: 'New server', onclick: () => go('/stack') }))));
+      el('button', { class: 'btn primary', type: 'button', text: 'New server', onclick: newServer }))));
 
   if (S.state.docker && !S.state.docker.available && servers().some((s) => s.dockerContainer)) {
     main.append(el('div', { class: 'notice warn', text: S.state.docker.message ||
@@ -668,10 +686,14 @@ function viewDashboard(main) {
 
   if (!servers().length) {
     main.append(el('div', { class: 'panel' }, el('div', { class: 'empty' },
-      el('h3', { text: 'No servers found' }),
-      el('p', { text: 'PZAdmin finds servers in the stacks folder: one subfolder each, with a compose file, '
-        + 'a .env and a Server/ folder. The Stack screen shows what it found and why, and can create one.' }),
-      el('button', { class: 'btn primary', type: 'button', text: 'Open Stack', onclick: () => go('/stack') }))));
+      el('h3', { text: 'No servers yet' }),
+      el('p', { text: 'Create your first server and PZAdmin writes its files into your stacks folder. You see '
+        + 'every file before anything is written.' }),
+      el('p', { class: 'muted', text: 'Already have servers? PZAdmin looks for them in the stacks folder: one '
+        + 'subfolder each, with a compose file, a .env and a Server/ folder. The Stack page shows what it found and why.' }),
+      el('div', { class: 'row-actions' },
+        el('button', { class: 'btn primary', type: 'button', text: 'Create your first server', onclick: newServer }),
+        el('button', { class: 'btn', type: 'button', text: 'Open Stack', onclick: () => go('/stack') })))));
     return;
   }
 
@@ -3944,7 +3966,7 @@ function settingsGeneral(cfg) {
     el('div', { class: 'panel-head' }, el('h3', { text: 'General' })),
     el('div', { class: 'panel-body' }, el('div', { class: 'form' },
       field('Managed folders', root,
-        'PZADMIN_DATA_ROOT and PZADMIN_STACKS_ROOT, set in PZAdmin\u2019s .env and mounted at the same path. '
+        'PZADMIN_DATA_ROOT and PZADMIN_STACKS_ROOT, set in PZAdmin\u2019s docker-compose.yml and mounted at the same path. '
         + 'Change them there and recreate PZAdmin.'),
       field('Timezone', tz, 'An IANA name such as Europe/London. Every schedule and timestamp uses it.'),
       el('div', { class: 'row' },
@@ -4518,6 +4540,16 @@ function settingsMetrics(cfg) {
   const metrics = cfg.metrics || {};
   const enabled = el('input', { type: 'checkbox', checked: metrics.enabled });
   const save = el('button', { class: 'btn primary', type: 'button', text: 'Save' });
+  const newToken = el('button', { class: 'btn', type: 'button', text: 'Make a new token' });
+
+  newToken.addEventListener('click', async () => {
+    newToken.disabled = true;
+    try {
+      const res = await api.post('/api/metrics/token');
+      metricsTokenReveal(res.token);
+    } catch (err) { toast(err.message, 'bad'); }
+    newToken.disabled = false;
+  });
 
   save.addEventListener('click', async () => {
     save.disabled = true;
@@ -4533,8 +4565,27 @@ function settingsMetrics(cfg) {
     el('div', { class: 'panel-body' }, el('div', { class: 'form' },
       el('p', { class: 'muted', text: 'PZAdmin publishes Prometheus metrics at /metrics: player counts, uptime, RCON latency, backup sizes and missing mods.' }),
       el('label', { class: 'check' }, enabled, el('span', { text: 'Publish metrics' })),
-      el('p', { class: 'muted', text: 'A bearer token is required. It was generated during setup and is stored in config.json on the host; PZAdmin never sends it to the browser.' }),
-      el('div', { class: 'form-actions' }, save))));
+      el('p', { class: 'muted', text: 'Scrapers need a bearer token in the Authorization header. PZAdmin keeps the '
+        + 'token to itself, so to set up a scraper, make a new one here and copy it. Making a new token stops the old one working.' }),
+      el('div', { class: 'form-actions' }, newToken, save))));
+}
+
+function metricsTokenReveal(token) {
+  const origin = (typeof location !== 'undefined' && location.origin) || 'http://your-pzadmin:27815';
+  const example = 'curl -H "Authorization: Bearer ' + token + '" ' + origin + '/metrics';
+  openModal({
+    title: 'Copy your metrics token',
+    body: el('div', { class: 'form' },
+      el('div', { class: 'notice warn', text: 'This is the only time the token is shown. If you lose it, make a new one.' }),
+      el('pre', { class: 'command' }, el('code', { text: token })),
+      el('p', { class: 'muted', text: 'In Prometheus, set it as authorization: { credentials: <token> } on the scrape job. Or try it:' }),
+      el('pre', { class: 'command' }, el('code', { text: example }))),
+    actions: [
+      el('button', { class: 'btn', type: 'button', text: 'Copy example', onclick: () => copyText(example) }),
+      el('button', { class: 'btn primary', type: 'button', text: 'Copy token', onclick: () => copyText(token) }),
+      el('button', { class: 'btn', type: 'button', text: 'Done', onclick: closeModal }),
+    ],
+  });
 }
 
 function settingsData(cfg) {
@@ -5150,7 +5201,14 @@ function confirmModChange(file, issues) {
  * wherever that is the next step, the screen gives the exact command rather
  * than pretending otherwise. */
 
-const StackState = { data: null, create: null, wizard: null };
+const StackState = { data: null, create: null, wizard: null, startNew: false };
+
+// newServer opens the Stack page with the new-server wizard already started.
+function newServer() {
+  StackState.startNew = true;
+  if (S.route && S.route.name === 'stack') loadStack(false);
+  else go('/stack');
+}
 
 function viewStack(main) {
   main.append(el('div', { class: 'page-head' },
@@ -5184,6 +5242,10 @@ async function loadStack(rescan) {
     (data.warnings || []).forEach((w) => appendAll(host, el('div', { class: 'notice warn', text: w })));
     appendAll(host, stackServersPanel(data));
     appendAll(host, stackCreatePanel(create));
+    if (StackState.startNew) {
+      StackState.startNew = false;
+      if (create.imagePinned) startWizard(create);
+    }
     if (rescan) await refreshState();
   } catch (err) {
     clear(host);
@@ -5402,9 +5464,9 @@ function stackCreatePanel(create) {
       el('p', { text: create.image
         ? 'PZADMIN_GAME_IMAGE is ' + create.image + ', which is not pinned.'
         : 'PZADMIN_GAME_IMAGE is not set.' }),
-      el('p', { text: 'Set it in PZAdmin\u2019s .env to a digest (image@sha256:\u2026) or a version tag, then '
-        + 'recreate PZAdmin. New servers are only created with a pinned image, so a pull can never change '
-        + 'one underneath you.' })));
+      el('p', { text: 'Set it under environment: in PZAdmin\u2019s docker-compose.yml to a version tag or a digest '
+        + '(image@sha256:\u2026), then run docker compose up -d. New servers are only created with a pinned image, '
+        + 'so a pull can never change one underneath you.' })));
     return panel;
   }
   appendAll(body, 

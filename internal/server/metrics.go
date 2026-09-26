@@ -6,20 +6,23 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/TheWarBoys2/pzadmin/internal/config"
+	"github.com/TheWarBoys2/pzadmin/internal/store"
 )
 
 // handleMetrics exposes Prometheus text-format metrics.
 //
 // The endpoint sits outside the session check so a scraper can reach it, but it
-// is protected by a bearer token when one is configured. The token is generated
-// at setup, so this is not open by default.
+// always needs the bearer token. The config gets a token the moment it loads,
+// and an empty one is refused rather than treated as "no token needed".
 func (a *App) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	cfg := a.cfg.Get()
 	if !cfg.Metrics.Enabled {
 		http.NotFound(w, r)
 		return
 	}
-	if cfg.Metrics.Token != "" && !metricsTokenOK(r, cfg.Metrics.Token) {
+	if cfg.Metrics.Token == "" || !metricsTokenOK(r, cfg.Metrics.Token) {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="pzadmin"`)
 		httpError(w, http.StatusUnauthorized, "a metrics token is required")
 		return
@@ -74,12 +77,31 @@ func (a *App) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(b.String()))
 }
 
+// metricsTokenOK accepts the token only in the Authorization header. A token in
+// the query string would end up in proxy and access logs.
 func metricsTokenOK(r *http.Request, want string) bool {
-	given := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if given == "" {
-		given = r.URL.Query().Get("token")
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return false
 	}
-	return subtle.ConstantTimeCompare([]byte(strings.TrimSpace(given)), []byte(want)) == 1
+	given := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
+	return subtle.ConstantTimeCompare([]byte(given), []byte(want)) == 1
+}
+
+// handleMetricsToken replaces the metrics token and returns the new one. This
+// is the only time it is ever sent to a browser, the same as an API key.
+func (a *App) handleMetricsToken(w http.ResponseWriter, r *http.Request) {
+	token := config.RandomToken(16)
+	if _, err := a.cfg.Update(func(c *config.Config) error {
+		c.Metrics.Token = token
+		return nil
+	}); err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	a.event(store.Event{Kind: "auth.metrics", Severity: store.SevInfo, Source: source(r),
+		Actor: actor(r), Message: "Metrics token replaced"})
+	ok(w, map[string]any{"token": token})
 }
 
 func boolToInt(b bool) int {

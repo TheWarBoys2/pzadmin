@@ -123,8 +123,14 @@ type App struct {
 	// modRequests are mods asked for through the API, waiting for approval.
 	modRequests *modRequestStore
 	limiter     *loginLimiter
-	assets      fs.FS
-	dataDir     string
+	// setupCode is the one-time code the first-run setup form asks for. It is
+	// printed to the log at start and never sent to a browser, so only someone
+	// who can read the container's log can claim a fresh install. Empty once
+	// setup is complete.
+	setupMu   sync.Mutex
+	setupCode string
+	assets    fs.FS
+	dataDir   string
 
 	// apiLimit, apiFail, apiInflight and apiStreams throttle /api/v1; see
 	// apiv1.go.
@@ -169,6 +175,10 @@ type Options struct {
 
 	// GameImage is the pinned image new stacks use, from PZADMIN_GAME_IMAGE.
 	GameImage string
+
+	// SetupCode fixes the first-run setup code, for tests. Empty generates a
+	// random one.
+	SetupCode string
 
 	ArcaneURL    string
 	ArcaneEnvID  string
@@ -221,6 +231,12 @@ func New(opts Options) (*App, error) {
 	if a.rconHost == "" {
 		a.rconHost = "host.docker.internal"
 	}
+	if !cfg.SetupComplete {
+		a.setupCode = opts.SetupCode
+		if a.setupCode == "" {
+			a.setupCode = newSetupCode()
+		}
+	}
 
 	// The mounted folders are fixed by the compose file, so the environment
 	// is the authority; the stored config just follows it.
@@ -267,6 +283,10 @@ func (a *App) Start() {
 		Kind: "system.start", Severity: store.SevInfo, Source: "system",
 		Message: "PZAdmin " + Version + " started",
 	})
+	if code := a.pendingSetupCode(); code != "" {
+		log.Printf("first-time setup: open PZAdmin in your browser and enter this setup code: %s", code)
+		log.Printf("the code changes every time PZAdmin starts until setup is finished")
+	}
 }
 
 // Close stops everything and flushes state to disk.
@@ -469,6 +489,7 @@ func (a *App) Handler() http.Handler {
 	post("/api/stack/env/save", a.handleStackEnvSave)
 
 	post("/api/settings", a.handleSettings)
+	post("/api/metrics/token", a.handleMetricsToken)
 	post("/api/password", a.handlePassword)
 	post("/api/server/save", a.handleServerSave)
 	post("/api/server/delete", a.handleServerDelete)

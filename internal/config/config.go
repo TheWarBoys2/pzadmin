@@ -360,7 +360,7 @@ func Open(path string) (*Store, error) {
 	b, err := os.ReadFile(path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
-		s.cfg = Defaults()
+		s.cfg = withMetricsToken(Defaults())
 		return s, nil
 	case err != nil:
 		return nil, err
@@ -369,8 +369,19 @@ func Open(path string) (*Store, error) {
 	if err := json.Unmarshal(b, &cfg); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
-	s.cfg = Normalise(cfg)
+	s.cfg = withMetricsToken(Normalise(cfg))
 	return s, nil
+}
+
+// withMetricsToken gives the metrics endpoint a token as soon as the config
+// exists, so /metrics is never open, not even before setup. The token only
+// reaches disk with the next save, which is fine: until then nobody has been
+// shown it, so a new one on the next start costs nothing.
+func withMetricsToken(c Config) Config {
+	if c.Metrics.Token == "" {
+		c.Metrics.Token = RandomToken(16)
+	}
+	return c
 }
 
 // Normalise fills in zero values that would otherwise break behaviour.
@@ -527,7 +538,7 @@ func (s *Store) Update(fn func(*Config) error) (Config, error) {
 	if err := fn(&next); err != nil {
 		return Config{}, err
 	}
-	next = Normalise(next)
+	next = withMetricsToken(Normalise(next))
 	if err := writeAtomic(s.path, next); err != nil {
 		return Config{}, err
 	}

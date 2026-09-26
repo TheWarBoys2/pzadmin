@@ -60,16 +60,32 @@ func (a *App) handleSetup(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusMethodNotAllowed, "use POST")
 		return
 	}
+	ip := clientIP(r)
+	if allowed, wait := a.limiter.allow(ip); !allowed {
+		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+		httpError(w, http.StatusTooManyRequests,
+			fmt.Sprintf("too many wrong setup codes, try again in %ds", int(wait.Seconds())+1))
+		return
+	}
 	var p struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-		Timezone string `json:"timezone"`
+		SetupCode string `json:"setupCode"`
+		Username  string `json:"username"`
+		Password  string `json:"password"`
+		Timezone  string `json:"timezone"`
 	}
 	if !decodeJSON(w, r, &p) {
 		return
 	}
 	if a.cfg.Get().SetupComplete {
 		httpError(w, http.StatusConflict, "PZAdmin is already set up")
+		return
+	}
+	// The code is checked before anything else, so someone without it learns
+	// nothing about the password rules or the timezone list.
+	if !a.setupCodeOK(p.SetupCode) {
+		a.limiter.fail(ip)
+		httpError(w, http.StatusForbidden,
+			"that setup code is not right. PZAdmin prints it in its log when it starts: run docker logs pzadmin")
 		return
 	}
 	if err := validateCredentials(p.Username, p.Password); err != nil {
@@ -96,16 +112,15 @@ func (a *App) handleSetup(w http.ResponseWriter, r *http.Request) {
 		if tz != "" {
 			c.Timezone = tz
 		}
-		if c.Metrics.Token == "" {
-			c.Metrics.Token = config.RandomToken(16)
-		}
 		return nil
 	}); err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	token, sess := a.sess.create(strings.TrimSpace(p.Username), clientIP(r), r.UserAgent())
+	a.clearSetupCode()
+	a.limiter.succeed(ip)
+	token, sess := a.sess.create(strings.TrimSpace(p.Username), ip, r.UserAgent())
 	setSessionCookies(w, r, token, sess)
 	a.event(store.Event{Kind: "auth.setup", Severity: store.SevSuccess, Source: "ui",
 		Actor: p.Username, Message: "Administrator account created"})
