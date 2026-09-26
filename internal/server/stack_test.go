@@ -25,6 +25,7 @@ func discoveryApp(t *testing.T, tweak ...func(*Options)) (*App, http.Handler, st
 		}
 	}
 	opts := Options{
+		SetupCode:  testSetupCode,
 		DataDir:    filepath.Join(dir, "data"),
 		Assets:     fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("x")}},
 		DataRoot:   dataRoot,

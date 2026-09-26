@@ -17,12 +17,14 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"log"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/TheWarBoys2/pzadmin/internal/fsutil"
 )
 
 // PBKDF2 work factor. 600k iterations of HMAC-SHA256 is the OWASP 2023
@@ -367,7 +369,7 @@ var DefaultPlayerEvents = []string{"server.restart", "server.up"}
 // Defaults returns a Config suitable for a brand new installation.
 func Defaults() Config {
 	return Config{
-		Version:      9,
+		Version:      SchemaVersion,
 		PZRoot:       "/srv/zomboid",
 		Timezone:     "UTC",
 		PasswordIter: pbkdf2Iterations,
@@ -405,7 +407,7 @@ func Open(path string) (*Store, error) {
 	b, err := os.ReadFile(path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
-		s.cfg = Defaults()
+		s.cfg = withMetricsToken(Defaults())
 		return s, nil
 	case err != nil:
 		return nil, err
@@ -414,9 +416,50 @@ func Open(path string) (*Store, error) {
 	if err := json.Unmarshal(b, &cfg); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
-	s.cfg = Normalise(cfg)
+	if cfg.Version != SchemaVersion {
+		keepCopy(path, b, cfg.Version)
+	}
+	s.cfg = withMetricsToken(Normalise(cfg))
 	return s, nil
 }
+
+// keepCopy saves config.json as it was before this release first rewrites
+// it, as config.json.v<N>.bak. Going back to an older PZAdmin then only needs
+// that file copied back: an older release does not know newer fields and
+// would drop them the first time it saved.
+func keepCopy(path string, b []byte, version int) {
+	backup := fmt.Sprintf("%s.v%d.bak", path, version)
+	if _, err := os.Stat(backup); err == nil {
+		return
+	}
+	if err := fsutil.WriteFile(backup, b, 0o600); err != nil {
+		log.Printf("config: could not keep a copy of %s before upgrading it: %v", path, err)
+		return
+	}
+	if version > SchemaVersion {
+		log.Printf("config: %s was written by a newer PZAdmin (layout %d, this one knows %d). "+
+			"Settings this version does not know may be lost when it saves; the original is kept in %s",
+			path, version, SchemaVersion, backup)
+		return
+	}
+	log.Printf("config: kept a copy of %s from before this upgrade in %s", path, backup)
+}
+
+// withMetricsToken gives the metrics endpoint a token as soon as the config
+// exists, so /metrics is never open, not even before setup. The token only
+// reaches disk with the next save, which is fine: until then nobody has been
+// shown it, so a new one on the next start costs nothing.
+func withMetricsToken(c Config) Config {
+	if c.Metrics.Token == "" {
+		c.Metrics.Token = RandomToken(16)
+	}
+	return c
+}
+
+// SchemaVersion is written into config.json so a future release can tell
+// which layout it is reading. Bump it when the layout changes in a way that
+// needs migrating.
+const SchemaVersion = 9
 
 // Normalise fills in zero values that would otherwise break behaviour.
 func Normalise(c Config) Config {
@@ -488,7 +531,7 @@ func Normalise(c Config) Config {
 			s.Mods.RestartDelayMinutes = 10
 		}
 	}
-	c.Version = 8
+	c.Version = SchemaVersion
 	return c
 }
 
@@ -576,7 +619,7 @@ func (s *Store) Update(fn func(*Config) error) (Config, error) {
 	if err := fn(&next); err != nil {
 		return Config{}, err
 	}
-	next = Normalise(next)
+	next = withMetricsToken(Normalise(next))
 	if err := writeAtomic(s.path, next); err != nil {
 		return Config{}, err
 	}
@@ -634,31 +677,11 @@ func clone(c Config) Config {
 }
 
 func writeAtomic(path string, c Config) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
 	b, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(b); err != nil {
-		f.Close()
-		return err
-	}
-	// fsync before rename so a power cut cannot leave a truncated config.
-	if err := f.Sync(); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return fsutil.WriteFile(path, b, 0o600)
 }
 
 // Redact returns a copy of c with every secret replaced by a placeholder. This

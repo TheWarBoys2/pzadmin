@@ -23,7 +23,7 @@ func newTestApp(t *testing.T) (*App, http.Handler, string) {
 		"app.js":     &fstest.MapFile{Data: []byte("// app")},
 	}
 	var sub fs.FS = assets
-	app, err := New(Options{DataDir: dir, Assets: sub})
+	app, err := New(Options{DataDir: dir, Assets: sub, SetupCode: testSetupCode})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,10 +67,13 @@ func (c *client) do(method, path string, body any) *httptest.ResponseRecorder {
 	return rec
 }
 
+// testSetupCode is the first-run setup code every test app starts with.
+const testSetupCode = "TEST-CODE-0000"
+
 func (c *client) setup(username, password string) {
 	c.t.Helper()
 	rec := c.do(http.MethodPost, "/api/setup", map[string]string{
-		"username": username, "password": password, "timezone": "UTC",
+		"setupCode": testSetupCode, "username": username, "password": password, "timezone": "UTC",
 	})
 	if rec.Code != http.StatusOK {
 		c.t.Fatalf("setup failed: %d %s", rec.Code, rec.Body.String())
@@ -103,7 +106,7 @@ func TestSetupThenLoginFlow(t *testing.T) {
 	c := &client{t: t, handler: handler}
 
 	// Weak passwords must be refused outright.
-	rec := c.do(http.MethodPost, "/api/setup", map[string]string{"username": "rick", "password": "short"})
+	rec := c.do(http.MethodPost, "/api/setup", map[string]string{"setupCode": testSetupCode, "username": "rick", "password": "short"})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("a five character password should be refused, got %d", rec.Code)
 	}
@@ -116,7 +119,7 @@ func TestSetupThenLoginFlow(t *testing.T) {
 
 	// Setup cannot be run twice, which would otherwise let anyone reset the
 	// account by reaching the endpoint before the real owner.
-	rec = c.do(http.MethodPost, "/api/setup", map[string]string{"username": "mallory", "password": "another-long-password"})
+	rec = c.do(http.MethodPost, "/api/setup", map[string]string{"setupCode": testSetupCode, "username": "mallory", "password": "another-long-password"})
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("second setup should be refused, got %d", rec.Code)
 	}
@@ -498,7 +501,7 @@ func TestMetricsRequireTokenWhenSet(t *testing.T) {
 	c := &client{t: t, handler: handler}
 	c.setup("rick", "a-long-enough-password")
 
-	// Setup generates a token, so an anonymous scrape must be refused.
+	// There is always a token, so an anonymous scrape must be refused.
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -508,7 +511,7 @@ func TestMetricsRequireTokenWhenSet(t *testing.T) {
 
 	token := app.cfg.Get().Metrics.Token
 	if token == "" {
-		t.Fatal("setup should generate a metrics token")
+		t.Fatal("there should always be a metrics token")
 	}
 	req = httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	req.Header.Set("Authorization", "Bearer "+token)

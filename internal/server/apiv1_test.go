@@ -315,7 +315,7 @@ func TestAPIv1StreamEndsWhenKeyIsRevoked(t *testing.T) {
 		t.Fatalf("the stream should open with status, got %q", buf[:n])
 	}
 
-	app.keys.revoke(id)
+	_, _, _ = app.keys.revoke(id)
 	done := make(chan struct{})
 	go func() {
 		for {
@@ -329,5 +329,42 @@ func TestAPIv1StreamEndsWhenKeyIsRevoked(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the stream stayed open after its key was revoked")
+	}
+}
+
+// A key can only have one restart, stop or start running per server, and only
+// a few a minute, so a looping script cannot keep a server bouncing.
+func TestAPIv1LifecycleGuard(t *testing.T) {
+	app, handler, c, riverside, muldraugh := apiTestApp(t)
+	bot, _ := createKey(t, c, map[string]any{"name": "discord-bot", "scopes": []string{"control"}})
+	path := "/api/v1/servers/" + riverside + "/lifecycle"
+
+	// Pretend a restart is already under way, so no request reaches Docker.
+	app.apiInflight.Store(riverside, true)
+	for i := 0; i < int(rateLifecycle.Burst); i++ {
+		rec := bearer(t, handler, bot, http.MethodPost, path, `{"action":"restart"}`)
+		if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "already being") {
+			t.Fatalf("attempt %d: expected 409 while busy, got %d %s", i+1, rec.Code, rec.Body.String())
+		}
+	}
+	rec := bearer(t, handler, bot, http.MethodPost, path, `{"action":"stop"}`)
+	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("expected 429 with Retry-After after the burst, got %d", rec.Code)
+	}
+
+	// The limit is per server: another server is not held up.
+	app.apiInflight.Store(muldraugh, true)
+	rec = bearer(t, handler, bot, http.MethodPost, "/api/v1/servers/"+muldraugh+"/lifecycle", `{"action":"start"}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("another server should have its own allowance, got %d", rec.Code)
+	}
+
+	// Cancelling a pending restart is not itself a restart, so it is not held
+	// back by either limit. A second key is used because the first has spent
+	// its general write allowance.
+	other, _ := createKey(t, c, map[string]any{"name": "panel", "scopes": []string{"control"}})
+	rec = bearer(t, handler, other, http.MethodPost, path, `{"action":"cancel-pending"}`)
+	if rec.Code == http.StatusTooManyRequests || rec.Code == http.StatusConflict {
+		t.Fatalf("cancel should pass the lifecycle guard, got %d", rec.Code)
 	}
 }

@@ -4,15 +4,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"net"
+	"log"
 	"net/http"
-	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/TheWarBoys2/pzadmin/internal/config"
+	"github.com/TheWarBoys2/pzadmin/internal/fsutil"
 )
 
 const (
@@ -42,11 +40,16 @@ type sessionStore struct {
 	mu   sync.RWMutex
 	path string
 	byID map[string]*session // keyed by token hash
+	// saveMu is held from snapshot to rename, so an older snapshot can never
+	// be written over a newer one and bring back a signed-out session.
+	saveMu sync.Mutex
+	// loadErr is set when sessions.json could not be read at start.
+	loadErr error
 }
 
 func newSessionStore(path string) *sessionStore {
 	s := &sessionStore{path: path, byID: map[string]*session{}}
-	s.load()
+	s.loadErr = s.load()
 	return s
 }
 
@@ -111,9 +114,8 @@ func (s *sessionStore) revokeAll() {
 	s.save()
 }
 
-// gc removes expired sessions. The original implementation only deleted an
-// expired session if that exact token was presented again, so the map grew
-// forever.
+// gc removes expired sessions. lookup only drops an expired session when its
+// token is presented again, so without this the list would grow forever.
 func (s *sessionStore) gc() int {
 	now := time.Now()
 	s.mu.Lock()
@@ -146,33 +148,29 @@ func (s *sessionStore) list() []session {
 }
 
 func (s *sessionStore) save() {
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+	// Marshal under the lock: lookup updates LastSeen in place.
 	s.mu.RLock()
 	list := make([]*session, 0, len(s.byID))
 	for _, v := range s.byID {
 		list = append(list, v)
 	}
-	s.mu.RUnlock()
 	b, err := json.Marshal(list)
+	s.mu.RUnlock()
+	if err == nil {
+		err = fsutil.WriteFile(s.path, b, 0o600)
+	}
 	if err != nil {
-		return
-	}
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
-		return
-	}
-	tmp := s.path + ".tmp"
-	if os.WriteFile(tmp, b, 0o600) == nil {
-		_ = os.Rename(tmp, s.path)
+		log.Printf("saving sessions: %v", err)
 	}
 }
 
-func (s *sessionStore) load() {
-	b, err := os.ReadFile(s.path)
-	if err != nil {
-		return
-	}
+func (s *sessionStore) load() error {
 	var list []*session
-	if json.Unmarshal(b, &list) != nil {
-		return
+	if _, err := fsutil.ReadJSON(s.path, &list); err != nil {
+		log.Printf("sessions: %v", err)
+		return err
 	}
 	now := time.Now()
 	for _, v := range list {
@@ -180,6 +178,7 @@ func (s *sessionStore) load() {
 			s.byID[v.TokenHash] = v
 		}
 	}
+	return nil
 }
 
 // --- login rate limiting ----------------------------------------------------
@@ -189,6 +188,10 @@ func (s *sessionStore) load() {
 type loginLimiter struct {
 	mu       sync.Mutex
 	failures map[string]*failureRecord
+	// free is how many failures pass before any delay; maxDelay caps the
+	// back-off.
+	free     int
+	maxDelay time.Duration
 }
 
 type failureRecord struct {
@@ -197,11 +200,25 @@ type failureRecord struct {
 	last     time.Time
 }
 
+// newLoginLimiter limits one address: four free attempts, then 5s, 10s, 20s
+// and so on, up to five minutes.
 func newLoginLimiter() *loginLimiter {
-	return &loginLimiter{failures: map[string]*failureRecord{}}
+	return &loginLimiter{failures: map[string]*failureRecord{}, free: 4, maxDelay: 5 * time.Minute}
+}
+
+// accountKey is the single key the account-wide limiter counts under.
+const accountKey = "*"
+
+// newAccountLimiter limits sign-in attempts from everywhere at once, so
+// guesses spread over many addresses are slowed as well. It is generous and
+// its delay is short, because anyone can trip it: it has to slow a botnet
+// without locking the real administrator out for long.
+func newAccountLimiter() *loginLimiter {
+	return &loginLimiter{failures: map[string]*failureRecord{}, free: 20, maxDelay: 30 * time.Second}
 }
 
 // allow reports whether an attempt may proceed, and how long to wait if not.
+// It counts nothing; for sign-in, where the check is slow, use take.
 func (l *loginLimiter) allow(ip string) (bool, time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -220,9 +237,33 @@ func (l *loginLimiter) allow(ip string) (bool, time.Duration) {
 	return true, 0
 }
 
+// take reports whether an attempt may go ahead and, when it may, counts it
+// as a failure straight away; succeed clears it if the attempt turns out to
+// be right. Counting before the slow password check, under the same lock as
+// the check, means a burst of parallel guesses is limited exactly like the
+// same guesses sent one after another.
+func (l *loginLimiter) take(key string) (bool, time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if r, ok := l.failures[key]; ok {
+		if time.Since(r.last) > 15*time.Minute {
+			delete(l.failures, key)
+		} else if time.Now().Before(r.lockedTo) {
+			return false, time.Until(r.lockedTo)
+		}
+	}
+	l.recordLocked(key)
+	return true, 0
+}
+
 func (l *loginLimiter) fail(ip string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.recordLocked(ip)
+}
+
+// recordLocked counts one failure. l.mu must be held.
+func (l *loginLimiter) recordLocked(ip string) {
 	r, ok := l.failures[ip]
 	if !ok {
 		r = &failureRecord{}
@@ -230,11 +271,12 @@ func (l *loginLimiter) fail(ip string) {
 	}
 	r.count++
 	r.last = time.Now()
-	// The first four attempts are free; then back off 5s, 10s, 20s ... 5 min.
-	if r.count > 4 {
-		delay := time.Duration(1<<uint(min(r.count-5, 6))) * 5 * time.Second
-		if delay > 5*time.Minute {
-			delay = 5 * time.Minute
+	// The first few attempts are free; then back off 5s, 10s, 20s ... up to
+	// the cap.
+	if r.count > l.free {
+		delay := time.Duration(1<<uint(min(r.count-l.free-1, 6))) * 5 * time.Second
+		if delay > l.maxDelay {
+			delay = l.maxDelay
 		}
 		r.lockedTo = time.Now().Add(delay)
 	}
@@ -253,38 +295,40 @@ func (l *loginLimiter) succeed(ip string) {
 	l.mu.Unlock()
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
+// knownAddresses remembers where the administrator has signed in from, so
+// the account-wide limit, which anyone can trip, never locks the real
+// administrator out of an address they have used before.
+type knownAddresses struct {
+	mu   sync.Mutex
+	seen map[string]time.Time
+}
+
+const knownAddressTTL = 30 * 24 * time.Hour
+
+func (k *knownAddresses) add(ip string) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.seen == nil {
+		k.seen = map[string]time.Time{}
 	}
-	return b
+	k.seen[ip] = time.Now()
+	if len(k.seen) > 1000 {
+		for addr, at := range k.seen {
+			if time.Since(at) > knownAddressTTL {
+				delete(k.seen, addr)
+			}
+		}
+	}
+}
+
+func (k *knownAddresses) has(ip string) bool {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	at, ok := k.seen[ip]
+	return ok && time.Since(at) < knownAddressTTL
 }
 
 // --- request helpers --------------------------------------------------------
-
-func clientIP(r *http.Request) string {
-	// Trust a forwarding header only when it is present; PZAdmin is expected to
-	// sit behind the operator's own reverse proxy on a private network.
-	if v := r.Header.Get("X-Forwarded-For"); v != "" {
-		parts := strings.Split(v, ",")
-		return strings.TrimSpace(parts[0])
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
-}
-
-// requestIsSecure reports whether the browser reached us over TLS, so the
-// session cookie can carry the Secure flag when it is meaningful and omit it on
-// plain-HTTP LAN access where it would break login entirely.
-func requestIsSecure(r *http.Request) bool {
-	if r.TLS != nil {
-		return true
-	}
-	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
-}
 
 func setSessionCookies(w http.ResponseWriter, r *http.Request, token string, sess *session) {
 	secure := requestIsSecure(r)
@@ -312,9 +356,19 @@ func clearSessionCookies(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// truncate shortens s to at most n characters. It counts characters, not
+// bytes, so a Cyrillic player name or an emoji in chat is never cut in half
+// and turned into invalid text.
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n]
+	count := 0
+	for i := range s {
+		if count == n {
+			return s[:i]
+		}
+		count++
+	}
+	return s
 }

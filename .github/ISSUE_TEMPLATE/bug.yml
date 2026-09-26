@@ -1,0 +1,48 @@
+name: Bug report
+description: Something in PZAdmin doesn't work as it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. For a security problem, please use
+        [private reporting](https://github.com/TheWarBoys2/pzadmin/security/advisories/new) instead.
+        Remove passwords, tokens and webhook links from anything you paste.
+  - type: input
+    id: version
+    attributes:
+      label: PZAdmin version
+      description: Shown under the PZAdmin logo in the sidebar, and in `docker logs pzadmin`.
+      placeholder: v1.0.0
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How can it be reproduced?
+      placeholder: |
+        1. Open ...
+        2. Click ...
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: From `docker logs pzadmin`, or the activity log in PZAdmin.
+      render: text
+  - type: dropdown
+    id: build
+    attributes:
+      label: Project Zomboid build
+      options: [Build 41, Build 42, Both, Not relevant]
+  - type: dropdown
+    id: arcane
+    attributes:
+      label: Is Arcane set up?
+      options: ["Yes", "No"]

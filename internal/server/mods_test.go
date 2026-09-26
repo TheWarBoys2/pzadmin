@@ -21,6 +21,7 @@ func modServer(t *testing.T) (*App, *client, string, string) {
 	t.Helper()
 	dir := t.TempDir()
 	app, err := New(Options{
+		SetupCode: testSetupCode,
 		DataDir:   dir,
 		Assets:    fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("app")}},
 		SteamBase: fakeSteamServer(t),
@@ -296,8 +297,9 @@ func readAll(t *testing.T, path string) string {
 func TestBundledWorkshopItemIsUnderstood(t *testing.T) {
 	dir := t.TempDir()
 	app, err := New(Options{
-		DataDir: dir,
-		Assets:  fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("app")}},
+		SetupCode: testSetupCode,
+		DataDir:   dir,
+		Assets:    fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("app")}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -434,8 +436,9 @@ func TestClosestModIDNamesTheNearMiss(t *testing.T) {
 func TestDuplicateSpellingIsExplained(t *testing.T) {
 	dir := t.TempDir()
 	app, err := New(Options{
-		DataDir: dir,
-		Assets:  fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("app")}},
+		SetupCode: testSetupCode,
+		DataDir:   dir,
+		Assets:    fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("app")}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -505,8 +508,9 @@ func TestDuplicateSpellingIsExplained(t *testing.T) {
 func TestEntryMatchingByFolderIsCorrected(t *testing.T) {
 	dir := t.TempDir()
 	app, err := New(Options{
-		DataDir: dir,
-		Assets:  fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("app")}},
+		SetupCode: testSetupCode,
+		DataDir:   dir,
+		Assets:    fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("app")}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -558,8 +562,9 @@ func TestEntryMatchingByFolderIsCorrected(t *testing.T) {
 func TestBuild42ModInfoIsFound(t *testing.T) {
 	dir := t.TempDir()
 	app, err := New(Options{
-		DataDir: dir,
-		Assets:  fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("app")}},
+		SetupCode: testSetupCode,
+		DataDir:   dir,
+		Assets:    fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("app")}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -621,8 +626,9 @@ func TestBuild42ModInfoIsFound(t *testing.T) {
 func TestMissingModInfoIsAdmittedNotGuessed(t *testing.T) {
 	dir := t.TempDir()
 	app, err := New(Options{
-		DataDir: dir,
-		Assets:  fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("app")}},
+		SetupCode: testSetupCode,
+		DataDir:   dir,
+		Assets:    fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("app")}},
 	})
 	if err != nil {
 		t.Fatal(err)

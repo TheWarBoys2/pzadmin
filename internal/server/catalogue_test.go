@@ -357,9 +357,18 @@ func TestConfigFormDoesNotLeakSecrets(t *testing.T) {
 		`{"serverId":"`+id+`","file":"riv.ini","changes":{"RCONPassword":"","MaxPlayers":"20"}}`); rec.Code != http.StatusOK {
 		t.Fatalf("apply failed: %s", rec.Body.String())
 	}
-	raw := c.do(http.MethodGet, "/api/server/config?id="+id+"&file=riv.ini", nil).Body.String()
-	if !contains(raw, "hunter2-the-rcon-password") {
-		t.Fatalf("an untouched password box must not wipe the stored value: %s", raw)
+	// The raw editor hides passwords too, so check the file itself.
+	resp := decode(t, c.do(http.MethodGet, "/api/server/config?id="+id+"&file=riv.ini", nil))
+	raw, _ := resp["content"].(string)
+	if contains(raw, "hunter2-the-rcon-password") {
+		t.Fatalf("the raw editor leaked the RCON password: %s", raw)
+	}
+	onDisk, err := os.ReadFile(filepath.Join(resp["dir"].(string), "riv.ini"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(string(onDisk), "hunter2-the-rcon-password") {
+		t.Fatalf("an untouched password box must not wipe the stored value: %s", onDisk)
 	}
 	if !contains(raw, "MaxPlayers=20") {
 		t.Fatal("the other change in the same batch should still have been applied")

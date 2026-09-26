@@ -5,9 +5,9 @@
  *  1. Nothing is ever built by concatenating data into HTML. Everything goes
  *     through el() and lands as a text node. A player can call themselves
  *     anything they like — including a string that looks like markup or like
- *     JavaScript — and it will render as literal text. The previous version
- *     interpolated player names into inline onclick handlers, which let anyone
- *     who could join the game run script in the administrator's browser.
+ *     JavaScript — and it will render as literal text. Building HTML from
+ *     strings would let anyone who can join the game run script in the
+ *     administrator's browser just by choosing their name.
  *  2. There are no inline event handlers and no inline styles, so the server
  *     can send a Content-Security-Policy with no 'unsafe-inline' at all.
  *     Dynamic styling goes through the CSSOM, which CSP does not restrict.
@@ -132,6 +132,17 @@ class ApiError extends Error {
   constructor(message, status) { super(message); this.status = status; }
 }
 
+// A 401 from these means "wrong password" or "wrong setup code", not "your
+// session ended", so the form that sent them stays on screen with the error.
+const NO_SESSION_PATHS = ['/api/login', '/api/setup'];
+
+// Server errors are written as lower-case clauses so they can be joined into
+// longer messages; on their own they read better as sentences.
+function sentence(message) {
+  const text = String(message || '').trim();
+  return text ? text.charAt(0).toUpperCase() + text.slice(1) : text;
+}
+
 async function request(path, options) {
   const opts = Object.assign({ credentials: 'same-origin', headers: {} }, options || {});
   if (opts.method === 'POST') {
@@ -144,7 +155,7 @@ async function request(path, options) {
   } catch (err) {
     throw new ApiError('PZAdmin is not reachable. Check that the container is still running.', 0);
   }
-  if (response.status === 401) {
+  if (response.status === 401 && !NO_SESSION_PATHS.includes(path)) {
     S.authenticated = false;
     stopStream();
     renderGate();
@@ -154,7 +165,7 @@ async function request(path, options) {
   let payload = null;
   if (text) { try { payload = JSON.parse(text); } catch (err) { payload = null; } }
   if (!response.ok) {
-    const message = (payload && payload.error) || ('Request failed (' + response.status + ')');
+    const message = sentence((payload && payload.error) || ('Request failed (' + response.status + ')'));
     const error = new ApiError(message, response.status);
     error.payload = payload;
     throw error;
@@ -366,6 +377,14 @@ window.addEventListener('hashchange', () => {
 
 // ----------------------------------------------------------------- SSE stream
 
+function showUpdateBanner(version) {
+  if (typeof document === 'undefined' || document.querySelector('#update-banner')) return;
+  const banner = el('div', { id: 'update-banner', class: 'update-banner', role: 'status' },
+    el('span', { text: 'PZAdmin was updated' + (version ? ' to ' + version : '') + '. Reload to use the new version.' }),
+    el('button', { class: 'btn primary small', type: 'button', text: 'Reload', onclick: () => location.reload() }));
+  document.body.append(banner);
+}
+
 function startStream() {
   stopStream();
   const source = new EventSource('/api/stream');
@@ -375,6 +394,16 @@ function startStream() {
     S.connected = true;
     S.streamBackoff = 1000;
     paintConnection();
+  });
+
+  // PZAdmin says which build it is serving each time the stream opens. After
+  // an upgrade the tab reconnects on its own, still running the old code, so
+  // offer a reload. Not automatic: that could throw away a half-filled form.
+  source.addEventListener('hello', (event) => {
+    try {
+      const hello = JSON.parse(event.data);
+      if (S.build && hello.build && hello.build !== S.build) showUpdateBanner(hello.version);
+    } catch (err) { /* ignore */ }
   });
 
   source.addEventListener('status', (event) => {
@@ -434,6 +463,7 @@ async function boot() {
     S.setupComplete = info.setupComplete;
     S.authenticated = info.authenticated;
     S.version = info.version;
+    S.build = info.build;
     S.route = parseRoute();
     if (!info.setupComplete) return renderSetup();
     if (!info.authenticated) return renderGate();
@@ -476,14 +506,15 @@ function renderSetup() {
   const root = clear($('#root'));
   root.className = 'gate';
 
-  const username = el('input', { type: 'text', autocomplete: 'username', required: true });
-  const password = el('input', { type: 'password', autocomplete: 'new-password', required: true });
-  const confirm = el('input', { type: 'password', autocomplete: 'new-password', required: true });
-  const timezone = el('input', {
-    type: 'text',
-    value: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
-    placeholder: 'Europe/London',
+  const code = el('input', {
+    type: 'text', autocomplete: 'off', autocapitalize: 'characters', spellcheck: 'false',
+    required: true, placeholder: 'XXXX-XXXX-XXXX',
   });
+  const username = el('input', { type: 'text', autocomplete: 'username', required: true });
+  const password = el('input', { type: 'password', autocomplete: 'new-password', required: true, minlength: '10' });
+  const confirm = el('input', { type: 'password', autocomplete: 'new-password', required: true, minlength: '10' });
+  const tzPicker = timezoneInput(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
+  const timezone = tzPicker.input;
   const error = el('div', { class: 'error' });
   const submit = el('button', { class: 'btn primary block', type: 'submit', text: 'Create account' });
 
@@ -495,6 +526,7 @@ function renderSetup() {
     submit.textContent = 'Creating account…';
     try {
       await api.post('/api/setup', {
+        setupCode: code.value.trim(),
         username: username.value.trim(),
         password: password.value,
         timezone: timezone.value.trim(),
@@ -506,17 +538,20 @@ function renderSetup() {
       submit.textContent = 'Create account';
     }
   } },
+    field('Setup code', code, 'PZAdmin prints this in its log when it starts. Run: docker logs pzadmin'),
     field('Username', username),
     field('Password', password, 'At least 10 characters. This is the only account, so make it a good one.'),
     field('Confirm password', confirm),
     field('Timezone', timezone, 'Schedules and timestamps use this. An IANA name such as Europe/London.'),
+    tzPicker.list,
     error,
     submit);
 
   root.append(el('div', { class: 'card' },
     el('div', { class: 'brand' }, 'PZ', el('span', { text: 'ADMIN' })),
-    el('p', { class: 'lede', text: 'Set up the administrator account. PZAdmin has one account and stores it on this machine only.' }),
+    el('p', { class: 'lede', text: 'Set up the administrator account. PZAdmin has one account and stores it on this machine only. The setup code proves you can see this PZAdmin\'s log, so nobody else who reaches this page first can claim it.' }),
     form));
+  code.focus();
 }
 
 function renderGate() {
@@ -554,11 +589,40 @@ function renderGate() {
   username.focus();
 }
 
+// field lays out a labelled control. The label is tied to the control with
+// for/id, so a screen reader announces it and clicking it focuses the box,
+// and the hint is linked as the control's description.
+let fieldSeq = 0;
+const LABELLABLE = ['INPUT', 'SELECT', 'TEXTAREA'];
+
+// timezoneInput is a text box that suggests every IANA zone the browser
+// knows, so "Europe/london" style typos are caught while typing.
+function timezoneInput(value) {
+  const input = el('input', { type: 'text', value: value || 'UTC', placeholder: 'Europe/London', autocomplete: 'off', spellcheck: 'false' });
+  let zones = [];
+  try { zones = Intl.supportedValuesOf('timeZone'); } catch (err) { zones = []; }
+  if (zones.length && typeof document !== 'undefined') {
+    const id = 'tz-list-' + (++fieldSeq);
+    input.setAttribute('list', id);
+    return { input, list: el('datalist', { id }, zones.map((z) => el('option', { value: z }))) };
+  }
+  return { input, list: null };
+}
+
 function field(label, input, hint) {
-  return el('div', { class: 'field' },
-    el('label', { text: label }),
-    input,
-    hint ? el('div', { class: 'hint', text: hint }) : null);
+  const labelNode = el('label', { text: label });
+  const hintNode = hint ? el('div', { class: 'hint', text: hint }) : null;
+  if (input && LABELLABLE.includes(input.tagName)) {
+    if (!input.id) input.id = 'field-' + (++fieldSeq);
+    labelNode.setAttribute('for', input.id);
+    if (hintNode) {
+      hintNode.id = input.id + '-hint';
+      input.setAttribute('aria-describedby', hintNode.id);
+    }
+  } else if (input && input.setAttribute && label) {
+    input.setAttribute('aria-label', label);
+  }
+  return el('div', { class: 'field' }, labelNode, input, hintNode);
 }
 
 // ----------------------------------------------------------------- app render
@@ -656,22 +720,28 @@ function viewDashboard(main) {
   main.append(el('div', { class: 'page-head' },
     el('div', null,
       el('h1', { text: 'Dashboard' }),
-      el('div', { class: 'sub', text: describeFleet(all) })),
+      el('div', { class: 'sub', text: describeFleet(all, S.state.docker) })),
     el('div', { class: 'page-actions' },
       el('button', { class: 'btn', type: 'button', text: 'Refresh', onclick: refreshState }),
-      el('button', { class: 'btn primary', type: 'button', text: 'New server', onclick: () => go('/stack') }))));
+      el('button', { class: 'btn primary', type: 'button', text: 'New server', onclick: newServer }))));
 
   if (S.state.docker && !S.state.docker.available && servers().some((s) => s.dockerContainer)) {
-    main.append(el('div', { class: 'notice warn', text: S.state.docker.message ||
-      'Arcane is unavailable, so start, stop and status are unavailable. Restarts still work over RCON.' }));
+    const docker = S.state.docker;
+    main.append(el('div', { class: 'notice warn' },
+      el('p', { text: docker.message || 'PZAdmin can\u2019t reach Arcane, so start, stop and deploy are off. Restarts still work over RCON.' }),
+      docker.detail ? el('details', null, el('summary', { text: 'Details' }), el('code', { class: 'mono', text: docker.detail })) : null));
   }
 
   if (!servers().length) {
     main.append(el('div', { class: 'panel' }, el('div', { class: 'empty' },
-      el('h3', { text: 'No servers found' }),
-      el('p', { text: 'PZAdmin finds servers in the stacks folder: one subfolder each, with a compose file, '
-        + 'a .env and a Server/ folder. The Stack screen shows what it found and why, and can create one.' }),
-      el('button', { class: 'btn primary', type: 'button', text: 'Open Stack', onclick: () => go('/stack') }))));
+      el('h3', { text: 'No servers yet' }),
+      el('p', { text: 'Create your first server and PZAdmin writes its files into your stacks folder. You see '
+        + 'every file before anything is written.' }),
+      el('p', { class: 'muted', text: 'Already have servers? PZAdmin looks for them in the stacks folder: one '
+        + 'subfolder each, with a compose file, a .env and a Server/ folder. The Stack page shows what it found and why.' }),
+      el('div', { class: 'row-actions' },
+        el('button', { class: 'btn primary', type: 'button', text: 'Create your first server', onclick: newServer }),
+        el('button', { class: 'btn', type: 'button', text: 'Open Stack', onclick: () => go('/stack') })))));
     return;
   }
 
@@ -701,10 +771,12 @@ function viewDashboard(main) {
   loadChart('', 24, 'chart-host', 'chart-note');
 }
 
-function describeFleet(all) {
-  if (!all.length) return 'Nothing configured yet.';
+function describeFleet(all, docker) {
+  if (!all.length) return 'No servers yet.';
   const down = all.filter((s) => s.enabled && !s.online);
-  if (!down.length) return 'Everything is answering.';
+  // "Everything" would be wrong with Arcane unreachable right under it.
+  const arcaneDown = docker && !docker.available && servers().some((s) => s.dockerContainer);
+  if (!down.length) return arcaneDown ? 'Servers are answering. Arcane is not, so start and stop are off.' : 'Everything is answering.';
   if (down.length === 1) return down[0].name + ' is not answering.';
   return down.length + ' servers are not answering.';
 }
@@ -1207,7 +1279,7 @@ async function openPicker(server, kind, current, onPick) {
 
   const catList = el('div', { class: 'picker-cats' });
   const entryList = el('div', { class: 'picker-list' });
-  const search = el('input', { type: 'search', placeholder: 'Search all ' + spec.noun + 's' });
+  const search = el('input', { type: 'search', placeholder: 'Search all ' + spec.noun + 's', 'aria-label': 'Search all ' + spec.noun + 's' });
   const choose = el('button', { class: 'btn primary', type: 'button', text: 'Use this ' + spec.noun, disabled: !selected });
 
   const paintEntries = () => {
@@ -1862,7 +1934,7 @@ async function editConfigForm(server, name) {
   const summary = el('div', { class: 'grow' });
   const save = el('button', { class: 'btn primary', type: 'button', text: 'Save changes', disabled: true });
   const reload = el('input', { type: 'checkbox', checked: data.reloadable && data.online });
-  const search = el('input', { type: 'search', placeholder: 'Search settings' });
+  const search = el('input', { type: 'search', placeholder: 'Search settings', 'aria-label': 'Search settings' });
 
   const refresh = () => {
     const pending = changes();
@@ -2011,6 +2083,11 @@ function buildControl(field, onChange) {
       max: field.max !== undefined && field.max !== null ? String(field.max) : null,
       autocomplete: field.secret ? 'new-password' : 'off',
       spellcheck: 'false',
+      // A secret arrives blank: PZAdmin never sends a password to the browser.
+      // Say so, or an empty box reads as "no password set".
+      placeholder: !field.secret ? null
+        : field.locked ? 'Hidden. ' + field.locked
+          : 'Hidden. Leave blank to keep it, or type a new one',
     });
     node.value = field.value;
     node.addEventListener('input', onChange);
@@ -2076,6 +2153,8 @@ async function editConfigFile(server, name) {
   openModal({
     title: name, sub: server.name + ' · raw file', wide: true,
     body: el('div', { class: 'form' },
+      /\.ini$/i.test(name) ? el('p', { class: 'muted', text: 'Passwords are shown as <hidden, unchanged>. Leave '
+        + 'that as it is to keep the password, or replace it to set a new one.' }) : null,
       area,
       el('label', { class: 'check' }, reload,
         el('span', null, el('span', { text: 'Reload options afterwards' }),
@@ -2699,12 +2778,12 @@ async function tabLogs(host, server) {
   clear(host);
 
   const view = el('pre', { class: 'log-view', text: 'Choose a log to view.' });
-  const picker = el('select', null,
+  const picker = el('select', { 'aria-label': 'Log file' },
     el('option', { value: '', text: 'Choose a log…' }),
     data.hasContainer ? el('option', { value: '@container', text: 'Container output (docker logs)' }) : null,
     (data.files || []).map((f) => el('option', { value: f.name, text: f.name + '  (' + fmtBytes(f.size) + ')' })));
 
-  const lines = el('select', null, ['200', '500', '1000', '2000'].map((n) =>
+  const lines = el('select', { 'aria-label': 'Lines to show' }, ['200', '500', '1000', '2000'].map((n) =>
     el('option', { value: n, text: n + ' lines' })));
   lines.value = '500';
 
@@ -2756,7 +2835,7 @@ async function tabBackups(host, server, st) {
       ' and deletes older ones. The world is saved before each archive is taken.' })));
 
   const create = el('button', { class: 'btn primary', type: 'button', text: 'Back up now' });
-  const note = el('input', { type: 'text', placeholder: 'Optional note, e.g. before mod update' });
+  const note = el('input', { type: 'text', class: 'grow-input', placeholder: 'Optional note, e.g. before mod update', 'aria-label': 'Backup note' });
 
   create.addEventListener('click', async () => {
     create.disabled = true;
@@ -2831,9 +2910,10 @@ async function tabBackups(host, server, st) {
 async function restoreBackup(server, archive) {
   const confirmed = await confirmDialog({
     title: 'Restore ' + archive.name + '?',
-    message: 'This overwrites the current world with the contents of the archive. Anything since ' +
-      fmtDateTime(archive.createdAt) + ' will be lost.',
-    detail: 'Take a fresh backup first if there is any doubt.',
+    message: 'The world goes back to how it was at ' + fmtDateTime(archive.createdAt) +
+      '. Everything players did since then is undone. If the backup includes the server settings, they go back too.',
+    detail: 'Nothing is deleted: the current world moves to a Saves.before-restore folder, and the current ' +
+      'settings to Server.before-restore, replacing copies left by an earlier restore.',
     confirmLabel: 'Restore', danger: true, requireText: server.name,
   });
   if (!confirmed) return;
@@ -2854,7 +2934,7 @@ function tabConsole(host, server, st) {
     text: 'Anything you type here goes straight to the server over RCON, exactly as written. Every command is written to the activity log.' }));
 
   const output = el('div', { class: 'console-out', id: 'console-out' });
-  const input = el('input', { type: 'text', placeholder: 'players', autocomplete: 'off', spellcheck: 'false' });
+  const input = el('input', { type: 'text', placeholder: 'players', 'aria-label': 'Console command', autocomplete: 'off', spellcheck: 'false' });
   const send = el('button', { class: 'btn primary', type: 'button', text: 'Run' });
 
   const paint = () => {
@@ -2937,7 +3017,7 @@ function viewPlayers(main) {
     return;
   }
 
-  const search = el('input', { type: 'search', placeholder: 'Search players' });
+  const search = el('input', { type: 'search', placeholder: 'Search players', 'aria-label': 'Search players' });
   const tbody = el('tbody');
 
   const paint = () => {
@@ -3674,8 +3754,8 @@ function viewActivity(main) {
       el('h1', { text: 'Activity' }),
       el('div', { class: 'sub', text: 'Everything PZAdmin and your servers have done, including who did it.' }))));
 
-  const kind = el('select', null, EVENT_FILTERS.map(([id, label]) => el('option', { value: id, text: label })));
-  const server = el('select', null,
+  const kind = el('select', { 'aria-label': 'Event type' }, EVENT_FILTERS.map(([id, label]) => el('option', { value: id, text: label })));
+  const server = el('select', { 'aria-label': 'Server' },
     el('option', { value: '', text: 'All servers' }),
     servers().map((s) => el('option', { value: s.id, text: s.name })));
   const list = el('div', { class: 'panel-body flush feed', style: { maxHeight: 'none' } });
@@ -3704,7 +3784,7 @@ function viewActivity(main) {
 
   main.append(el('div', { class: 'panel' },
     el('div', { class: 'panel-head' },
-      el('div', { style: { display: 'flex', gap: '8px' } }, kind, server),
+      el('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '8px' } }, kind, server),
       el('button', { class: 'btn small', type: 'button', text: 'Reload', onclick: load })),
     list));
   load();
@@ -3724,7 +3804,7 @@ function viewCatalogue(main) {
     return;
   }
 
-  const picker = el('select', null, servers_.map((s) => el('option', { value: s.id, text: s.name })));
+  const picker = el('select', { 'aria-label': 'Server' }, servers_.map((s) => el('option', { value: s.id, text: s.name })));
   const body = el('div');
   const host = el('div', { class: 'panel' },
     el('div', { class: 'panel-head' },
@@ -3770,7 +3850,7 @@ function viewCatalogue(main) {
           el('dt', { text: 'Found by' }),
           el('dd', { text: data.perServer
             ? 'Detected inside this server\u2019s own folder'
-            : 'The game files path in Settings' }),
+            : 'The Game files path in this server\u2019s Edit server dialog' }),
           el('dt', { text: 'Scanned' }), el('dd', { text: fmtAgo(data.scannedAt) }),
           el('dt', { text: 'Sources' }), el('dd', { text: (data.sources || []).join(', ') || 'none' }))));
     }
@@ -3922,7 +4002,8 @@ function viewSettings(main) {
 function settingsGeneral(cfg) {
   const root = el('input', { type: 'text', value: (cfg.pzRoot || '') + (cfg.stacksRoot ? '  \u00b7  ' + cfg.stacksRoot : ''),
     class: 'mono', readonly: true });
-  const tz = el('input', { type: 'text', value: cfg.timezone || 'UTC' });
+  const tzPicker = timezoneInput(cfg.timezone || 'UTC');
+  const tz = tzPicker.input;
   const poll = el('input', { type: 'number', min: '3', max: '300', value: (cfg.interface || {}).pollSeconds || 10 });
   const retain = el('input', { type: 'number', min: '1', max: '365', value: (cfg.interface || {}).retainDays || 30 });
   const save = el('button', { class: 'btn primary', type: 'button', text: 'Save' });
@@ -3944,12 +4025,13 @@ function settingsGeneral(cfg) {
     el('div', { class: 'panel-head' }, el('h3', { text: 'General' })),
     el('div', { class: 'panel-body' }, el('div', { class: 'form' },
       field('Managed folders', root,
-        'PZADMIN_DATA_ROOT and PZADMIN_STACKS_ROOT, set in PZAdmin\u2019s .env and mounted at the same path. '
+        'PZADMIN_DATA_ROOT and PZADMIN_STACKS_ROOT, set in PZAdmin\u2019s docker-compose.yml and mounted at the same path. '
         + 'Change them there and recreate PZAdmin.'),
       field('Timezone', tz, 'An IANA name such as Europe/London. Every schedule and timestamp uses it.'),
+      tzPicker.list,
       el('div', { class: 'row' },
-        field('Check servers every', poll, 'Seconds between RCON probes.'),
-        field('Keep history for', retain, 'Days of activity and player-count history.')),
+        field('Check servers every (seconds)', poll, 'How often PZAdmin asks each server who is online.'),
+        field('Keep history for (days)', retain, 'Activity and player-count history older than this is deleted.')),
       el('div', { class: 'form-actions' }, save))));
 }
 
@@ -4224,7 +4306,7 @@ function discordOptions() {
   return el('div', { class: 'panel' },
     el('div', { class: 'panel-head' }, el('h3', { text: 'Staff alerts' })),
     el('div', { class: 'panel-body' }, el('div', { class: 'form' },
-      field('Do not repeat the same alert within', throttle,
+      field('Do not repeat the same alert within (seconds)', throttle,
         'Seconds. Stops a flapping server filling a staff channel. Player announcements are only held back '
         + 'for a minute, so a second real restart is still announced.'),
       el('div', { class: 'form-actions' }, save))));
@@ -4555,6 +4637,16 @@ function settingsMetrics(cfg) {
   const metrics = cfg.metrics || {};
   const enabled = el('input', { type: 'checkbox', checked: metrics.enabled });
   const save = el('button', { class: 'btn primary', type: 'button', text: 'Save' });
+  const newToken = el('button', { class: 'btn', type: 'button', text: 'Make a new token' });
+
+  newToken.addEventListener('click', async () => {
+    newToken.disabled = true;
+    try {
+      const res = await api.post('/api/metrics/token');
+      metricsTokenReveal(res.token);
+    } catch (err) { toast(err.message, 'bad'); }
+    newToken.disabled = false;
+  });
 
   save.addEventListener('click', async () => {
     save.disabled = true;
@@ -4568,15 +4660,34 @@ function settingsMetrics(cfg) {
   return el('div', { class: 'panel' },
     el('div', { class: 'panel-head' }, el('h3', { text: 'Metrics' })),
     el('div', { class: 'panel-body' }, el('div', { class: 'form' },
-      el('p', { class: 'muted', text: 'PZAdmin publishes Prometheus metrics at /metrics: player counts, uptime, RCON latency, backup sizes and missing mods.' }),
+      el('p', { class: 'muted', text: 'PZAdmin publishes Prometheus metrics at /metrics: player counts, uptime, RCON latency, backup sizes, missing mods and API use.' }),
       el('label', { class: 'check' }, enabled, el('span', { text: 'Publish metrics' })),
-      el('p', { class: 'muted', text: 'A bearer token is required. It was generated during setup and is stored in config.json on the host; PZAdmin never sends it to the browser.' }),
-      el('div', { class: 'form-actions' }, save))));
+      el('p', { class: 'muted', text: 'Scrapers need a bearer token in the Authorization header. PZAdmin keeps the '
+        + 'token to itself, so to set up a scraper, make a new one here and copy it. Making a new token stops the old one working.' }),
+      el('div', { class: 'form-actions' }, newToken, save))));
+}
+
+function metricsTokenReveal(token) {
+  const origin = (typeof location !== 'undefined' && location.origin) || 'http://your-pzadmin:27815';
+  const example = 'curl -H "Authorization: Bearer ' + token + '" ' + origin + '/metrics';
+  openModal({
+    title: 'Copy your metrics token',
+    body: el('div', { class: 'form' },
+      el('div', { class: 'notice warn', text: 'This is the only time the token is shown. If you lose it, make a new one.' }),
+      el('pre', { class: 'command' }, el('code', { text: token })),
+      el('p', { class: 'muted', text: 'In Prometheus, set it as authorization: { credentials: <token> } on the scrape job. Or try it:' }),
+      el('pre', { class: 'command' }, el('code', { text: example }))),
+    actions: [
+      el('button', { class: 'btn', type: 'button', text: 'Copy example', onclick: () => copyText(example) }),
+      el('button', { class: 'btn primary', type: 'button', text: 'Copy token', onclick: () => copyText(token) }),
+      el('button', { class: 'btn', type: 'button', text: 'Done', onclick: closeModal }),
+    ],
+  });
 }
 
 function settingsData(cfg) {
   const stats = S.state.storeStats || {};
-  const fileInput = el('input', { type: 'file', accept: 'application/json' });
+  const fileInput = el('input', { type: 'file', accept: 'application/json', hidden: true });
 
   const importBtn = el('button', { class: 'btn', type: 'button', text: 'Import configuration' });
   importBtn.addEventListener('click', () => fileInput.click());
@@ -4586,20 +4697,20 @@ function settingsData(cfg) {
     if (!file) return;
     const confirmed = await confirmDialog({
       title: 'Import this configuration?',
-      message: 'Servers and schedules from the file will be merged into your current setup.',
-      detail: 'Exports never contain RCON passwords, so any new server will need its password entered afterwards.',
+      message: 'Settings from the file are copied onto servers here that have the same stack folder name. If the file has schedules, they replace all of your current schedules.',
+      detail: 'Importing never adds servers: a server in the file with no matching stack folder here is skipped. Any job the schedule editor would refuse is left out, and you will see which.',
       confirmLabel: 'Import',
     });
     if (!confirmed) { fileInput.value = ''; return; }
     try {
       const text = await file.text();
-      await request('/api/import', {
+      const result = await request('/api/import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken() },
         body: text,
       });
-      toast('Configuration imported.', 'good');
       await refreshState();
+      showImportResult(result || {});
     } catch (err) { toast(err.message, 'bad'); }
     fileInput.value = '';
   });
@@ -4616,6 +4727,43 @@ function settingsData(cfg) {
       el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
         el('a', { class: 'btn', href: '/api/export', text: 'Export configuration' }),
         importBtn, fileInput)));
+}
+
+// showImportResult says exactly what an import changed and what it left out,
+// so nobody has to guess whether their schedules made it across.
+function showImportResult(result) {
+  const lines = [];
+  const servers = result.servers || 0;
+  lines.push(el('p', { text: 'Settings applied to ' + servers + (servers === 1 ? ' server.' : ' servers.') }));
+  const skippedServers = result.skippedServers || [];
+  if (skippedServers.length) {
+    lines.push(el('p', { class: 'muted', text: 'No matching stack folder here, so skipped: ' + skippedServers.join(', ') + '.' }));
+  }
+  if (result.schedulesReplaced) {
+    const jobs = result.schedules || 0;
+    lines.push(el('p', { text: 'Schedules replaced with ' + jobs + (jobs === 1 ? ' job' : ' jobs') + ' from the file.' }));
+  }
+  const skippedJobs = result.skippedSchedules || [];
+  if (skippedJobs.length) {
+    lines.push(el('div', { class: 'notice warn' },
+      el('p', { text: 'These jobs were left out. Add them again in Schedules if you still want them:' }),
+      el('ul', {}, ...skippedJobs.map((reason) => el('li', { text: sentence(reason) })))));
+  }
+  const switchedOff = result.switchedOff || [];
+  if (switchedOff.length) {
+    lines.push(el('div', { class: 'notice warn' },
+      el('p', { text: 'These jobs run game commands, so they were imported switched off. Check each one in Schedules, then switch it on:' }),
+      el('ul', {}, ...switchedOff.map((name) => el('li', { text: name })))));
+  }
+  if (result.timezone) {
+    lines.push(el('p', { class: 'muted', text: 'Timezone set to ' + result.timezone + '.' }));
+  }
+  openModal({
+    title: skippedJobs.length || skippedServers.length ? 'Imported, with some things left out'
+      : switchedOff.length ? 'Imported, with some jobs switched off' : 'Configuration imported',
+    body: el('div', { class: 'form' }, ...lines),
+    actions: [el('button', { class: 'btn primary', type: 'button', text: 'Done', onclick: closeModal })],
+  });
 }
 
 function settingsAccount() {
@@ -4811,7 +4959,7 @@ function apiKeyCreateDialog(reload) {
         el('label', { class: 'check' }, requestScope,
           el('span', null, 'Request', el('span', { class: 'hint', text: 'Ask for Workshop mods to be added. Requests wait on the Mods tab for you to approve.' }))),
         el('label', { class: 'check' }, control,
-          el('span', null, 'Control', el('span', { class: 'hint', text: 'Run commands from the command list, restart, stop, start and take backups.' }))),
+          el('span', null, 'Control', el('span', { class: 'hint', text: 'Run commands from the command list, restart, stop, start and take backups. That includes kicking, banning, giving items and setting access levels, so only give it to bots you trust.' }))),
         el('label', { class: 'check' }, consoleScope,
           el('span', null, 'Console', el('span', { class: 'hint', text: 'Send any RCON command. Only give this to something you trust completely.' })))),
       el('div', { class: 'field' },
@@ -5187,7 +5335,14 @@ function confirmModChange(file, issues) {
  * wherever that is the next step, the screen gives the exact command rather
  * than pretending otherwise. */
 
-const StackState = { data: null, create: null, wizard: null };
+const StackState = { data: null, create: null, wizard: null, startNew: false };
+
+// newServer opens the Stack page with the new-server wizard already started.
+function newServer() {
+  StackState.startNew = true;
+  if (S.route && S.route.name === 'stack') loadStack(false);
+  else go('/stack');
+}
 
 function viewStack(main) {
   main.append(el('div', { class: 'page-head' },
@@ -5221,6 +5376,10 @@ async function loadStack(rescan) {
     (data.warnings || []).forEach((w) => appendAll(host, el('div', { class: 'notice warn', text: w })));
     appendAll(host, stackServersPanel(data));
     appendAll(host, stackCreatePanel(create));
+    if (StackState.startNew) {
+      StackState.startNew = false;
+      if (create.imagePinned) startWizard(create);
+    }
     if (rescan) await refreshState();
   } catch (err) {
     clear(host);
@@ -5238,6 +5397,7 @@ function stackStatusPanel(data) {
       el('span', { class: 'pill ' + tone, text: label })),
     el('div', { class: 'panel-body' },
       arcane.message ? el('p', { class: 'muted', text: arcane.message }) : null,
+      arcane.detail ? el('details', null, el('summary', { text: 'Details' }), el('code', { class: 'mono', text: arcane.detail })) : null,
       el('p', { class: 'muted', text: 'Arcane is used for start, stop, status and deploying stacks. Restarts '
         + 'save and quit over RCON and let Docker bring the server back, so they work whether Arcane is up or not.' }),
       el('div', { class: 'stack-row-meta' },
@@ -5439,9 +5599,9 @@ function stackCreatePanel(create) {
       el('p', { text: create.image
         ? 'PZADMIN_GAME_IMAGE is ' + create.image + ', which is not pinned.'
         : 'PZADMIN_GAME_IMAGE is not set.' }),
-      el('p', { text: 'Set it in PZAdmin\u2019s .env to a digest (image@sha256:\u2026) or a version tag, then '
-        + 'recreate PZAdmin. New servers are only created with a pinned image, so a pull can never change '
-        + 'one underneath you.' })));
+      el('p', { text: 'Set it under environment: in PZAdmin\u2019s docker-compose.yml to a version tag or a digest '
+        + '(image@sha256:\u2026), then run docker compose up -d. New servers are only created with a pinned image, '
+        + 'so a pull can never change one underneath you.' })));
     return panel;
   }
   appendAll(body, 

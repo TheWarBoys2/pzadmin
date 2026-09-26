@@ -84,7 +84,7 @@ const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8')
   'stackStatusPanel, stackServersPanel, stackCreatePanel, paintPlan, buildControl, StackState, ' +
   'newWizard, applyWizardMods, settingsEditor, wizardRequest, ' +
   'commandAvailability, isStopped, powerButton, editWebhook, viewDiscord, editServerChannel, ' +
-  'apiKeyCreateDialog, apiKeysBody, modRequestsPanel };\n';
+  'apiKeyCreateDialog, apiKeysBody, modRequestsPanel, renderGate, renderSetup, showImportResult };\n';
 
 vm.createContext(sandbox);
 vm.runInContext(source, sandbox, { filename: 'app.js' });
@@ -98,7 +98,7 @@ const {
   stackStatusPanel, stackServersPanel, stackCreatePanel, paintPlan, buildControl, StackState,
   newWizard, applyWizardMods, settingsEditor, wizardRequest,
   commandAvailability, isStopped, powerButton, editWebhook, viewDiscord, editServerChannel,
-  apiKeyCreateDialog, apiKeysBody, modRequestsPanel,
+  apiKeyCreateDialog, apiKeysBody, modRequestsPanel, renderGate, renderSetup, showImportResult,
 } = sandbox.__exports__;
 
 // The views read from S, so give it the shape a loaded page would have.
@@ -1083,6 +1083,61 @@ test('mod requests from a bot render as text, pending first with buttons', () =>
   assert.ok(panel.textContent.includes('Reason: Too heavy'));
   const buttons = Array.from(panel.querySelectorAll('button')).map((b) => b.textContent);
   assertList(buttons, ['Approve', 'Reject'], 'only the pending request has buttons');
+});
+
+// --- sign-in and setup ------------------------------------------------------
+
+// A wrong password comes back as a 401. That must show the error on the form
+// the person is looking at, not redraw an empty form as if a session expired.
+async function submitGateForm(render, status, error) {
+  const fetchBefore = sandbox.fetch;
+  const sent = [];
+  sandbox.fetch = (path, opts) => {
+    sent.push({ path, body: JSON.parse(opts.body) });
+    return Promise.resolve({ ok: false, status, text: () => Promise.resolve(JSON.stringify({ error })) });
+  };
+  const wasAuthenticated = S.authenticated;
+  try {
+    render();
+    const root = document.querySelector('#root');
+    const form = root.querySelector('form');
+    for (const input of form.querySelectorAll('input')) input.value = input.value || 'something-long-enough';
+    form.dispatch('submit', { type: 'submit', preventDefault() {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    return { form, root, sent };
+  } finally {
+    sandbox.fetch = fetchBefore;
+    S.authenticated = wasAuthenticated;
+  }
+}
+
+test('an import result names every job it left out, as text', () => {
+  closeAllModals();
+  showImportResult({ servers: 1, skippedServers: ['Muldraugh'], schedulesReplaced: true, schedules: 2,
+    skippedSchedules: ['"<b>x</b>" step 1: wait for between 1 second and a day'], timezone: 'Europe/London' });
+  const text = document.body.textContent;
+  assert.ok(text.includes('Imported, with some things left out'));
+  assert.ok(text.includes('Muldraugh'));
+  assert.ok(text.includes('Schedules replaced with 2 jobs'));
+  assert.ok(text.includes('"<b>x</b>" step 1'), 'the reason is shown as text');
+  assert.strictEqual(document.body.querySelectorAll('b').length, 0);
+  closeAllModals();
+});
+
+test('a wrong password shows an error on the same sign-in form', async () => {
+  const { form, root, sent } = await submitGateForm(renderGate, 401, 'incorrect username or password');
+  assert.strictEqual(sent[0].path, '/api/login');
+  assert.strictEqual(root.querySelector('form'), form, 'the form must not be redrawn');
+  assert.strictEqual(form.querySelector('.error').textContent, 'Incorrect username or password');
+});
+
+test('the setup form sends the setup code and shows a wrong code', async () => {
+  const { form, root, sent } = await submitGateForm(renderSetup, 403, 'that setup code is not right');
+  assert.strictEqual(sent[0].path, '/api/setup');
+  assert.ok('setupCode' in sent[0].body, 'the setup code is sent');
+  assert.strictEqual(root.querySelector('form'), form);
+  assert.strictEqual(form.querySelector('.error').textContent, 'That setup code is not right');
 });
 
 // --- report -----------------------------------------------------------------

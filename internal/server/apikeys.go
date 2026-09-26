@@ -3,9 +3,9 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
 	"net/http"
-	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -14,6 +14,7 @@ import (
 	"unicode"
 
 	"github.com/TheWarBoys2/pzadmin/internal/config"
+	"github.com/TheWarBoys2/pzadmin/internal/fsutil"
 	"github.com/TheWarBoys2/pzadmin/internal/store"
 )
 
@@ -98,11 +99,18 @@ type apiKeyStore struct {
 	path   string
 	byHash map[string]*apiKey
 	dirty  bool
+	// saveMu is held from snapshot to rename, so saves land in the order
+	// their snapshots were taken. Without it a housekeeping flush that
+	// snapshotted before a revoke could be written after it, and the revoked
+	// key would come back on the next start.
+	saveMu sync.Mutex
+	// loadErr is set when apikeys.json could not be read at start.
+	loadErr error
 }
 
 func newAPIKeyStore(path string) *apiKeyStore {
 	s := &apiKeyStore{path: path, byHash: map[string]*apiKey{}}
-	s.load()
+	s.loadErr = s.load()
 	return s
 }
 
@@ -218,7 +226,14 @@ func (s *apiKeyStore) create(req apiKeyRequest, createdBy string, serverExists f
 	s.byHash[k.KeyHash] = k
 	cp := *k
 	s.mu.Unlock()
-	s.save()
+	if err := s.save(); err != nil {
+		// A key that is not on disk would vanish at the next restart, so do
+		// not hand it out.
+		s.mu.Lock()
+		delete(s.byHash, k.KeyHash)
+		s.mu.Unlock()
+		return "", apiKey{}, fmt.Errorf("the key could not be saved: %w", err)
+	}
 	return token, cp, nil
 }
 
@@ -261,8 +276,11 @@ func (s *apiKeyStore) flush() {
 	dirty := s.dirty
 	s.dirty = false
 	s.mu.Unlock()
-	if dirty {
-		s.save()
+	if dirty && s.save() != nil {
+		// Try again at the next flush.
+		s.mu.Lock()
+		s.dirty = true
+		s.mu.Unlock()
 	}
 }
 
@@ -280,8 +298,10 @@ func (s *apiKeyStore) active(id string) bool {
 	return false
 }
 
-// revoke removes a key by its public id, returning what was removed.
-func (s *apiKeyStore) revoke(id string) (apiKey, bool) {
+// revoke removes a key by its public id, returning what was removed. The key
+// stops working at once either way; a save error means it would come back
+// after a restart.
+func (s *apiKeyStore) revoke(id string) (apiKey, bool, error) {
 	s.mu.Lock()
 	var found *apiKey
 	for h, v := range s.byHash {
@@ -293,20 +313,18 @@ func (s *apiKeyStore) revoke(id string) (apiKey, bool) {
 	}
 	s.mu.Unlock()
 	if found == nil {
-		return apiKey{}, false
+		return apiKey{}, false, nil
 	}
-	s.save()
-	return *found, true
+	return *found, true, s.save()
 }
 
 // revokeAll removes every key and returns how many there were.
-func (s *apiKeyStore) revokeAll() int {
+func (s *apiKeyStore) revokeAll() (int, error) {
 	s.mu.Lock()
 	n := len(s.byHash)
 	s.byHash = map[string]*apiKey{}
 	s.mu.Unlock()
-	s.save()
-	return n
+	return n, s.save()
 }
 
 // list returns the keys for the settings screen, without their hashes.
@@ -323,7 +341,9 @@ func (s *apiKeyStore) list() []apiKey {
 	return out
 }
 
-func (s *apiKeyStore) save() {
+func (s *apiKeyStore) save() error {
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
 	s.mu.RLock()
 	list := make([]*apiKey, 0, len(s.byHash))
 	for _, v := range s.byHash {
@@ -331,32 +351,27 @@ func (s *apiKeyStore) save() {
 	}
 	b, err := json.Marshal(list)
 	s.mu.RUnlock()
+	if err == nil {
+		err = fsutil.WriteFile(s.path, b, 0o600)
+	}
 	if err != nil {
-		return
+		log.Printf("saving API keys: %v", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
-		return
-	}
-	tmp := s.path + ".tmp"
-	if os.WriteFile(tmp, b, 0o600) == nil {
-		_ = os.Rename(tmp, s.path)
-	}
+	return err
 }
 
-func (s *apiKeyStore) load() {
-	b, err := os.ReadFile(s.path)
-	if err != nil {
-		return
-	}
+func (s *apiKeyStore) load() error {
 	var list []*apiKey
-	if json.Unmarshal(b, &list) != nil {
-		return
+	if _, err := fsutil.ReadJSON(s.path, &list); err != nil {
+		log.Printf("API keys: %v", err)
+		return err
 	}
 	for _, v := range list {
 		if v != nil && v.KeyHash != "" {
 			s.byHash[v.KeyHash] = v
 		}
 	}
+	return nil
 }
 
 // bearerToken returns the token from an Authorization: Bearer header.
@@ -411,9 +426,18 @@ func (a *App) handleAPIKeyRevoke(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &p) {
 		return
 	}
-	k, found := a.keys.revoke(p.ID)
+	k, found, err := a.keys.revoke(p.ID)
 	if !found {
 		httpError(w, http.StatusNotFound, "that key no longer exists")
+		return
+	}
+	if err != nil {
+		a.event(store.Event{Kind: "auth.apikey", Severity: store.SevError, Source: source(r), Actor: actor(r),
+			Message: "API key revoked but not saved: " + k.Name,
+			Detail:  "It stopped working now, but would work again after a restart. " + err.Error()})
+		httpError(w, http.StatusInternalServerError, "the key has stopped working, but the change could not be "+
+			"saved, so it would work again after PZAdmin restarts. Check the data folder has space, then revoke "+
+			"it again: "+err.Error())
 		return
 	}
 	a.event(store.Event{Kind: "auth.apikey", Severity: store.SevWarn, Source: source(r), Actor: actor(r),
@@ -422,7 +446,16 @@ func (a *App) handleAPIKeyRevoke(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleAPIKeyRevokeAll(w http.ResponseWriter, r *http.Request) {
-	n := a.keys.revokeAll()
+	n, err := a.keys.revokeAll()
+	if err != nil {
+		a.event(store.Event{Kind: "auth.apikey", Severity: store.SevError, Source: source(r), Actor: actor(r),
+			Message: "All API keys revoked but not saved",
+			Detail:  pluralCount(n, "key", "keys") + " stopped working now, but would work again after a restart. " + err.Error()})
+		httpError(w, http.StatusInternalServerError, "the keys have stopped working, but the change could not be "+
+			"saved, so they would work again after PZAdmin restarts. Check the data folder has space, then try "+
+			"again: "+err.Error())
+		return
+	}
 	a.event(store.Event{Kind: "auth.apikey", Severity: store.SevWarn, Source: source(r), Actor: actor(r),
 		Message: "All API keys revoked", Detail: pluralCount(n, "key", "keys") + " removed."})
 	ok(w, map[string]any{"revoked": n})

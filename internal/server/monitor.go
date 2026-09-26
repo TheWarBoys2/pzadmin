@@ -20,8 +20,8 @@ import (
 // monitorSupervisor keeps one monitor goroutine per enabled server, starting and
 // stopping them as the configuration changes.
 //
-// The previous design probed every server from one loop, so a single offline
-// server with a five second dial timeout delayed every other server behind it.
+// Each server gets its own goroutine so one offline server, waiting out a
+// five second dial timeout, never delays the checks of the others.
 func (a *App) monitorSupervisor() {
 	defer a.wg.Done()
 	ticker := time.NewTicker(5 * time.Second)
@@ -57,11 +57,13 @@ func (a *App) syncMonitors() {
 		if _, running := a.monitors[id]; running {
 			continue
 		}
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(a.ctx)
+		if !a.spawn(func() { a.monitorServer(ctx, id) }) {
+			cancel()
+			continue
+		}
 		a.monitors[id] = cancel
 		toStart = append(toStart, s)
-		go a.monitorServer(ctx, id)
-		_ = ctx
 	}
 	// Prune status for servers that no longer exist.
 	for id := range a.status {

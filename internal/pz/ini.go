@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/TheWarBoys2/pzadmin/internal/fsutil"
 )
 
 // INI is a Project Zomboid server .ini file. Project Zomboid writes a flat
@@ -211,27 +213,15 @@ func pruneBackups(dir, prefix string, keep int) {
 	}
 }
 
+// writeFileAtomic replaces a game config file. An existing file keeps its own
+// permissions: the server .ini holds the RCON and join passwords, so a file
+// the operator made private must not come back world-readable. mode is only
+// used for a new file.
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
-	tmp := path + ".pzadmin.tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
-	if err != nil {
-		return err
+	if st, err := os.Stat(path); err == nil {
+		mode = st.Mode().Perm()
 	}
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		_ = os.Remove(tmp)
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		_ = os.Remove(tmp)
-		return err
-	}
-	if err := f.Close(); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	return os.Rename(tmp, path)
+	return fsutil.WriteFile(path, data, mode)
 }
 
 // ConfigFile describes an editable file in a server's config directory.

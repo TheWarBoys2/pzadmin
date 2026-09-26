@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -51,7 +52,7 @@ func (a *App) rescan() stacks.Result {
 
 	var added, missing []string
 	changedIDs := map[string]bool{}
-	updated, err := a.cfg.Update(func(c *config.Config) error {
+	_, err := a.cfg.Update(func(c *config.Config) error {
 		before := make(map[string]config.Server, len(c.Servers))
 		for _, s := range c.Servers {
 			before[s.ID] = s
@@ -110,7 +111,6 @@ func (a *App) rescan() stacks.Result {
 	if len(changedIDs) == 0 {
 		return res
 	}
-	_ = updated
 	for id := range changedIDs {
 		a.dropRCON(id)
 	}
@@ -186,23 +186,9 @@ func uniqueID(existing []config.Server, name string) string {
 	}
 	id := base
 	for n := 2; taken[id]; n++ {
-		id = base + "-" + itoa(n)
+		id = base + "-" + strconv.Itoa(n)
 	}
 	return id
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var b [20]byte
-	i := len(b)
-	for n > 0 {
-		i--
-		b[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(b[i:])
 }
 
 // stackFor re-reads one server's stack folder, for checks that must not
@@ -258,19 +244,26 @@ func (a *App) stackPayload(res stacks.Result) map[string]any {
 // arcaneState describes container control for the interface.
 func (a *App) arcaneState() map[string]any {
 	up, err := a.arcane.Available()
-	msg := ""
+	msg, detail := "", ""
 	switch {
 	case errors.Is(err, arcane.ErrNotConfigured):
-		msg = "Arcane is not configured. Set PZADMIN_ARCANE_URL, PZADMIN_ARCANE_ENV_ID and " +
-			"PZADMIN_ARCANE_API_KEY. Restarts still work over RCON; start, stop, status and deploying need Arcane."
+		msg = "Arcane is not set up, so start, stop and deploy are off. Restarts, the console, mods, settings, " +
+			"backups and schedules all work without it. To add it, set PZADMIN_ARCANE_URL, " +
+			"PZADMIN_ARCANE_ENV_ID and PZADMIN_ARCANE_API_KEY in PZAdmin's docker-compose.yml."
 	case err != nil:
-		msg = "Arcane is unavailable: " + err.Error() + ". Restarts still work over RCON."
+		msg = "PZAdmin can't reach Arcane at " + a.arcane.URL() + ", so start, stop and deploy are off " +
+			"for now. Check that Arcane is running and the address and API key are right. Restarts still " +
+			"work over RCON."
+		// The raw error helps with a support question, but it is not the
+		// first thing to show.
+		detail = err.Error()
 	}
 	return map[string]any{
 		"configured":  a.arcane.Configured(),
 		"available":   up,
 		"environment": a.arcane.EnvironmentID(),
 		"message":     msg,
+		"detail":      detail,
 	}
 }
 

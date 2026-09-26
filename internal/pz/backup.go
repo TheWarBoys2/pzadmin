@@ -3,6 +3,7 @@ package pz
 import (
 	"archive/tar"
 	"compress/gzip"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -46,6 +47,10 @@ func NewBackupper(root string) *Backupper {
 	return &Backupper{root: root, running: map[string]bool{}}
 }
 
+// ErrStopped is returned when a backup or move is cut short because
+// PZAdmin is shutting down.
+var ErrStopped = errors.New("stopped because PZAdmin was shutting down")
+
 // ErrBackupRunning is returned when a backup is already in progress.
 var ErrBackupRunning = errors.New("a backup is already running for this server")
 
@@ -61,7 +66,7 @@ func (b *Backupper) Running(serverID string) bool {
 
 // Create archives a server's Saves directory, and its config directory when
 // includeConfig is set. Old archives beyond keep are removed afterwards.
-func (b *Backupper) Create(serverID string, l Layout, includeConfig bool, keep int, note string) (BackupResult, error) {
+func (b *Backupper) Create(ctx context.Context, serverID string, l Layout, includeConfig bool, keep int, note string) (BackupResult, error) {
 	b.mu.Lock()
 	if b.running[serverID] {
 		b.mu.Unlock()
@@ -78,9 +83,19 @@ func (b *Backupper) Create(serverID string, l Layout, includeConfig bool, keep i
 	if l.SavesDir == "" && l.ConfigDir == "" {
 		return BackupResult{}, errors.New("nothing to back up: no Saves or config directory was detected")
 	}
+	// Archives can hold the server's settings, RCON password included, so
+	// they are readable only by PZAdmin's user, whoever else is on the host.
 	dir := b.Dir(serverID)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return BackupResult{}, err
+	}
+	// A backup cut short by a crash or a kill leaves its .partial behind, and
+	// prune never counts it. Nothing else writes here while this server's
+	// backup is running, so any .partial now is a leftover.
+	if leftovers, _ := filepath.Glob(filepath.Join(dir, "*.partial")); len(leftovers) > 0 {
+		for _, p := range leftovers {
+			_ = os.Remove(p)
+		}
 	}
 
 	start := time.Now()
@@ -88,7 +103,7 @@ func (b *Backupper) Create(serverID string, l Layout, includeConfig bool, keep i
 	finalPath := filepath.Join(dir, name)
 	tmpPath := finalPath + ".partial"
 
-	files, err := writeArchive(tmpPath, l, includeConfig)
+	files, err := writeArchive(ctx, tmpPath, l, includeConfig)
 	if err != nil {
 		_ = os.Remove(tmpPath)
 		return BackupResult{}, err
@@ -98,7 +113,7 @@ func (b *Backupper) Create(serverID string, l Layout, includeConfig bool, keep i
 		return BackupResult{}, err
 	}
 	if note != "" {
-		_ = os.WriteFile(finalPath+".note", []byte(note), 0o644)
+		_ = os.WriteFile(finalPath+".note", []byte(note), 0o600)
 	}
 
 	st, err := os.Stat(finalPath)
@@ -116,8 +131,8 @@ func (b *Backupper) Create(serverID string, l Layout, includeConfig bool, keep i
 	return res, nil
 }
 
-func writeArchive(path string, l Layout, includeConfig bool) (int, error) {
-	out, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+func writeArchive(ctx context.Context, path string, l Layout, includeConfig bool) (int, error) {
+	out, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return 0, err
 	}
@@ -135,6 +150,11 @@ func writeArchive(path string, l Layout, includeConfig bool) (int, error) {
 			return nil
 		}
 		return filepath.Walk(srcRoot, func(p string, info os.FileInfo, err error) error {
+			// Checked per file, so shutting down never waits for a whole
+			// world to be archived.
+			if ctx.Err() != nil {
+				return ErrStopped
+			}
 			if err != nil {
 				// A file vanishing mid-backup (Zomboid rotating a save chunk)
 				// must not abort the whole archive.
@@ -324,43 +344,205 @@ func (b *Backupper) Verify(serverID, name string) (int, int64, error) {
 	return files, bytes, nil
 }
 
-// Restore extracts an archive back over a server's directories.
+// RestoreResult says what a restore did.
+type RestoreResult struct {
+	Files int `json:"files"`
+	// SetAside lists where the folders as they were before the restore were
+	// moved: the world, and the settings when the archive has them.
+	SetAside []string `json:"setAside,omitempty"`
+}
+
+// Restore puts an archive back in place of the server's world, and of its
+// settings when the archive includes them.
+//
+// The whole archive is read through first, so a damaged one is refused
+// before anything changes. Then each folder being restored, Saves and
+// Server, is moved aside to <folder>.before-restore and the archive is
+// unpacked into an empty one. Unpacking over the top would leave behind
+// every map chunk explored since the backup, mixed in with the older world.
+// The set-aside copies replace those of an earlier restore only once this
+// one has succeeded; if unpacking fails, everything is put back as it was.
 //
 // The caller is responsible for stopping the server first. Restoring into a
 // running world produces corruption, so the HTTP layer refuses unless the
 // server is offline.
-func (b *Backupper) Restore(serverID, name string, l Layout) (int, error) {
+func (b *Backupper) Restore(serverID, name string, l Layout) (RestoreResult, error) {
+	var res RestoreResult
+	b.mu.Lock()
+	if b.running[serverID] {
+		b.mu.Unlock()
+		return res, ErrBackupRunning
+	}
+	b.running[serverID] = true
+	b.mu.Unlock()
+	defer func() {
+		b.mu.Lock()
+		delete(b.running, serverID)
+		b.mu.Unlock()
+	}()
+
+	counts, err := b.scan(serverID, name)
+	if err != nil {
+		return res, err
+	}
+	if l.SavesDir == "" && l.ConfigDir == "" {
+		return res, errors.New("no restore target: the server layout was not detected")
+	}
+	if l.SavesDir != "" && counts["Saves"] == 0 {
+		return res, errors.New("this archive has no world in it; nothing was changed")
+	}
+
+	targets := map[string]string{}
+	var swaps []*swap
+	if l.SavesDir != "" {
+		targets["Saves"] = l.SavesDir
+		swaps = append(swaps, &swap{dir: l.SavesDir})
+	}
+	if l.ConfigDir != "" && counts["Server"] > 0 {
+		targets["Server"] = l.ConfigDir
+		swaps = append(swaps, &swap{dir: l.ConfigDir})
+	}
+
+	for _, sw := range swaps {
+		if err := sw.begin(); err != nil {
+			return res, undo(swaps, fmt.Errorf("could not set %s aside: %w", sw.dir, err))
+		}
+	}
 	f, _, err := b.Open(serverID, name)
 	if err != nil {
-		return 0, err
+		return res, undo(swaps, err)
 	}
 	defer f.Close()
 	gz, err := gzip.NewReader(f)
 	if err != nil {
-		return 0, err
+		return res, undo(swaps, err)
 	}
 	defer gz.Close()
+	n, _, err := extract(tar.NewReader(gz), targets)
+	res.Files = n
+	if err != nil {
+		return res, undo(swaps, err)
+	}
+	for _, sw := range swaps {
+		sw.commit()
+		if sw.moved {
+			res.SetAside = append(res.SetAside, sw.aside())
+		}
+	}
+	return res, nil
+}
 
-	targets := map[string]string{}
-	if l.SavesDir != "" {
-		targets["Saves"] = l.SavesDir
+// scan reads a whole archive, so a damaged one is caught before a restore
+// touches anything, and counts its files under each top-level folder.
+func (b *Backupper) scan(serverID, name string) (map[string]int, error) {
+	f, _, err := b.Open(serverID, name)
+	if err != nil {
+		return nil, err
 	}
-	if l.ConfigDir != "" {
-		targets["Server"] = l.ConfigDir
+	defer f.Close()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return nil, fmt.Errorf("the archive is not readable: %w; nothing was changed", err)
 	}
-	if len(targets) == 0 {
-		return 0, errors.New("no restore target: the server layout was not detected")
-	}
-
+	defer gz.Close()
 	tr := tar.NewReader(gz)
-	restored := 0
+	counts := map[string]int{}
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			return counts, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("the archive is damaged: %w; nothing was changed", err)
+		}
+		if hdr.Typeflag != tar.TypeReg {
+			continue
+		}
+		if _, err := io.Copy(io.Discard, tr); err != nil {
+			return nil, fmt.Errorf("the archive is damaged in %s: %w; nothing was changed", hdr.Name, err)
+		}
+		top := strings.SplitN(filepath.ToSlash(filepath.Clean(hdr.Name)), "/", 2)[0]
+		counts[top]++
+	}
+}
+
+// swap replaces one folder with an empty one for a restore, keeping the old
+// contents in <dir>.before-restore. An earlier restore's copy is held at
+// <dir>.before-restore.previous until this one succeeds.
+type swap struct {
+	dir          string
+	moved        bool // dir was moved to aside
+	keptPrevious bool // an older aside was moved to previous
+}
+
+func (s *swap) aside() string    { return filepath.Clean(s.dir) + ".before-restore" }
+func (s *swap) previous() string { return s.aside() + ".previous" }
+
+func (s *swap) begin() error {
+	if _, err := os.Stat(s.aside()); err == nil {
+		if err := os.RemoveAll(s.previous()); err != nil {
+			return err
+		}
+		if err := os.Rename(s.aside(), s.previous()); err != nil {
+			return err
+		}
+		s.keptPrevious = true
+	}
+	if _, err := os.Stat(s.dir); err == nil {
+		if err := os.Rename(s.dir, s.aside()); err != nil {
+			return err
+		}
+		s.moved = true
+	}
+	return os.MkdirAll(s.dir, 0o755)
+}
+
+// commit drops the older copy once the restore has worked.
+func (s *swap) commit() {
+	if s.keptPrevious {
+		_ = os.RemoveAll(s.previous())
+	}
+}
+
+// rollback puts the folder and any older copy back where they were.
+func (s *swap) rollback() error {
+	if s.moved {
+		if err := os.RemoveAll(s.dir); err != nil {
+			return err
+		}
+		if err := os.Rename(s.aside(), s.dir); err != nil {
+			return err
+		}
+	}
+	if s.keptPrevious {
+		if err := os.Rename(s.previous(), s.aside()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// undo rolls back every swap after a failed restore and says how it went.
+func undo(swaps []*swap, cause error) error {
+	for _, sw := range swaps {
+		if err := sw.rollback(); err != nil {
+			return fmt.Errorf("%w; putting %s back also failed (%v), and the copy from before the restore is in %s",
+				cause, sw.dir, err, sw.aside())
+		}
+	}
+	return fmt.Errorf("%w; everything was put back as it was", cause)
+}
+
+// extract unpacks Saves/ and Server/ entries into their targets. It returns
+// the files written, and how many of them were in Saves/.
+func extract(tr *tar.Reader, targets map[string]string) (restored, world int, err error) {
 	for {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
-			return restored, err
+			return restored, world, err
 		}
 		clean := filepath.ToSlash(filepath.Clean(hdr.Name))
 		if strings.HasPrefix(clean, "../") || strings.Contains(clean, "/../") {
@@ -383,25 +565,30 @@ func (b *Backupper) Restore(serverID, name string, l Layout) (int, error) {
 		switch hdr.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(dest, 0o755); err != nil {
-				return restored, err
+				return restored, world, err
 			}
 		case tar.TypeReg:
 			if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-				return restored, err
+				return restored, world, err
 			}
 			out, err := os.OpenFile(dest, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(hdr.Mode)&0o777)
 			if err != nil {
-				return restored, err
+				return restored, world, err
 			}
 			if _, err := io.Copy(out, tr); err != nil {
 				out.Close()
-				return restored, err
+				return restored, world, err
 			}
-			out.Close()
+			if err := out.Close(); err != nil {
+				return restored, world, err
+			}
 			restored++
+			if parts[0] == "Saves" {
+				world++
+			}
 		}
 	}
-	return restored, nil
+	return restored, world, nil
 }
 
 // TotalSize returns the disk used by a server's archives.

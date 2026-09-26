@@ -77,7 +77,14 @@ button { cursor: pointer; }
 
 /* ---------- shell ---------- */
 
-.shell { display: grid; grid-template-columns: var(--rail) minmax(0, 1fr); min-height: 100vh; }
+.shell {
+  display: grid;
+  grid-template-columns: var(--rail) minmax(0, 1fr);
+  min-height: 100vh;
+  /* Paint the rail's column the whole height of the page, not just the
+     sticky rail's own 100vh, so long pages don't show a gap under it. */
+  background: linear-gradient(to right, #131009 var(--rail), transparent var(--rail));
+}
 
 .rail {
   position: sticky;
@@ -145,7 +152,7 @@ button { cursor: pointer; }
 .rail-foot { margin-top: auto; padding-top: 14px; display: flex; flex-direction: column; gap: 8px; }
 .rail-foot .conn { display: flex; align-items: center; gap: 7px; padding: 0 10px; font-size: 11.5px; color: var(--faint); }
 
-.main { padding: 26px 30px 60px; max-width: 1440px; width: 100%; }
+.main { padding: 26px 30px 60px; max-width: 1440px; width: 100%; min-width: 0; }
 
 .page-head {
   display: flex;
@@ -259,6 +266,7 @@ button { cursor: pointer; }
 .panel { background: var(--panel); border: 1px solid var(--rule); border-radius: var(--radius); }
 .panel-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -368,7 +376,34 @@ tbody tr:hover { background: #211c14; }
 
 /* ---------- forms ---------- */
 
+/* Every text box and dropdown gets the dark style, not only those inside a
+   .field: search boxes, filters and the console input stand on their own. */
+input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]),
+select,
+textarea {
+  padding: 7px 9px;
+  background: var(--sunken);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  color: var(--bone);
+  font: inherit;
+  font-size: 13px;
+}
+input:not([type="checkbox"]):not([type="radio"]):focus, select:focus, textarea:focus { border-color: var(--brass-dim); }
+input::placeholder, textarea::placeholder { color: var(--faint); }
+input[type="file"]::file-selector-button {
+  margin-right: 10px;
+  padding: 6px 11px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--raised);
+  color: var(--bone);
+}
+
 .form { display: grid; gap: 14px; }
+/* Grid items default to their content's width, and a text box's natural
+   width can be wider than a narrow panel. */
+.form > *, .field input, .field select, .field textarea { min-width: 0; }
 .field label { display: block; font-size: 12px; color: var(--dust); margin-bottom: 5px; }
 .field .hint { font-size: 11.5px; color: var(--faint); margin-top: 5px; }
 .field input, .field select, .field textarea {
@@ -388,7 +423,7 @@ tbody tr:hover { background: #211c14; }
 .check { display: flex; gap: 9px; align-items: flex-start; font-size: 13px; color: var(--bone); }
 .check input { margin-top: 3px; flex: 0 0 auto; width: auto; }
 .check .hint { display: block; color: var(--faint); font-size: 11.5px; margin-top: 3px; }
-.form-actions { display: flex; gap: 8px; justify-content: flex-end; padding-top: 4px; }
+.form-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; padding-top: 4px; }
 
 fieldset { border: 1px solid var(--rule-soft); border-radius: var(--radius); padding: 14px; margin: 0; }
 legend { padding: 0 6px; font-size: 12px; color: var(--dust); }
@@ -580,7 +615,11 @@ legend { padding: 0 6px; font-size: 12px; color: var(--dust); }
 }
 
 @media (max-width: 860px) {
-  .shell { grid-template-columns: 1fr; }
+  /* minmax(0, 1fr), not 1fr: a plain 1fr column grows to fit its widest
+     child, which made every page wider than a phone screen. */
+  .shell { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; background: none; }
+  .page-head { align-items: flex-start; }
+  .main table { display: block; overflow-x: auto; }
   .rail {
     position: static;
     height: auto;
@@ -884,3 +923,32 @@ details.setting-group > summary {
 .webhook-wording .field textarea { min-height: 54px; }
 p.hint { margin: 0; font-size: 11.5px; color: var(--faint); }
 ol.steps { margin: 0; padding-left: 18px; display: grid; gap: 4px; }
+
+/* ---------- update banner ---------- */
+
+.update-banner {
+  position: fixed;
+  left: 50%;
+  top: calc(12px + env(safe-area-inset-top, 0px));
+  transform: translateX(-50%);
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  max-width: calc(100vw - 28px);
+  padding: 10px 12px 10px 16px;
+  background: var(--raised);
+  border: 1px solid var(--brass-dim);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+  font-size: 13px;
+}
+
+/* The backup note sits in a row of buttons; let it take the spare width so
+   its placeholder is readable. */
+.grow-input { flex: 1 1 260px; min-width: 0; }
+
+.notice details { margin-top: 6px; font-size: 12px; }
+.notice details summary { cursor: pointer; color: var(--dust); }
+.notice details code, .panel-body details code { display: block; margin-top: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.empty .row-actions { justify-content: center; }

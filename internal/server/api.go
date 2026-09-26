@@ -49,6 +49,7 @@ func (a *App) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		"setupComplete":   cfg.SetupComplete,
 		"authenticated":   authed,
 		"version":         Version,
+		"build":           a.assetBuild,
 		"timezone":        cfg.Timezone,
 		"serverTime":      time.Now().Format(time.RFC3339),
 		"secureTransport": requestIsSecure(r),
@@ -60,18 +61,36 @@ func (a *App) handleSetup(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusMethodNotAllowed, "use POST")
 		return
 	}
-	var p struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-		Timezone string `json:"timezone"`
+	ip := clientIP(r)
+	if allowed, wait := a.limiter.take(ip); !allowed {
+		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+		httpError(w, http.StatusTooManyRequests,
+			fmt.Sprintf("too many wrong setup codes, try again in %ds", int(wait.Seconds())+1))
+		return
 	}
-	if !decodeJSON(w, r, &p) {
+	var p struct {
+		SetupCode string `json:"setupCode"`
+		Username  string `json:"username"`
+		Password  string `json:"password"`
+		Timezone  string `json:"timezone"`
+	}
+	if !decodeJSONLimit(w, r, &p, smallBody) {
 		return
 	}
 	if a.cfg.Get().SetupComplete {
 		httpError(w, http.StatusConflict, "PZAdmin is already set up")
 		return
 	}
+	// The code is checked before anything else, so someone without it learns
+	// nothing about the password rules or the timezone list.
+	if !a.setupCodeOK(p.SetupCode) {
+		// Already counted by take.
+		httpError(w, http.StatusForbidden,
+			"that setup code is not right. PZAdmin prints it in its log when it starts: run docker logs pzadmin")
+		return
+	}
+	// The code was right, so a password that breaks the rules is not a guess.
+	a.limiter.succeed(ip)
 	if err := validateCredentials(p.Username, p.Password); err != nil {
 		httpError(w, http.StatusBadRequest, err.Error())
 		return
@@ -96,16 +115,16 @@ func (a *App) handleSetup(w http.ResponseWriter, r *http.Request) {
 		if tz != "" {
 			c.Timezone = tz
 		}
-		if c.Metrics.Token == "" {
-			c.Metrics.Token = config.RandomToken(16)
-		}
 		return nil
 	}); err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	token, sess := a.sess.create(strings.TrimSpace(p.Username), clientIP(r), r.UserAgent())
+	a.clearSetupCode()
+	a.limiter.succeed(ip)
+	a.known.add(ip)
+	token, sess := a.sess.create(strings.TrimSpace(p.Username), ip, r.UserAgent())
 	setSessionCookies(w, r, token, sess)
 	a.event(store.Event{Kind: "auth.setup", Severity: store.SevSuccess, Source: "ui",
 		Actor: p.Username, Message: "Administrator account created"})
@@ -140,24 +159,38 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ip := clientIP(r)
-	if allowed, wait := a.limiter.allow(ip); !allowed {
+	// Both limits count the attempt before the password is checked, so
+	// parallel guesses cannot all slip through while the hash is computed.
+	// An address the administrator has signed in from before is exempt from
+	// the account-wide limit, which a stranger can trip on purpose.
+	allowed, wait := a.limiter.take(ip)
+	if allowed && !a.known.has(ip) {
+		allowed, wait = a.accountLimit.take(accountKey)
+	}
+	if !allowed {
 		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
 		httpError(w, http.StatusTooManyRequests,
 			fmt.Sprintf("too many failed attempts, try again in %ds", int(wait.Seconds())+1))
 		return
 	}
 	var p struct{ Username, Password string }
-	if !decodeJSON(w, r, &p) {
+	if !decodeJSONLimit(w, r, &p, smallBody) {
 		return
 	}
 
+	select {
+	case a.hashSlots <- struct{}{}:
+		defer func() { <-a.hashSlots }()
+	case <-r.Context().Done():
+		return
+	}
 	cfg := a.cfg.Get()
 	userOK := strings.EqualFold(strings.TrimSpace(p.Username), cfg.Username)
 	// The hash is computed either way so a wrong username and a wrong password
 	// take the same amount of time.
 	passOK := config.VerifyPassword(p.Password, cfg.PasswordSalt, cfg.PasswordHash, cfg.PasswordIter)
 	if !cfg.SetupComplete || !userOK || !passOK {
-		a.limiter.fail(ip)
+		// The failure was already counted by take.
 		a.store.Append(store.Event{Kind: "auth.failed", Severity: store.SevWarn, Source: "ui",
 			Message: "Failed sign-in attempt", Detail: "from " + ip})
 		httpError(w, http.StatusUnauthorized, "incorrect username or password")
@@ -165,6 +198,8 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.limiter.succeed(ip)
+	a.accountLimit.succeed(accountKey)
+	a.known.add(ip)
 	token, sess := a.sess.create(cfg.Username, ip, r.UserAgent())
 	setSessionCookies(w, r, token, sess)
 	a.store.Append(store.Event{Kind: "auth.login", Severity: store.SevInfo, Source: "ui",
@@ -260,7 +295,7 @@ func (a *App) snapshot() map[string]any {
 		"events":    a.store.Events("", "", 60),
 		"players":   a.store.Players(""),
 		// "docker" is kept for the current interface; "arcane" carries the detail.
-		"docker":     map[string]any{"available": arc["available"], "message": arc["message"]},
+		"docker":     map[string]any{"available": arc["available"], "message": arc["message"], "detail": arc["detail"]},
 		"arcane":     arc,
 		"storeStats": a.store.Stats(),
 		"version":    Version,
@@ -306,6 +341,11 @@ func (a *App) handleStream(w http.ResponseWriter, r *http.Request) {
 		return true
 	}
 
+	// The build comes first, so a tab that reconnects after an upgrade can
+	// tell it is running the previous version's code.
+	if !send("hello", map[string]any{"version": Version, "build": a.assetBuild}) {
+		return
+	}
 	if !send("status", a.allStatus()) {
 		return
 	}
@@ -320,7 +360,7 @@ func (a *App) handleStream(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
-		case <-a.stop:
+		case <-a.streamsDone:
 			return
 		case e, open := <-events:
 			if !open {
@@ -451,7 +491,7 @@ func (a *App) handleServerSave(w http.ResponseWriter, r *http.Request) {
 	next.SortHint = in.SortHint
 	next.GameRoot = in.GameRoot
 	next.Recovery = in.Recovery
-	next.Mods = in.Mods
+	next.Mods = cleanModPolicy(in.Mods)
 	next.Backup = in.Backup
 
 	updated, err := a.cfg.Update(func(c *config.Config) error {
@@ -611,7 +651,8 @@ func maskSecret(v string) string {
 	if v == "" {
 		return ""
 	}
-	return strings.Repeat("•", len(v))
+	// A fixed length, so not even the length of the password is shown.
+	return "••••••••"
 }
 
 // --- actions ----------------------------------------------------------------
@@ -767,7 +808,10 @@ func (a *App) handleLifecycle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if _, err := a.rconFor(srv).Exec("save"); err == nil {
-			time.Sleep(2 * time.Second)
+			if pause(ctx, 2*time.Second) != nil {
+				httpError(w, http.StatusServiceUnavailable, "the stop was cancelled before it started")
+				return
+			}
 		}
 		a.markRestarting(srv.ID, "stopping")
 		// Hard stop through Arcane. restart: unless-stopped leaves a
@@ -917,6 +961,9 @@ func (a *App) handleConfigFiles(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if isServerINI(name) {
+		content = maskINISecrets(content)
+	}
 	writeJSON(w, map[string]any{"file": name, "content": content, "dir": layout.ConfigDir})
 }
 
@@ -955,11 +1002,14 @@ func (a *App) handleConfigSave(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "no config directory was detected for this server")
 		return
 	}
+	old := ""
+	if b, err := os.ReadFile(filepath.Join(layout.ConfigDir, filepath.Base(p.File))); err == nil {
+		old = string(b)
+	}
+	if isServerINI(p.File) {
+		p.Content = unmaskINISecrets(p.Content, old)
+	}
 	if locked := a.lockedKeys(srv, p.File); len(locked) > 0 {
-		old := ""
-		if b, err := os.ReadFile(filepath.Join(layout.ConfigDir, filepath.Base(p.File))); err == nil {
-			old = string(b)
-		}
 		before, after := iniValues(old), iniValues(p.Content)
 		for key, reason := range locked {
 			if before[strings.ToLower(key)] != after[strings.ToLower(key)] {
@@ -1098,10 +1148,12 @@ func (a *App) handleBackupCreate(w http.ResponseWriter, r *http.Request) {
 	saved := false
 	if _, err := a.rconFor(srv).Exec("save"); err == nil {
 		saved = true
-		time.Sleep(2 * time.Second)
+		if pause(r.Context(), 2*time.Second) != nil {
+			return // the browser went away
+		}
 	}
 
-	res, err := a.backup.Create(srv.ID, layout, srv.Backup.IncludeConfig, keep, strings.TrimSpace(p.Note))
+	res, err := a.backup.Create(a.ctx, srv.ID, layout, srv.Backup.IncludeConfig, keep, strings.TrimSpace(p.Note))
 	if err != nil {
 		a.event(store.Event{Kind: "backup.failed", Severity: store.SevError, Source: source(r), Actor: actor(r),
 			ServerID: srv.ID, Server: srv.Name, Message: "Backup failed", Detail: err.Error()})
@@ -1158,7 +1210,11 @@ func (a *App) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	n, err := a.backup.Restore(srv.ID, p.Name, detectLayout(srv))
+	res, err := a.backup.Restore(srv.ID, p.Name, detectLayout(srv))
+	if errors.Is(err, pz.ErrBackupRunning) {
+		httpError(w, http.StatusConflict, "a backup or restore is already running for "+srv.Name+"; wait for it to finish")
+		return
+	}
 	if err != nil {
 		a.event(store.Event{Kind: "backup.failed", Severity: store.SevError, Source: source(r), Actor: actor(r),
 			ServerID: srv.ID, Server: srv.Name, Message: "Restore failed", Detail: err.Error()})
@@ -1169,8 +1225,18 @@ func (a *App) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 	a.event(store.Event{Kind: "backup.restore", Severity: store.SevWarn, Source: source(r), Actor: actor(r),
 		ServerID: srv.ID, Server: srv.Name,
 		Message: "Restored " + srv.Name + " from " + p.Name,
-		Detail:  fmt.Sprintf("%d files written.", n)})
-	ok(w, map[string]any{"files": n, "message": fmt.Sprintf("Restored %d files. Start the server when you are ready.", n)})
+		Detail:  restoreSummary(res)})
+	ok(w, map[string]any{"files": res.Files, "setAside": res.SetAside,
+		"message": restoreSummary(res) + " Start the server when you are ready."})
+}
+
+func restoreSummary(res pz.RestoreResult) string {
+	msg := fmt.Sprintf("Restored %d files.", res.Files)
+	if len(res.SetAside) > 0 {
+		msg += " What was there just before is kept in " + strings.Join(res.SetAside, " and ") +
+			" until the next restore; delete it when you no longer need it."
+	}
+	return msg
 }
 
 func (a *App) handleBackupDelete(w http.ResponseWriter, r *http.Request) {
@@ -1213,53 +1279,9 @@ func (a *App) handleSchedules(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &p) {
 		return
 	}
-	seen := map[string]bool{}
-	for i := range p.Tasks {
-		t := &p.Tasks[i]
-		t.Name = strings.TrimSpace(t.Name)
-		if t.Name == "" {
-			httpError(w, http.StatusBadRequest, "every job needs a name")
-			return
-		}
-		if err := cronx.Valid(t.Cron); err != nil {
-			httpError(w, http.StatusBadRequest, fmt.Sprintf("%q: %s", t.Name, err.Error()))
-			return
-		}
-		if _, found := a.cfg.Server(t.ServerID); !found {
-			httpError(w, http.StatusBadRequest, fmt.Sprintf("%q points at a server that no longer exists", t.Name))
-			return
-		}
-		// Fold a legacy single-action task sent by an older client.
-		if len(t.Steps) == 0 && t.Kind != "" {
-			t.Steps = []config.Step{{Kind: t.Kind, Message: t.Message, Command: t.Command}}
-		}
-		t.Kind, t.Message, t.Command = "", "", ""
-		if len(t.Steps) == 0 {
-			httpError(w, http.StatusBadRequest, fmt.Sprintf("%q has no steps: add at least one thing for it to do", t.Name))
-			return
-		}
-		if len(t.Steps) > 25 {
-			httpError(w, http.StatusBadRequest, fmt.Sprintf("%q has too many steps", t.Name))
-			return
-		}
-		for n := range t.Steps {
-			err := validateStep(&t.Steps[n])
-			if err == nil && t.Steps[n].Kind == "discord" && webhookByID(a.cfg.Get(), t.Steps[n].Webhook) == nil {
-				err = fmt.Errorf("the Discord channel it posts to has been removed")
-			}
-			if err != nil {
-				httpError(w, http.StatusBadRequest,
-					fmt.Sprintf("%q step %d: %s", t.Name, n+1, err.Error()))
-				return
-			}
-		}
-		if t.ID == "" {
-			t.ID = config.RandomToken(8)
-		}
-		if seen[t.ID] {
-			t.ID = config.RandomToken(8)
-		}
-		seen[t.ID] = true
+	if err := validateTasks(a.cfg.Get(), p.Tasks); err != nil {
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 
 	if _, err := a.cfg.Update(func(c *config.Config) error {
@@ -1285,6 +1307,61 @@ func (a *App) handleSchedules(w http.ResponseWriter, r *http.Request) {
 	ok(w, nil)
 }
 
+// validateTasks checks and tidies a list of scheduled jobs in place: names
+// trimmed, legacy single actions folded into steps, every step checked, and
+// IDs made unique. It is shared by the schedule editor and import, so a job
+// that could not be saved by hand cannot arrive in a file either.
+func validateTasks(cfg config.Config, tasks []config.Task) error {
+	seen := map[string]bool{}
+	for i := range tasks {
+		if err := validateTask(cfg, &tasks[i]); err != nil {
+			return err
+		}
+		t := &tasks[i]
+		if t.ID == "" || seen[t.ID] {
+			t.ID = config.RandomToken(8)
+		}
+		seen[t.ID] = true
+	}
+	return nil
+}
+
+// validateTask checks one job. Its errors name the job, so they can be shown
+// as they are.
+func validateTask(cfg config.Config, t *config.Task) error {
+	t.Name = strings.TrimSpace(t.Name)
+	if t.Name == "" {
+		return errors.New("every job needs a name")
+	}
+	if err := cronx.Valid(t.Cron); err != nil {
+		return fmt.Errorf("%q: %s", t.Name, err.Error())
+	}
+	if _, found := serverByID(cfg.Servers, t.ServerID); !found {
+		return fmt.Errorf("%q points at a server that no longer exists", t.Name)
+	}
+	// Fold a legacy single-action task sent by an older client.
+	if len(t.Steps) == 0 && t.Kind != "" {
+		t.Steps = []config.Step{{Kind: t.Kind, Message: t.Message, Command: t.Command}}
+	}
+	t.Kind, t.Message, t.Command = "", "", ""
+	if len(t.Steps) == 0 {
+		return fmt.Errorf("%q has no steps: add at least one thing for it to do", t.Name)
+	}
+	if len(t.Steps) > 25 {
+		return fmt.Errorf("%q has too many steps", t.Name)
+	}
+	for n := range t.Steps {
+		err := validateStep(&t.Steps[n])
+		if err == nil && t.Steps[n].Kind == "discord" && webhookByID(cfg, t.Steps[n].Webhook) == nil {
+			err = errors.New("the Discord channel it posts to has been removed")
+		}
+		if err != nil {
+			return fmt.Errorf("%q step %d: %s", t.Name, n+1, err.Error())
+		}
+	}
+	return nil
+}
+
 func (a *App) handleScheduleRun(w http.ResponseWriter, r *http.Request) {
 	var p struct {
 		ID string `json:"id"`
@@ -1304,7 +1381,10 @@ func (a *App) handleScheduleRun(w http.ResponseWriter, r *http.Request) {
 		}
 		a.event(store.Event{Kind: "admin.action", Severity: store.SevInfo, Source: source(r), Actor: actor(r),
 			ServerID: srv.ID, Server: srv.Name, Message: "Ran task " + t.Name + " manually"})
-		go a.runTask(t, srv)
+		if !a.spawn(func() { a.runTask(t, srv) }) {
+			httpError(w, http.StatusServiceUnavailable, "PZAdmin is shutting down")
+			return
+		}
 		ok(w, map[string]any{"message": "Running " + t.Name + " now."})
 		return
 	}
@@ -1488,28 +1568,45 @@ func (a *App) handleImport(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "the file contains no servers or schedules")
 		return
 	}
+	tz := strings.TrimSpace(incoming.Timezone)
+	if tz != "" {
+		if _, err := time.LoadLocation(tz); err != nil {
+			httpError(w, http.StatusBadRequest,
+				"the file's timezone "+strconv.Quote(tz)+" is not one this system knows, so nothing was imported")
+			return
+		}
+	}
 
 	// Servers come from their stack folders, so an import can only carry
 	// the operator's own settings onto servers that exist here, matched by
 	// stack folder name. Anything the files own is ignored: taking a
 	// container name from an uploaded file would put an arbitrary container
 	// on the allowlist.
-	matched, skipped := 0, 0
+	var (
+		matched         int
+		skippedServers  []string
+		importedJobs    int
+		skippedJobs     []string
+		switchedOff     []string
+		schedulesInFile = len(incoming.Schedules) > 0
+	)
 	_, err := a.cfg.Update(func(c *config.Config) error {
+		matched, importedJobs = 0, 0
+		skippedServers, skippedJobs, switchedOff = nil, nil, nil
 		idMap := map[string]string{}
 		for _, in := range incoming.Servers {
 			found := false
 			for i := range c.Servers {
 				cur := &c.Servers[i]
 				if (in.Stack != "" && cur.Stack == in.Stack) || (in.Stack == "" && cur.ID == in.ID) {
-					cur.Name = firstNonBlank(in.Name, cur.Name)
+					cur.Name = firstNonBlank(strings.TrimSpace(in.Name), cur.Name)
 					cur.Enabled = in.Enabled
 					cur.Notes = in.Notes
 					cur.SortHint = in.SortHint
 					if in.Recovery.FailuresBeforeRestart > 0 {
 						cur.Recovery = in.Recovery
 					}
-					cur.Mods = in.Mods
+					cur.Mods = cleanModPolicy(in.Mods)
 					if public, err := cleanPublicInfo(in.Public); err == nil {
 						cur.Public = public
 					}
@@ -1523,21 +1620,46 @@ func (a *App) handleImport(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if !found {
-				skipped++
+				skippedServers = append(skippedServers, firstNonBlank(in.Name, in.Stack, in.ID))
 			}
 		}
-		if len(incoming.Schedules) > 0 {
-			var kept []config.Task
+		if schedulesInFile {
+			// The file's schedules replace the current ones, as they do when
+			// the schedule editor saves. Each job is checked exactly as the
+			// editor checks it; one that would be refused there is left out
+			// and named in the reply rather than failing the whole import.
+			kept := []config.Task{}
+			seen := map[string]bool{}
 			for _, sc := range incoming.Schedules {
-				if id, ok := idMap[sc.ServerID]; ok {
-					sc.ServerID = id
-					kept = append(kept, sc)
+				id, ok := idMap[sc.ServerID]
+				if !ok {
+					skippedJobs = append(skippedJobs, fmt.Sprintf("%q: its server is not on this PZAdmin", strings.TrimSpace(sc.Name)))
+					continue
 				}
+				sc.ServerID = id
+				sc.LastRun, sc.LastResult = "", ""
+				if err := validateTask(*c, &sc); err != nil {
+					skippedJobs = append(skippedJobs, err.Error())
+					continue
+				}
+				// A job that runs game commands can do anything an admin can,
+				// such as make a player an admin. One arriving in a file is
+				// kept but switched off until someone has looked at it.
+				if sc.Enabled && runsCommands(sc) {
+					sc.Enabled = false
+					switchedOff = append(switchedOff, sc.Name)
+				}
+				if sc.ID == "" || seen[sc.ID] {
+					sc.ID = config.RandomToken(8)
+				}
+				seen[sc.ID] = true
+				kept = append(kept, sc)
 			}
 			c.Schedules = kept
+			importedJobs = len(kept)
 		}
-		if incoming.Timezone != "" {
-			c.Timezone = incoming.Timezone
+		if tz != "" {
+			c.Timezone = tz
 		}
 		return nil
 	})
@@ -1546,11 +1668,75 @@ func (a *App) handleImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.syncMonitors()
+
+	detail := fmt.Sprintf("Settings applied to %d server(s).", matched)
+	if len(skippedServers) > 0 {
+		detail += fmt.Sprintf(" %d had no matching stack folder here and were skipped: %s.",
+			len(skippedServers), strings.Join(skippedServers, ", "))
+	}
+	if schedulesInFile {
+		detail += fmt.Sprintf(" Schedules replaced with %d job(s) from the file.", importedJobs)
+		if len(skippedJobs) > 0 {
+			detail += fmt.Sprintf(" %d job(s) left out: %s.", len(skippedJobs), strings.Join(skippedJobs, "; "))
+		}
+		if len(switchedOff) > 0 {
+			detail += fmt.Sprintf(" Switched off because they run game commands: %s.", strings.Join(switchedOff, ", "))
+		}
+	}
 	a.event(store.Event{Kind: "admin.action", Severity: store.SevWarn, Source: source(r), Actor: actor(r),
-		Message: "Configuration imported",
-		Detail: fmt.Sprintf("Settings applied to %d server(s); %d had no matching stack folder here and were skipped.",
-			matched, skipped)})
-	ok(w, map[string]any{"servers": matched, "skipped": skipped})
+		Message: "Configuration imported", Detail: detail})
+	ok(w, map[string]any{
+		"servers":           matched,
+		"skipped":           len(skippedServers),
+		"skippedServers":    nonNil(skippedServers),
+		"schedulesReplaced": schedulesInFile,
+		"schedules":         importedJobs,
+		"skippedSchedules":  nonNil(skippedJobs),
+		"switchedOff":       nonNil(switchedOff),
+		"timezone":          tz,
+		"summary":           detail,
+	})
+}
+
+// cleanModPolicy keeps the restart countdown for mod updates within what the
+// server editor offers, 1 to 120 minutes, falling back to 10.
+func cleanModPolicy(m config.ModPolicy) config.ModPolicy {
+	if m.RestartDelayMinutes < 1 || m.RestartDelayMinutes > 120 {
+		m.RestartDelayMinutes = 10
+	}
+	return m
+}
+
+// runsCommands reports whether a job sends game commands, raw or from the
+// command list, rather than only saving, restarting, backing up and posting.
+func runsCommands(t config.Task) bool {
+	for _, s := range t.Steps {
+		if s.Kind == "command" || s.Kind == "action" {
+			return true
+		}
+	}
+	return false
+}
+
+// nonNil keeps an empty list as [] rather than null in JSON.
+func nonNil(v []string) []string {
+	if v == nil {
+		return []string{}
+	}
+	return v
+}
+
+// pause waits for d, or less if ctx ends first, so a wait after a save
+// never holds up a cancelled request or a shutdown.
+func pause(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func firstNonBlank(v ...string) string {

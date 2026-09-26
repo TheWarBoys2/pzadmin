@@ -13,11 +13,11 @@ import (
 // Status dots in channel names.
 //
 // Discord allows a channel to be renamed twice every ten minutes, and a
-// restart alone is two changes. So the name follows the server's settled
-// state rather than every blip: a restart PZAdmin knows about leaves the dot
-// alone, a new state has to hold for a while before it is shown, and when
-// the budget is spent the rename waits and then shows whatever is true by
-// then. The status message and announcements carry the detail; the dot is
+// restart alone is two changes. A restart or deploy PZAdmin starts shows
+// the orange dot straight away and green once the server answers, which
+// spends both. Anything else has to hold for a while before it is shown, so
+// a short blip spends nothing, and when the budget is spent the rename waits
+// and then shows whatever is true by then. The status message and announcements carry the detail; the dot is
 // only there to be glanced at in the channel list.
 
 // dotSettle is how long a new state has to hold before the name follows.

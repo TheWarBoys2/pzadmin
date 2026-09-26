@@ -2,6 +2,9 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -126,8 +129,27 @@ type App struct {
 	// modRequests are mods asked for through the API, waiting for approval.
 	modRequests *modRequestStore
 	limiter     *loginLimiter
-	assets      fs.FS
-	dataDir     string
+	// accountLimit slows sign-in guesses from all addresses together.
+	accountLimit *loginLimiter
+	// known holds addresses the administrator has signed in from.
+	known knownAddresses
+	// hashSlots bounds how many sign-in password hashes run at once. Each is
+	// 600,000 rounds of PBKDF2, and they share the CPU with the game servers.
+	hashSlots chan struct{}
+	// proxies says which forwarding headers to believe; see proxy.go.
+	proxies proxyTrust
+	// setupCode is the one-time code the first-run setup form asks for. It is
+	// printed to the log at start and never sent to a browser, so only someone
+	// who can read the container's log can claim a fresh install. Empty once
+	// setup is complete.
+	setupMu   sync.Mutex
+	setupCode string
+	assets    fs.FS
+	// assetBuild is a hash of the embedded app.js and app.css. It versions
+	// their URLs, so a browser can cache them for good and still never run
+	// an old copy against a new server.
+	assetBuild string
+	dataDir    string
 
 	// apiLimit, apiFail, apiInflight and apiStreams throttle /api/v1; see
 	// apiv1.go.
@@ -151,6 +173,23 @@ type App struct {
 	stop chan struct{}
 	wg   sync.WaitGroup
 	once sync.Once
+
+	// ctx is cancelled by Close. Background work that may outlive a request,
+	// such as a scheduled job or a server's monitor, runs under it so shutdown
+	// can stop it and wait for it.
+	ctx    context.Context
+	cancel context.CancelFunc
+	// spawnMu and stopping keep spawn from adding to wg once Close is
+	// waiting on it.
+	spawnMu  sync.Mutex
+	stopping bool
+
+	// streamsDone ends every open event stream. It is closed as soon as the
+	// HTTP server starts shutting down, before anything else, because
+	// http.Server.Shutdown waits for handlers and a stream never finishes on
+	// its own.
+	streamsDone chan struct{}
+	streamsOnce sync.Once
 }
 
 // Options configures a new App.
@@ -173,6 +212,18 @@ type Options struct {
 	// GameImage is the pinned image new stacks use, from PZADMIN_GAME_IMAGE.
 	GameImage string
 
+	// BackupDir is where archives are kept, from PZADMIN_BACKUP_DIR. Empty
+	// means a backups folder inside DataDir.
+	BackupDir string
+
+	// TrustedProxies is PZADMIN_TRUSTED_PROXIES: the reverse proxies whose
+	// X-Forwarded-For and X-Forwarded-Proto headers are believed.
+	TrustedProxies string
+
+	// SetupCode fixes the first-run setup code, for tests. Empty generates a
+	// random one.
+	SetupCode string
+
 	ArcaneURL    string
 	ArcaneEnvID  string
 	ArcaneAPIKey string
@@ -194,35 +245,49 @@ func New(opts Options) (*App, error) {
 	}
 
 	a := &App{
-		cfg:         cfgStore,
-		store:       st,
-		notify:      notify.New(),
-		backup:      pz.NewBackupper(filepath.Join(opts.DataDir, "backups")),
-		scanner:     pz.NewScanner(2 * time.Minute),
-		scripts:     pz.NewScriptScanner(30 * time.Minute),
-		custom:      loadCustomCatalogue(filepath.Join(opts.DataDir, "catalogue.json")),
-		sess:        newSessionStore(filepath.Join(opts.DataDir, "sessions.json")),
-		keys:        newAPIKeyStore(filepath.Join(opts.DataDir, "apikeys.json")),
-		modRequests: newModRequestStore(filepath.Join(opts.DataDir, "modrequests.json")),
-		apiLimit:    newRateLimiter(),
-		apiFail:     newLoginLimiter(),
-		limiter:     newLoginLimiter(),
-		assets:      opts.Assets,
-		dataDir:     opts.DataDir,
-		status:      map[string]*Status{},
-		clients:     map[string]*rcon.Client{},
-		tailers:     map[string]*pz.Tailer{},
-		monitors:    map[string]context.CancelFunc{},
-		caps:        map[string]*Capabilities{},
-		capTried:    map[string]time.Time{},
-		stop:        make(chan struct{}),
-		steamBase:   opts.SteamBase,
-		gameRoot:    strings.TrimSpace(opts.GameRoot),
-		rconHost:    strings.TrimSpace(opts.RCONHost),
-		gameImage:   strings.TrimSpace(opts.GameImage),
+		cfg:          cfgStore,
+		store:        st,
+		notify:       notify.New(),
+		backup:       pz.NewBackupper(firstNonBlank(opts.BackupDir, filepath.Join(opts.DataDir, "backups"))),
+		scanner:      pz.NewScanner(2 * time.Minute),
+		scripts:      pz.NewScriptScanner(30 * time.Minute),
+		custom:       loadCustomCatalogue(filepath.Join(opts.DataDir, "catalogue.json")),
+		sess:         newSessionStore(filepath.Join(opts.DataDir, "sessions.json")),
+		keys:         newAPIKeyStore(filepath.Join(opts.DataDir, "apikeys.json")),
+		modRequests:  newModRequestStore(filepath.Join(opts.DataDir, "modrequests.json")),
+		apiLimit:     newRateLimiter(),
+		apiFail:      newLoginLimiter(),
+		limiter:      newLoginLimiter(),
+		accountLimit: newAccountLimiter(),
+		hashSlots:    make(chan struct{}, 4),
+		assets:       opts.Assets,
+		dataDir:      opts.DataDir,
+		status:       map[string]*Status{},
+		clients:      map[string]*rcon.Client{},
+		tailers:      map[string]*pz.Tailer{},
+		monitors:     map[string]context.CancelFunc{},
+		caps:         map[string]*Capabilities{},
+		capTried:     map[string]time.Time{},
+		stop:         make(chan struct{}),
+		streamsDone:  make(chan struct{}),
+		steamBase:    opts.SteamBase,
+		gameRoot:     strings.TrimSpace(opts.GameRoot),
+		rconHost:     strings.TrimSpace(opts.RCONHost),
+		gameImage:    strings.TrimSpace(opts.GameImage),
 	}
 	if a.rconHost == "" {
 		a.rconHost = "host.docker.internal"
+	}
+	if a.proxies, err = parseTrustedProxies(opts.TrustedProxies); err != nil {
+		return nil, err
+	}
+	a.ctx, a.cancel = context.WithCancel(context.Background())
+	a.assetBuild = assetHash(opts.Assets)
+	if !cfg.SetupComplete {
+		a.setupCode = opts.SetupCode
+		if a.setupCode == "" {
+			a.setupCode = newSetupCode()
+		}
 	}
 
 	// The mounted folders are fixed by the compose file, so the environment
@@ -270,12 +335,83 @@ func (a *App) Start() {
 		Kind: "system.start", Severity: store.SevInfo, Source: "system",
 		Message: "PZAdmin " + Version + " started",
 	})
+	// A state file that could not be parsed was moved aside at load. Say so
+	// where the operator will see it, not only in the container log.
+	for _, err := range []error{a.keys.loadErr, a.sess.loadErr, a.modRequests.loadErr, a.store.LoadError(), a.custom.loadErr} {
+		a.reportLoadError(err)
+	}
+	a.prepareBackupDir()
+	// Addresses with a live session are the administrator's, so they are
+	// known straight after a restart, before anyone signs in again.
+	for _, s := range a.sess.list() {
+		if s.IP != "" {
+			a.known.add(s.IP)
+		}
+	}
+	if !a.arcane.Configured() {
+		log.Printf("Arcane is not set up (PZADMIN_ARCANE_URL, PZADMIN_ARCANE_ENV_ID and PZADMIN_ARCANE_API_KEY). " +
+			"Without it, start, stop, deploy (including a new server's first start), deleting servers, " +
+			"container logs and the watchdog's automatic restart of a frozen server are unavailable. " +
+			"Status over RCON, restarts, mods, settings, players, the console, backups, schedules and " +
+			"the new-server wizard's files all work without it.")
+	}
+	if code := a.pendingSetupCode(); code != "" {
+		log.Printf("first-time setup: open PZAdmin in your browser and enter this setup code: %s", code)
+		log.Printf("the code changes every time PZAdmin starts until setup is finished")
+	}
+}
+
+// reportLoadError puts a state file that could not be read, and was moved
+// aside, where the operator will see it, not only in the container log.
+func (a *App) reportLoadError(err error) {
+	if err != nil {
+		a.event(store.Event{Kind: "system.error", Severity: store.SevError, Source: "system",
+			Message: "A PZAdmin data file was unreadable", Detail: err.Error()})
+	}
+}
+
+// spawn runs fn in the background, tracked by the WaitGroup Close waits on.
+// It returns false, and runs nothing, once PZAdmin is shutting down.
+func (a *App) spawn(fn func()) bool {
+	a.spawnMu.Lock()
+	defer a.spawnMu.Unlock()
+	if a.stopping {
+		return false
+	}
+	a.wg.Add(1)
+	go func() {
+		defer a.wg.Done()
+		fn()
+	}()
+	return true
+}
+
+// BeginShutdown is registered with http.Server.RegisterOnShutdown. It ends
+// the event streams and cancels background work, backups included, the moment
+// shutdown starts, rather than after HTTP shutdown has waited for requests.
+// A long manual backup is itself a request, so without this it would hold
+// shutdown for up to 20 seconds, past Docker's default 10 second stop limit.
+func (a *App) BeginShutdown() {
+	a.StopStreams()
+	a.cancel()
+}
+
+// StopStreams ends every open event stream. main registers it with
+// http.Server.RegisterOnShutdown so an open browser tab cannot hold up
+// shutdown; Close calls it too.
+func (a *App) StopStreams() {
+	a.streamsOnce.Do(func() { close(a.streamsDone) })
 }
 
 // Close stops everything and flushes state to disk.
 func (a *App) Close() {
 	a.once.Do(func() {
+		a.StopStreams()
+		a.spawnMu.Lock()
+		a.stopping = true
+		a.spawnMu.Unlock()
 		close(a.stop)
+		a.cancel()
 		a.mu.Lock()
 		for _, cancel := range a.monitors {
 			cancel()
@@ -287,7 +423,12 @@ func (a *App) Close() {
 		a.clients = map[string]*rcon.Client{}
 		a.mu.Unlock()
 
-		a.wg.Wait()
+		// Everything tracked stops at its next check of a.ctx, which for a
+		// backup is the next file. Wait for that, but never so long that
+		// Docker's stop timeout kills PZAdmin before the saves below.
+		if !waitTimeout(&a.wg, shutdownWait) {
+			log.Printf("shutdown: background work did not stop within %s; saving anyway", shutdownWait)
+		}
 		// Close out any live sessions so playtime is not credited while
 		// PZAdmin is not running to observe it.
 		for _, s := range a.cfg.Get().Servers {
@@ -298,6 +439,28 @@ func (a *App) Close() {
 		a.keys.flush()
 		a.notify.Close()
 	})
+}
+
+// shutdownWait is how long Close waits for background work (a variable so
+// tests can shorten it). main gives
+// HTTP shutdown up to 20 seconds and the compose file allows 30 in all.
+var shutdownWait = 8 * time.Second
+
+// waitTimeout waits for wg, and reports false if d passed first.
+func waitTimeout(wg *sync.WaitGroup, d time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-done:
+		return true
+	case <-t.C:
+		return false
+	}
 }
 
 func (a *App) applyNotifyConfig(cfg config.Config) {
@@ -507,6 +670,7 @@ func (a *App) Handler() http.Handler {
 	post("/api/stack/env/save", a.handleStackEnvSave)
 
 	post("/api/settings", a.handleSettings)
+	post("/api/metrics/token", a.handleMetricsToken)
 	post("/api/password", a.handlePassword)
 	post("/api/server/save", a.handleServerSave)
 	post("/api/server/delete", a.handleServerDelete)
@@ -552,7 +716,7 @@ func (a *App) Handler() http.Handler {
 	a.routeAPIv1(mux)
 
 	mux.HandleFunc("/", a.handleStatic)
-	return securityHeaders(a.logRequests(mux))
+	return securityHeaders(a.withClient(a.logRequests(mux)))
 }
 
 // auth wraps a handler with session and CSRF checks.
@@ -581,7 +745,7 @@ func (a *App) auth(next http.HandlerFunc, mutating bool) http.Handler {
 		if mutating {
 			// Double-submit CSRF: an attacker on another origin can make the
 			// browser send the cookie, but cannot read it to set the header.
-			if r.Header.Get(csrfHeader) != sess.CSRF {
+			if subtle.ConstantTimeCompare([]byte(r.Header.Get(csrfHeader)), []byte(sess.CSRF)) != 1 {
 				httpError(w, http.StatusForbidden, "security token mismatch, reload the page")
 				return
 			}
@@ -689,17 +853,53 @@ func (a *App) handleStatic(w http.ResponseWriter, r *http.Request) {
 	case ".html":
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
-	case ".css":
-		w.Header().Set("Content-Type", "text/css; charset=utf-8")
-		w.Header().Set("Cache-Control", "public, max-age=300")
-	case ".js":
-		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
-		w.Header().Set("Cache-Control", "public, max-age=300")
+		data = versionAssetURLs(data, a.assetBuild)
+	case ".css", ".js":
+		if filepath.Ext(name) == ".css" {
+			w.Header().Set("Content-Type", "text/css; charset=utf-8")
+		} else {
+			w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		}
+		// index.html asks for /app.js?v=<build>. That URL changes with every
+		// build, so it can be cached for good. Anything else is revalidated.
+		if v := r.URL.Query().Get("v"); v != "" && v == a.assetBuild {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		etag := `"` + a.assetBuild + `"`
+		w.Header().Set("ETag", etag)
+		if r.Header.Get("If-None-Match") == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
 	case ".svg":
 		w.Header().Set("Content-Type", "image/svg+xml")
 		w.Header().Set("Cache-Control", "public, max-age=86400")
 	}
 	_, _ = w.Write(data)
+}
+
+// assetHash fingerprints the app's script and stylesheet.
+func assetHash(assets fs.FS) string {
+	h := sha256.New()
+	for _, name := range []string{"app.js", "app.css"} {
+		if assets == nil {
+			break
+		}
+		if b, err := fs.ReadFile(assets, name); err == nil {
+			h.Write(b)
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil))[:12]
+}
+
+// versionAssetURLs points index.html at this build's script and stylesheet.
+func versionAssetURLs(html []byte, build string) []byte {
+	s := string(html)
+	s = strings.Replace(s, `href="/app.css"`, `href="/app.css?v=`+build+`"`, 1)
+	s = strings.Replace(s, `src="/app.js"`, `src="/app.js?v=`+build+`"`, 1)
+	return []byte(s)
 }
 
 // --- response helpers -------------------------------------------------------
@@ -732,8 +932,15 @@ func httpError(w http.ResponseWriter, code int, msg string) {
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	return decodeJSONLimit(w, r, dst, 8<<20)
+}
+
+// smallBody is the most the unauthenticated sign-in and setup forms may send.
+const smallBody = 4 << 10
+
+func decodeJSONLimit(w http.ResponseWriter, r *http.Request, dst any, limit int64) bool {
 	defer r.Body.Close()
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<20))
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
 		httpError(w, http.StatusBadRequest, "could not read the request: "+err.Error())

@@ -14,6 +14,13 @@ Create a key under **Settings → API keys**. Each key has:
   it. **Control** adds commands from the command
   list, restart, stop, start and backups. **Console** adds raw RCON commands;
   only give it to something you trust completely.
+
+  Control is not a small permission. The command list is the same one the web
+  interface uses, so a control key can kick and ban players, give items, set a
+  player's access level (including making them an admin), create accounts and
+  restart or stop servers. It cannot run commands outside the list, change
+  PZAdmin's settings or read secrets. Give it to bots you trust, and limit it
+  to the servers they need.
 - **Servers.** All servers (including ones added later) or a chosen few. A
   server outside the key's list answers `404`, as if it did not exist.
 - **Expiry**: never, 30 days, 90 days or a year.
@@ -232,4 +239,6 @@ command is recorded in the event log.
 ## Metrics
 
 `/metrics` includes `pzadmin_api_requests_total{key,code}` and
-`pzadmin_api_ratelimited_total{key}`.
+`pzadmin_api_ratelimited_total{key}`. `/metrics` uses its own token, not an API
+key: make one with **Make a new token** under **Settings → Metrics** (metrics
+are on by default), then send it as `Authorization: Bearer <token>`.

@@ -3,6 +3,7 @@ package config
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -287,5 +288,38 @@ func TestQuietHoursFromBeforeTheChoiceCoverScheduledJobs(t *testing.T) {
 	}
 	if q := s.Get().Notify.QuietHours; !q.Scheduled || q.Manual {
 		t.Fatalf("older quiet hours should keep covering scheduled jobs only: %#v", q)
+	}
+}
+
+// Opening a config written by another release keeps a copy of it first, so
+// going back a version is a file copy away.
+func TestOpenKeepsACopyOfAnOlderOrNewerConfig(t *testing.T) {
+	for _, version := range []int{8, SchemaVersion + 1} {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.json")
+		original := fmt.Sprintf(`{"version":%d,"timezone":"Europe/London"}`, version)
+		if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Open(path); err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(fmt.Sprintf("%s.v%d.bak", path, version))
+		if err != nil || string(got) != original {
+			t.Fatalf("version %d: copy not kept: %v %q", version, err, got)
+		}
+	}
+
+	// The current layout needs no copy.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(fmt.Sprintf(`{"version":%d}`, SchemaVersion)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(path); err != nil {
+		t.Fatal(err)
+	}
+	if matches, _ := filepath.Glob(path + ".v*.bak"); len(matches) != 0 {
+		t.Fatalf("unexpected copies: %v", matches)
 	}
 }
