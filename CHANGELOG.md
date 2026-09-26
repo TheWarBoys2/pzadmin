@@ -11,6 +11,9 @@ Most of this update needs nothing from you. These do:
   `mkdir backups` next to your compose file, then `docker compose up -d`.
   PZAdmin moves your existing backups into the new folder the first time it
   starts. Without these lines, backups stay where they were.
+- **Stop grace period.** Add `stop_grace_period: 30s` to your compose file,
+  as in the README's copy. Docker's default of 10 seconds is usually enough,
+  but on a slow machine a backup cut short by an update can use it all up.
 - **Updating is now your choice.** The compose file no longer has
   `pull_policy: always`, so `docker compose up -d` doesn't update PZAdmin on
   its own. Update with `docker compose pull` then `docker compose up -d`.

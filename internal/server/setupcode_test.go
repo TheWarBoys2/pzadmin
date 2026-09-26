@@ -112,3 +112,37 @@ func TestMetricsTokenCanBeReplacedAndOnlyWorksAsAHeader(t *testing.T) {
 		t.Fatalf("a token in the query string should be refused, got %d", code)
 	}
 }
+
+// With the right code, breaking the password rules is a typing mistake, not
+// a guess, so it never leads to "too many wrong setup codes".
+func TestSetupPasswordMistakesAreNotCountedAsGuesses(t *testing.T) {
+	_, handler, _ := newTestApp(t)
+	c := &client{t: t, handler: handler}
+	for i := 0; i < 8; i++ {
+		rec := c.do(http.MethodPost, "/api/setup", map[string]string{
+			"setupCode": testSetupCode, "username": "rick", "password": "short",
+		})
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("attempt %d: expected the password rule error, got %d %s", i+1, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// After a restart, an address with a live session is already known, so the
+// account-wide limit cannot lock the administrator out before they sign in.
+func TestKnownAddressesComeBackFromSessions(t *testing.T) {
+	app, handler, dir := newTestApp(t)
+	c := &client{t: t, handler: handler} // from 192.0.2.1
+	c.setup("rick", "a-long-enough-password")
+	app.Close()
+
+	again, err := New(Options{DataDir: dir, SetupCode: testSetupCode})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(again.Close)
+	again.Start()
+	if !again.known.has("192.0.2.1") {
+		t.Fatal("the signed-in address should be known after a restart")
+	}
+}

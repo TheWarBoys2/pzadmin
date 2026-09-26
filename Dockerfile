@@ -51,10 +51,15 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 # any user rather than only by 1000: otherwise a fresh install with another
 # "user:" cannot write its settings and restarts forever. Everything PZAdmin
 # writes inside it is private to its own user (0600 files), and Docker keeps
-# volumes in a folder only root can open on the host.
+# volumes in a folder only root can open on the host. The sticky bit (1777,
+# like /tmp) stops one user removing another's files.
+#
+# The folder is made one level down and its parent copied, because COPY of a
+# folder copies only what is inside it and makes the destination 0755,
+# which would drop the mode set here.
 ARG PZADMIN_UID=1000
 ARG PZADMIN_GID=1000
-RUN mkdir -p /out/data && chown ${PZADMIN_UID}:${PZADMIN_GID} /out/data && chmod 0777 /out/data
+RUN mkdir -p /out/root/data && chown ${PZADMIN_UID}:${PZADMIN_GID} /out/root/data && chmod 1777 /out/root/data
 
 FROM scratch
 
@@ -62,7 +67,7 @@ FROM scratch
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 ARG PZADMIN_UID=1000
 ARG PZADMIN_GID=1000
-COPY --from=build --chown=${PZADMIN_UID}:${PZADMIN_GID} /out/data /data
+COPY --from=build /out/root/ /
 COPY --from=build /out/pzadmin /pzadmin
 
 # Run unprivileged, as the user that owns the server folders.

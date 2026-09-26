@@ -341,6 +341,13 @@ func (a *App) Start() {
 		a.reportLoadError(err)
 	}
 	a.prepareBackupDir()
+	// Addresses with a live session are the administrator's, so they are
+	// known straight after a restart, before anyone signs in again.
+	for _, s := range a.sess.list() {
+		if s.IP != "" {
+			a.known.add(s.IP)
+		}
+	}
 	if !a.arcane.Configured() {
 		log.Printf("Arcane is not set up (PZADMIN_ARCANE_URL, PZADMIN_ARCANE_ENV_ID and PZADMIN_ARCANE_API_KEY). " +
 			"Without it, start, stop, deploy (including a new server's first start), deleting servers, " +
@@ -377,6 +384,16 @@ func (a *App) spawn(fn func()) bool {
 		fn()
 	}()
 	return true
+}
+
+// BeginShutdown is registered with http.Server.RegisterOnShutdown. It ends
+// the event streams and cancels background work, backups included, the moment
+// shutdown starts, rather than after HTTP shutdown has waited for requests.
+// A long manual backup is itself a request, so without this it would hold
+// shutdown for up to 20 seconds, past Docker's default 10 second stop limit.
+func (a *App) BeginShutdown() {
+	a.StopStreams()
+	a.cancel()
 }
 
 // StopStreams ends every open event stream. main registers it with

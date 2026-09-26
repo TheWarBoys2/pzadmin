@@ -146,3 +146,20 @@ func TestBackupStopsOnShutdown(t *testing.T) {
 		t.Fatalf("a stopped backup must not leave an archive: %#v", list)
 	}
 }
+
+// Background work, backups included, is cancelled as soon as HTTP shutdown
+// starts, not after it has waited for open requests.
+func TestBeginShutdownCancelsWorkAtOnce(t *testing.T) {
+	app, _, _ := newTestApp(t)
+	stopped := make(chan struct{})
+	app.spawn(func() {
+		<-app.ctx.Done()
+		close(stopped)
+	})
+	app.BeginShutdown()
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("work was not cancelled when shutdown began")
+	}
+}

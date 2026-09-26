@@ -227,7 +227,9 @@ func (a *App) executeStep(ctx context.Context, step config.Step, srv config.Serv
 		if keep <= 0 {
 			keep = 10
 		}
-		res, err := a.backup.Create(ctx, srv.ID, layout, srv.Backup.IncludeConfig, keep, "scheduled")
+		// Under PZAdmin's own context, not the job's time limit: a job that
+		// has waited a long time before its backup should still get one.
+		res, err := a.backup.Create(a.ctx, srv.ID, layout, srv.Backup.IncludeConfig, keep, "scheduled")
 		if err != nil {
 			a.event(store.Event{
 				Kind: "backup.failed", Severity: store.SevError, Source: "schedule",

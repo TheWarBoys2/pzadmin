@@ -154,3 +154,14 @@ func readOrSkip(t *testing.T, path string) string {
 	}
 	return string(b)
 }
+
+// A new volume copies the image's /data, so it must be writable by whatever
+// user: the compose file names, or a fresh install as another user restarts
+// forever. COPY of a folder resets the destination to 0755, so the mode only
+// survives when the folder's parent is copied.
+func TestImageDataFolderIsWritableByAnyUser(t *testing.T) {
+	dockerfile := readOrSkip(t, "Dockerfile")
+	if !strings.Contains(dockerfile, "chmod 1777 /out/root/data") || !strings.Contains(dockerfile, "COPY --from=build /out/root/ /") {
+		t.Error("the Dockerfile must make /data 1777 and copy its parent folder so the mode survives")
+	}
+}

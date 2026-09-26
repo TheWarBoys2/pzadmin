@@ -123,7 +123,7 @@ func main() {
 	// every handler, so end them the moment shutdown starts. Otherwise one
 	// open browser tab holds shutdown past Docker's stop timeout and the
 	// final save never runs.
-	srv.RegisterOnShutdown(app.StopStreams)
+	srv.RegisterOnShutdown(app.BeginShutdown)
 
 	go func() {
 		log.Printf("version %s listening on %s (data %s, timezone %s)",

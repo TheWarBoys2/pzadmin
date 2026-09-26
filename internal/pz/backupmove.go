@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,8 +79,12 @@ func (b *Backupper) MoveFrom(ctx context.Context, old string) (moved, left int, 
 // part-way leaves the original untouched and no half-written archive.
 func moveFile(ctx context.Context, src, dst string) error {
 	if err := os.Rename(src, dst); err == nil {
-		// Older releases wrote archives readable by everyone.
-		return os.Chmod(dst, 0o600)
+		// Older releases wrote archives readable by everyone. The move has
+		// happened either way, so a failed chmod is only logged.
+		if err := os.Chmod(dst, 0o600); err != nil {
+			log.Printf("backups: could not make %s private: %v", dst, err)
+		}
+		return nil
 	}
 	in, err := os.Open(src)
 	if err != nil {

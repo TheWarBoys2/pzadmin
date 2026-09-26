@@ -89,6 +89,8 @@ func (a *App) handleSetup(w http.ResponseWriter, r *http.Request) {
 			"that setup code is not right. PZAdmin prints it in its log when it starts: run docker logs pzadmin")
 		return
 	}
+	// The code was right, so a password that breaks the rules is not a guess.
+	a.limiter.succeed(ip)
 	if err := validateCredentials(p.Username, p.Password); err != nil {
 		httpError(w, http.StatusBadRequest, err.Error())
 		return

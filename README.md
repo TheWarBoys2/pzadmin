@@ -312,7 +312,9 @@ Nothing is deleted: the current world is moved to `Saves.before-restore` and
 the current settings to `Server.before-restore`, next to the originals. These
 replace the copies from an earlier restore only once the new restore has
 worked, and if it fails, everything is put back. Delete the
-`.before-restore` folders once you're happy.
+`.before-restore` folders once you're happy. The settings folder is replaced
+as a whole, so a settings file added after the backup is only in
+`Server.before-restore` afterwards.
 
 Upgrading from an earlier PZAdmin that kept backups inside its volume: once
 `PZADMIN_BACKUP_DIR` is set, PZAdmin moves the old archives into the new
