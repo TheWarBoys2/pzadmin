@@ -49,10 +49,10 @@ type nameState struct {
 // as it is.
 func wantedDot(st Status) string {
 	switch {
+	case st.Restarting || st.Deploying:
+		return discord.DotRestarting // a restart or deploy we asked for
 	case st.LastCheck.IsZero() && !st.Stopped:
 		return "" // not checked since PZAdmin started
-	case st.Restarting:
-		return "" // a restart we asked for: it will be back
 	case st.Online:
 		return discord.DotOnline
 	}
@@ -102,9 +102,11 @@ func (a *App) syncChannelNames(ctx context.Context, board *liveBoard) bool {
 		if ns.Want == ns.Shown {
 			continue
 		}
-		// The first dot goes up straight away; after that a state has to
-		// last before it is worth one of the two renames.
-		if ns.Shown != "" && now.Sub(ns.WantSince) < dotSettle {
+		// The first dot goes up straight away, and so do a restart and the
+		// recovery from one, which PZAdmin did on purpose. Anything else has
+		// to last before it is worth one of the two renames.
+		deliberate := ns.Want == discord.DotRestarting || ns.Shown == discord.DotRestarting
+		if ns.Shown != "" && !deliberate && now.Sub(ns.WantSince) < dotSettle {
 			continue
 		}
 		if !ns.budget(now) {
