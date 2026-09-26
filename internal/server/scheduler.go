@@ -212,7 +212,7 @@ func (a *App) executeStep(ctx context.Context, step config.Step, srv config.Serv
 		return "broadcast sent", nil
 
 	case "restart":
-		if err := a.restartServer(ctx, srv, "schedule", scheduledReason, ""); err != nil {
+		if err := a.restartServer(ctx, srv, "schedule", "scheduled job", ""); err != nil {
 			return "", err
 		}
 		return "restart issued", nil
@@ -241,7 +241,7 @@ func (a *App) executeStep(ctx context.Context, step config.Step, srv config.Serv
 		return fmt.Sprintf("archived %d files, %s", res.Archive.Files, humanBytes(res.Archive.Size)), nil
 
 	case "discord":
-		if a.quietNow() {
+		if q := a.cfg.Get().Notify.QuietHours; q.Scheduled && a.quietNow() {
 			return "skipped, quiet hours", nil
 		}
 		h := webhookByID(a.cfg.Get(), step.Webhook)
@@ -429,10 +429,6 @@ func humanBytes(n int64) string {
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTP"[exp])
 }
-
-// scheduledReason is the restart reason a scheduled job gives, which marks the
-// server coming back up afterwards as part of the same job.
-const scheduledReason = "scheduled job"
 
 // warningText is what players see in the countdown before a job runs.
 func warningText(task config.Task, minutes int) string {
