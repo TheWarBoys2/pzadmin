@@ -347,7 +347,7 @@ func (a *App) handleStream(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
-		case <-a.stop:
+		case <-a.streamsDone:
 			return
 		case e, open := <-events:
 			if !open {
@@ -1331,7 +1331,10 @@ func (a *App) handleScheduleRun(w http.ResponseWriter, r *http.Request) {
 		}
 		a.event(store.Event{Kind: "admin.action", Severity: store.SevInfo, Source: source(r), Actor: actor(r),
 			ServerID: srv.ID, Server: srv.Name, Message: "Ran task " + t.Name + " manually"})
-		go a.runTask(t, srv)
+		if !a.spawn(func() { a.runTask(t, srv) }) {
+			httpError(w, http.StatusServiceUnavailable, "PZAdmin is shutting down")
+			return
+		}
 		ok(w, map[string]any{"message": "Running " + t.Name + " now."})
 		return
 	}

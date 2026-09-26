@@ -82,6 +82,14 @@ func (b *Backupper) Create(serverID string, l Layout, includeConfig bool, keep i
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return BackupResult{}, err
 	}
+	// A backup cut short by a crash or a kill leaves its .partial behind, and
+	// prune never counts it. Nothing else writes here while this server's
+	// backup is running, so any .partial now is a leftover.
+	if leftovers, _ := filepath.Glob(filepath.Join(dir, "*.partial")); len(leftovers) > 0 {
+		for _, p := range leftovers {
+			_ = os.Remove(p)
+		}
+	}
 
 	start := time.Now()
 	name := fmt.Sprintf("%s.tar.gz", start.UTC().Format("20060102-150405"))

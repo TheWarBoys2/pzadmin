@@ -5,9 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
-	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,6 +15,7 @@ import (
 	"unicode"
 
 	"github.com/TheWarBoys2/pzadmin/internal/config"
+	"github.com/TheWarBoys2/pzadmin/internal/fsutil"
 	"github.com/TheWarBoys2/pzadmin/internal/pz"
 	"github.com/TheWarBoys2/pzadmin/internal/steam"
 	"github.com/TheWarBoys2/pzadmin/internal/store"
@@ -64,28 +64,24 @@ type modRequestStore struct {
 	mu   sync.Mutex
 	path string
 	list []*modRequest
+	// loadErr is set when modrequests.json could not be read at start.
+	loadErr error
 }
 
 func newModRequestStore(path string) *modRequestStore {
 	s := &modRequestStore{path: path}
-	if b, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(b, &s.list)
+	if _, err := fsutil.ReadJSON(path, &s.list); err != nil {
+		log.Printf("mod requests: %v", err)
+		s.list, s.loadErr = nil, err
 	}
 	return s
 }
 
-// saveLocked writes the list. The caller holds mu.
+// saveLocked writes the list. The caller holds mu, which also keeps saves in
+// order.
 func (s *modRequestStore) saveLocked() {
-	b, err := json.Marshal(s.list)
-	if err != nil {
-		return
-	}
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
-		return
-	}
-	tmp := s.path + ".tmp"
-	if os.WriteFile(tmp, b, 0o600) == nil {
-		_ = os.Rename(tmp, s.path)
+	if err := fsutil.WriteJSON(s.path, s.list, 0o600); err != nil {
+		log.Printf("saving mod requests: %v", err)
 	}
 }
 

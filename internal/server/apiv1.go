@@ -504,7 +504,7 @@ func (a *App) apiStream(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
-		case <-a.stop:
+		case <-a.streamsDone:
 			return
 		case e, ok := <-events:
 			if !ok {

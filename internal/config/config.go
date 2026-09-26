@@ -18,11 +18,12 @@ import (
 	"fmt"
 	"hash"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/TheWarBoys2/pzadmin/internal/fsutil"
 )
 
 // PBKDF2 work factor. 600k iterations of HMAC-SHA256 is the OWASP 2023
@@ -596,31 +597,11 @@ func clone(c Config) Config {
 }
 
 func writeAtomic(path string, c Config) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
 	b, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(b); err != nil {
-		f.Close()
-		return err
-	}
-	// fsync before rename so a power cut cannot leave a truncated config.
-	if err := f.Sync(); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return fsutil.WriteFile(path, b, 0o600)
 }
 
 // Redact returns a copy of c with every secret replaced by a placeholder. This

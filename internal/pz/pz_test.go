@@ -417,3 +417,22 @@ func TestTailFileReturnsTrailingLines(t *testing.T) {
 		t.Fatal("TailFile must refuse path separators")
 	}
 }
+
+func TestBackupRemovesLeftoverPartialArchives(t *testing.T) {
+	_, base := buildServer(t)
+	l := Detect(base)
+	b := NewBackupper(t.TempDir())
+	if err := os.MkdirAll(b.Dir("srv1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	leftover := filepath.Join(b.Dir("srv1"), "20260101-000000.tar.gz.partial")
+	if err := os.WriteFile(leftover, []byte("half an archive"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Create("srv1", l, false, 5, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(leftover); !os.IsNotExist(err) {
+		t.Fatal("a .partial left by an interrupted backup should be removed")
+	}
+}

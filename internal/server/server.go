@@ -162,6 +162,23 @@ type App struct {
 	stop chan struct{}
 	wg   sync.WaitGroup
 	once sync.Once
+
+	// ctx is cancelled by Close. Background work that may outlive a request,
+	// such as a scheduled job or a server's monitor, runs under it so shutdown
+	// can stop it and wait for it.
+	ctx    context.Context
+	cancel context.CancelFunc
+	// spawnMu and stopping keep spawn from adding to wg once Close is
+	// waiting on it.
+	spawnMu  sync.Mutex
+	stopping bool
+
+	// streamsDone ends every open event stream. It is closed as soon as the
+	// HTTP server starts shutting down, before anything else, because
+	// http.Server.Shutdown waits for handlers and a stream never finishes on
+	// its own.
+	streamsDone chan struct{}
+	streamsOnce sync.Once
 }
 
 // Options configures a new App.
@@ -237,6 +254,7 @@ func New(opts Options) (*App, error) {
 		caps:         map[string]*Capabilities{},
 		capTried:     map[string]time.Time{},
 		stop:         make(chan struct{}),
+		streamsDone:  make(chan struct{}),
 		steamBase:    opts.SteamBase,
 		gameRoot:     strings.TrimSpace(opts.GameRoot),
 		rconHost:     strings.TrimSpace(opts.RCONHost),
@@ -248,6 +266,7 @@ func New(opts Options) (*App, error) {
 	if a.proxies, err = parseTrustedProxies(opts.TrustedProxies); err != nil {
 		return nil, err
 	}
+	a.ctx, a.cancel = context.WithCancel(context.Background())
 	if !cfg.SetupComplete {
 		a.setupCode = opts.SetupCode
 		if a.setupCode == "" {
@@ -300,16 +319,52 @@ func (a *App) Start() {
 		Kind: "system.start", Severity: store.SevInfo, Source: "system",
 		Message: "PZAdmin " + Version + " started",
 	})
+	// A state file that could not be parsed was moved aside at load. Say so
+	// where the operator will see it, not only in the container log.
+	for _, err := range []error{a.keys.loadErr, a.sess.loadErr, a.modRequests.loadErr, a.store.LoadError()} {
+		if err != nil {
+			a.event(store.Event{Kind: "system.error", Severity: store.SevError, Source: "system",
+				Message: "A PZAdmin data file was unreadable", Detail: err.Error()})
+		}
+	}
 	if code := a.pendingSetupCode(); code != "" {
 		log.Printf("first-time setup: open PZAdmin in your browser and enter this setup code: %s", code)
 		log.Printf("the code changes every time PZAdmin starts until setup is finished")
 	}
 }
 
+// spawn runs fn in the background, tracked by the WaitGroup Close waits on.
+// It returns false, and runs nothing, once PZAdmin is shutting down.
+func (a *App) spawn(fn func()) bool {
+	a.spawnMu.Lock()
+	defer a.spawnMu.Unlock()
+	if a.stopping {
+		return false
+	}
+	a.wg.Add(1)
+	go func() {
+		defer a.wg.Done()
+		fn()
+	}()
+	return true
+}
+
+// StopStreams ends every open event stream. main registers it with
+// http.Server.RegisterOnShutdown so an open browser tab cannot hold up
+// shutdown; Close calls it too.
+func (a *App) StopStreams() {
+	a.streamsOnce.Do(func() { close(a.streamsDone) })
+}
+
 // Close stops everything and flushes state to disk.
 func (a *App) Close() {
 	a.once.Do(func() {
+		a.StopStreams()
+		a.spawnMu.Lock()
+		a.stopping = true
+		a.spawnMu.Unlock()
 		close(a.stop)
+		a.cancel()
 		a.mu.Lock()
 		for _, cancel := range a.monitors {
 			cancel()

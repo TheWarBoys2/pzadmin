@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"strconv"
@@ -101,7 +102,7 @@ func (a *App) runDueTasks(now time.Time, fired *fireLog) {
 		if !fired.claim(task.ID+"-run", now) {
 			continue
 		}
-		go a.runTask(task, srv)
+		a.spawn(func() { a.runTask(task, srv) })
 	}
 }
 
@@ -117,10 +118,13 @@ func serverByID(list []config.Server, id string) (config.Server, bool) {
 // runTask executes a job's steps in order and records the outcome, so the
 // schedules screen can show whether the last run actually worked.
 func (a *App) runTask(task config.Task, srv config.Server) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	ctx, cancel := context.WithTimeout(a.ctx, 30*time.Minute)
 	defer cancel()
 
 	results, err := a.executeSteps(ctx, task, srv)
+	if err != nil && a.ctx.Err() != nil {
+		err = errors.New("stopped because PZAdmin was shutting down")
+	}
 	outcome := strings.Join(results, "; ")
 	sev := store.SevInfo
 	if err != nil {

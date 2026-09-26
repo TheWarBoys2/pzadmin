@@ -133,19 +133,10 @@ func (a *App) handleStackDeploy(w http.ResponseWriter, r *http.Request) {
 		ServerID: srv.ID, Server: srv.Name, Message: "Deploying " + srv.Name,
 		Detail: "docker compose up -d through Arcane."})
 
-	a.wg.Add(1)
-	go func() {
-		defer a.wg.Done()
+	started := a.spawn(func() {
 		defer a.updateStatus(srv.ID, func(st *Status) { st.Deploying = false })
-		ctx, cancel := context.WithTimeout(context.Background(), deployTimeout)
+		ctx, cancel := context.WithTimeout(a.ctx, deployTimeout)
 		defer cancel()
-		go func() {
-			select {
-			case <-a.stop:
-				cancel()
-			case <-ctx.Done():
-			}
-		}()
 
 		project, err := a.findProject(ctx, srv)
 		output := ""
@@ -171,7 +162,12 @@ func (a *App) handleStackDeploy(w http.ResponseWriter, r *http.Request) {
 			ServerID: srv.ID, Server: srv.Name, Message: srv.Name + " deployed",
 			Detail: "Compose finished. The server is starting; a first start downloads the game and mods." +
 				tailNote(output)})
-	}()
+	})
+	if !started {
+		a.updateStatus(srv.ID, func(st *Status) { st.Deploying = false })
+		httpError(w, http.StatusServiceUnavailable, "PZAdmin is shutting down")
+		return
+	}
 
 	ok(w, map[string]any{"message": "Deploying " + srv.Name + " through Arcane. The result appears in Activity."})
 }

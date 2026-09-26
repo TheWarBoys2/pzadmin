@@ -315,7 +315,7 @@ func TestAPIv1StreamEndsWhenKeyIsRevoked(t *testing.T) {
 		t.Fatalf("the stream should open with status, got %q", buf[:n])
 	}
 
-	app.keys.revoke(id)
+	_, _, _ = app.keys.revoke(id)
 	done := make(chan struct{})
 	go func() {
 		for {

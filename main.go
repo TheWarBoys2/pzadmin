@@ -117,6 +117,12 @@ func main() {
 		IdleTimeout: 120 * time.Second,
 	}
 
+	// Open event streams never finish on their own, and Shutdown waits for
+	// every handler, so end them the moment shutdown starts. Otherwise one
+	// open browser tab holds shutdown past Docker's stop timeout and the
+	// final save never runs.
+	srv.RegisterOnShutdown(app.StopStreams)
+
 	go func() {
 		log.Printf("version %s listening on %s (data %s, timezone %s)",
 			server.Version, addr, dataDir, time.Now().Format("MST-0700"))

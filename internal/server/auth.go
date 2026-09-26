@@ -4,13 +4,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"log"
 	"net/http"
-	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/TheWarBoys2/pzadmin/internal/config"
+	"github.com/TheWarBoys2/pzadmin/internal/fsutil"
 )
 
 const (
@@ -40,11 +40,16 @@ type sessionStore struct {
 	mu   sync.RWMutex
 	path string
 	byID map[string]*session // keyed by token hash
+	// saveMu is held from snapshot to rename, so an older snapshot can never
+	// be written over a newer one and bring back a signed-out session.
+	saveMu sync.Mutex
+	// loadErr is set when sessions.json could not be read at start.
+	loadErr error
 }
 
 func newSessionStore(path string) *sessionStore {
 	s := &sessionStore{path: path, byID: map[string]*session{}}
-	s.load()
+	s.loadErr = s.load()
 	return s
 }
 
@@ -144,33 +149,29 @@ func (s *sessionStore) list() []session {
 }
 
 func (s *sessionStore) save() {
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+	// Marshal under the lock: lookup updates LastSeen in place.
 	s.mu.RLock()
 	list := make([]*session, 0, len(s.byID))
 	for _, v := range s.byID {
 		list = append(list, v)
 	}
-	s.mu.RUnlock()
 	b, err := json.Marshal(list)
+	s.mu.RUnlock()
+	if err == nil {
+		err = fsutil.WriteFile(s.path, b, 0o600)
+	}
 	if err != nil {
-		return
-	}
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
-		return
-	}
-	tmp := s.path + ".tmp"
-	if os.WriteFile(tmp, b, 0o600) == nil {
-		_ = os.Rename(tmp, s.path)
+		log.Printf("saving sessions: %v", err)
 	}
 }
 
-func (s *sessionStore) load() {
-	b, err := os.ReadFile(s.path)
-	if err != nil {
-		return
-	}
+func (s *sessionStore) load() error {
 	var list []*session
-	if json.Unmarshal(b, &list) != nil {
-		return
+	if _, err := fsutil.ReadJSON(s.path, &list); err != nil {
+		log.Printf("sessions: %v", err)
+		return err
 	}
 	now := time.Now()
 	for _, v := range list {
@@ -178,6 +179,7 @@ func (s *sessionStore) load() {
 			s.byID[v.TokenHash] = v
 		}
 	}
+	return nil
 }
 
 // --- login rate limiting ----------------------------------------------------

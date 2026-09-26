@@ -8,12 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/TheWarBoys2/pzadmin/internal/config"
+	"github.com/TheWarBoys2/pzadmin/internal/fsutil"
 	"github.com/TheWarBoys2/pzadmin/internal/notify"
 )
 
@@ -55,13 +55,11 @@ type liveBoard struct {
 
 func loadLiveBoard(path string) *liveBoard {
 	b := &liveBoard{path: path, Cards: map[string]map[string]*liveCard{}, backoff: map[string]time.Time{}}
-	if data, err := os.ReadFile(path); err == nil {
-		if err := json.Unmarshal(data, b); err != nil {
-			log.Printf("live status: ignoring unreadable %s: %v", path, err)
-		}
-		if b.Cards == nil {
-			b.Cards = map[string]map[string]*liveCard{}
-		}
+	if _, err := fsutil.ReadJSON(path, b); err != nil {
+		log.Printf("live status: %v", err)
+	}
+	if b.Cards == nil {
+		b.Cards = map[string]map[string]*liveCard{}
 	}
 	return b
 }
@@ -73,12 +71,7 @@ func (b *liveBoard) save() {
 	if err != nil {
 		return
 	}
-	tmp := b.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		log.Printf("live status: %v", err)
-		return
-	}
-	if err := os.Rename(tmp, b.path); err != nil {
+	if err := fsutil.WriteFile(b.path, data, 0o600); err != nil {
 		log.Printf("live status: %v", err)
 	}
 }

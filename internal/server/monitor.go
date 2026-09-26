@@ -57,11 +57,13 @@ func (a *App) syncMonitors() {
 		if _, running := a.monitors[id]; running {
 			continue
 		}
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(a.ctx)
+		if !a.spawn(func() { a.monitorServer(ctx, id) }) {
+			cancel()
+			continue
+		}
 		a.monitors[id] = cancel
 		toStart = append(toStart, s)
-		go a.monitorServer(ctx, id)
-		_ = ctx
 	}
 	// Prune status for servers that no longer exist.
 	for id := range a.status {

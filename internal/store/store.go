@@ -12,12 +12,15 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/TheWarBoys2/pzadmin/internal/fsutil"
 )
 
 // Severity classifies an event for display and filtering.
@@ -91,6 +94,8 @@ type Store struct {
 	writeMu      sync.Mutex
 	playersDirty bool
 	lastFlush    time.Time
+	// loadErr is set when players.json could not be read at start.
+	loadErr error
 
 	subMu sync.Mutex
 	subs  map[int]chan Event
@@ -101,6 +106,10 @@ const (
 	maxRecentEvents = 1000
 	maxSamples      = 20000 // roughly a week of one-minute samples for four servers
 )
+
+// LoadError reports a player registry that could not be read at start. The
+// file has been moved aside and the registry started empty.
+func (s *Store) LoadError() error { return s.loadErr }
 
 // Open prepares the store, loading the player registry and recent history.
 func Open(dir string, retainDays int) (*Store, error) {
@@ -525,12 +534,10 @@ func (s *Store) ForgetServer(serverID string) {
 func (s *Store) playersPath() string { return filepath.Join(s.dir, "players.json") }
 
 func (s *Store) loadPlayers() {
-	b, err := os.ReadFile(s.playersPath())
-	if err != nil {
-		return
-	}
 	var list []Player
-	if json.Unmarshal(b, &list) != nil {
+	if _, err := fsutil.ReadJSON(s.playersPath(), &list); err != nil {
+		log.Printf("player history: %v", err)
+		s.loadErr = err
 		return
 	}
 	for i := range list {
@@ -550,15 +557,16 @@ func (s *Store) savePlayersLocked() {
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].Name < list[j].Name })
 	b, err := json.MarshalIndent(list, "", " ")
+	if err == nil {
+		err = fsutil.WriteFile(s.playersPath(), b, 0o600)
+	}
+	s.lastFlush = time.Now()
 	if err != nil {
+		// Leave the registry dirty so the next flush tries again.
+		log.Printf("saving player history: %v", err)
 		return
 	}
-	tmp := s.playersPath() + ".tmp"
-	if os.WriteFile(tmp, b, 0o644) == nil {
-		_ = os.Rename(tmp, s.playersPath())
-	}
 	s.playersDirty = false
-	s.lastFlush = time.Now()
 }
 
 // Flush writes the player registry if it has pending changes.

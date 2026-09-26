@@ -3,14 +3,15 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 
 	"github.com/TheWarBoys2/pzadmin/internal/config"
+	"github.com/TheWarBoys2/pzadmin/internal/fsutil"
 	"github.com/TheWarBoys2/pzadmin/internal/pz"
 	"github.com/TheWarBoys2/pzadmin/internal/store"
 )
@@ -57,8 +58,9 @@ type customCatalogue struct {
 
 func loadCustomCatalogue(path string) *customCatalogue {
 	c := &customCatalogue{path: path}
-	if b, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(b, c)
+	if _, err := fsutil.ReadJSON(path, c); err != nil {
+		log.Printf("catalogue: %v", err)
+		c.Entries = nil
 	}
 	return c
 }
@@ -127,18 +129,11 @@ func (c *customCatalogue) remove(id, kind string) error {
 }
 
 func (c *customCatalogue) saveLocked() error {
-	if err := os.MkdirAll(filepath.Dir(c.path), 0o700); err != nil {
-		return err
-	}
 	b, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := c.path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, c.path)
+	return fsutil.WriteFile(c.path, b, 0o600)
 }
 
 // catalogueFor builds the merged catalogue for one server.
