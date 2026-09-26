@@ -237,10 +237,11 @@ Each channel can then send with the bot, and you pick the channel from a list. M
 bot's own name and picture. PZAdmin never keeps a connection to Discord open: it only brings a new bot online once
 when you connect it, because Discord won't let a bot post before it has been online.
 
-**Status dot in the channel name.** With the bot connected, a server's own channel can show 🟢 or 🔴 in front of
-its name. This works whether the channel sends with a webhook or the bot, as long as the bot has Manage Channels
-there. Discord only allows two renames per channel every ten minutes, so the dot follows the server's settled state:
-a restart you started leaves it alone, and a change has to last a minute and a half before it shows. The status
+**Status dot in the channel name.** With the bot connected, a server's own channel can show 🟢 (up), 🟠 (restarting)
+or 🔴 (down) in front of its name. This works whether the channel sends with a webhook or the bot, as long as the bot
+has Manage Channels there. Discord only allows two renames per channel every ten minutes. A restart or deploy
+PZAdmin does shows 🟠 straight away and 🟢 once the server answers again, which uses both. An outage or recovery has to
+last a minute and a half before it shows, so a short blip doesn't spend a rename. The status
 message and announcements carry the detail. Turn the dot off and the channel gets its plain name back.
 
 **Staff and shared channels** cover several servers at once: a staff channel gets outages, watchdog restarts, failed

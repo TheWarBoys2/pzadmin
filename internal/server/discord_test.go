@@ -659,21 +659,26 @@ func TestChannelNameFollowsSettledState(t *testing.T) {
 		t.Fatalf("got %q", name)
 	}
 
-	// A restart PZAdmin asked for does not touch the name.
+	// A restart PZAdmin asked for shows orange straight away, and green as
+	// soon as it is back. That spends the two renames.
+	now = now.Add(renameWindow)
 	app.markRestarting("a", "scheduled job")
 	set(func(st *Status) { st.Online = false })
-	sync(time.Minute)
+	if name, _ := sync(0); name != "🟠-riverside" {
+		t.Fatalf("a restart should show orange, got %q", name)
+	}
 	app.clearRestarting("a")
 	set(func(st *Status) { st.Online = true })
-	if name, n := sync(time.Minute); name != "🟢-riverside" || n != 1 {
-		t.Fatalf("a restart should leave the name alone: %q after %d renames", name, n)
+	if name, n := sync(30 * time.Second); name != "🟢-riverside" || n != 3 {
+		t.Fatalf("the end of a restart should show green: %q after %d renames", name, n)
 	}
+	now = now.Add(renameWindow)
 
 	// A blip shorter than the settle time does not either.
 	set(func(st *Status) { st.Online = false })
 	sync(30 * time.Second)
 	set(func(st *Status) { st.Online = true })
-	if name, n := sync(30 * time.Second); name != "🟢-riverside" || n != 1 {
+	if name, n := sync(30 * time.Second); name != "🟢-riverside" || n != 3 {
 		t.Fatalf("a short blip should not rename: %q %d", name, n)
 	}
 
@@ -690,7 +695,7 @@ func TestChannelNameFollowsSettledState(t *testing.T) {
 	if name, _ := sync(dotSettle); name != "🔴-riverside" {
 		t.Fatalf("the rate limit should hold the name, got %q", name)
 	}
-	if name, n := sync(renameWindow); name != "🟢-riverside" || n != 3 {
+	if name, n := sync(renameWindow); name != "🟢-riverside" || n != 5 {
 		t.Fatalf("once allowed, the name should catch up: %q %d", name, n)
 	}
 

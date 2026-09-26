@@ -4065,7 +4065,7 @@ function discordBot() {
       connected ? el('span', { class: 'pill on', text: 'Connected as ' + (bot.name || 'a bot') }) : null),
     el('div', { class: 'panel-body' }, el('div', { class: 'form' },
       el('p', { class: 'muted', text: 'Webhooks need no bot. A bot lets you pick channels from a list instead of '
-        + 'pasting a webhook for each, and can show \ud83d\udfe2 or \ud83d\udd34 in a server\u2019s channel name. '
+        + 'pasting a webhook for each, and can show \ud83d\udfe2, \ud83d\udfe0 or \ud83d\udd34 in a server\u2019s channel name. '
         + 'An existing bot works too.' }),
       connected ? null : el('ol', { class: 'hint steps' },
         el('li', { text: 'At discord.com/developers, New Application, then Bot, Reset Token, and copy it.' }),
@@ -4465,11 +4465,11 @@ function webhookChannelDot(hook) {
   const box = el('input', { type: 'checkbox', checked: !!hook.renameChannel, disabled: !hasBot && !hook.renameChannel });
   box.addEventListener('change', () => { hook.renameChannel = box.checked; });
   return el('label', { class: 'check' }, box, el('span', null,
-    el('span', { text: 'Show \ud83d\udfe2 / \ud83d\udd34 in the channel\u2019s name' }),
+    el('span', { text: 'Show \ud83d\udfe2 / \ud83d\udfe0 / \ud83d\udd34 in the channel\u2019s name' }),
     el('span', { class: 'hint', text: hasBot
       ? 'Needs Manage Channels for the bot on this channel. Discord allows two renames every ten minutes, so the '
-        + 'dot follows the server\u2019s settled state: a restart leaves it alone, and a change has to last a '
-        + 'minute and a half before it shows.'
+        + 'dot shows \ud83d\udfe0 straight away for a restart PZAdmin does and \ud83d\udfe2 once it is back, while '
+        + 'an outage or recovery has to last a minute and a half before it shows.'
       : 'Needs the bot: a webhook cannot rename a channel. Connect one on the Discord page.' })));
 }
 
