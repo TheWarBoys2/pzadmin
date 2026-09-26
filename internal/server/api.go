@@ -73,7 +73,7 @@ func (a *App) handleSetup(w http.ResponseWriter, r *http.Request) {
 		Password  string `json:"password"`
 		Timezone  string `json:"timezone"`
 	}
-	if !decodeJSON(w, r, &p) {
+	if !decodeJSONLimit(w, r, &p, smallBody) {
 		return
 	}
 	if a.cfg.Get().SetupComplete {
@@ -155,17 +155,27 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ip := clientIP(r)
-	if allowed, wait := a.limiter.allow(ip); !allowed {
+	allowed, wait := a.limiter.allow(ip)
+	if allowed {
+		allowed, wait = a.accountLimit.allow(accountKey)
+	}
+	if !allowed {
 		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
 		httpError(w, http.StatusTooManyRequests,
 			fmt.Sprintf("too many failed attempts, try again in %ds", int(wait.Seconds())+1))
 		return
 	}
 	var p struct{ Username, Password string }
-	if !decodeJSON(w, r, &p) {
+	if !decodeJSONLimit(w, r, &p, smallBody) {
 		return
 	}
 
+	select {
+	case a.hashSlots <- struct{}{}:
+		defer func() { <-a.hashSlots }()
+	case <-r.Context().Done():
+		return
+	}
 	cfg := a.cfg.Get()
 	userOK := strings.EqualFold(strings.TrimSpace(p.Username), cfg.Username)
 	// The hash is computed either way so a wrong username and a wrong password
@@ -173,6 +183,7 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	passOK := config.VerifyPassword(p.Password, cfg.PasswordSalt, cfg.PasswordHash, cfg.PasswordIter)
 	if !cfg.SetupComplete || !userOK || !passOK {
 		a.limiter.fail(ip)
+		a.accountLimit.fail(accountKey)
 		a.store.Append(store.Event{Kind: "auth.failed", Severity: store.SevWarn, Source: "ui",
 			Message: "Failed sign-in attempt", Detail: "from " + ip})
 		httpError(w, http.StatusUnauthorized, "incorrect username or password")
@@ -180,6 +191,7 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.limiter.succeed(ip)
+	a.accountLimit.succeed(accountKey)
 	token, sess := a.sess.create(cfg.Username, ip, r.UserAgent())
 	setSessionCookies(w, r, token, sess)
 	a.store.Append(store.Event{Kind: "auth.login", Severity: store.SevInfo, Source: "ui",

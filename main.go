@@ -95,6 +95,8 @@ func main() {
 		ArcaneURL:    env("PZADMIN_ARCANE_URL", ""),
 		ArcaneEnvID:  env("PZADMIN_ARCANE_ENV_ID", ""),
 		ArcaneAPIKey: env("PZADMIN_ARCANE_API_KEY", ""),
+
+		TrustedProxies: env("PZADMIN_TRUSTED_PROXIES", ""),
 	})
 	if err != nil {
 		log.Fatalf("startup failed: %v", err)
@@ -105,6 +107,11 @@ func main() {
 		Addr:              addr,
 		Handler:           app.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		// ReadTimeout covers reading the request, body included, so a client
+		// cannot hold a connection open by sending its body a byte at a time.
+		// It does not limit the response, so the event streams are unaffected:
+		// net/http clears the read deadline once the body has been read.
+		ReadTimeout: 60 * time.Second,
 		// No WriteTimeout: the event stream is a long-lived response and any
 		// deadline here would cut it off mid-flight.
 		IdleTimeout: 120 * time.Second,

@@ -4,11 +4,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -189,6 +187,10 @@ func (s *sessionStore) load() {
 type loginLimiter struct {
 	mu       sync.Mutex
 	failures map[string]*failureRecord
+	// free is how many failures pass before any delay; maxDelay caps the
+	// back-off.
+	free     int
+	maxDelay time.Duration
 }
 
 type failureRecord struct {
@@ -197,8 +199,21 @@ type failureRecord struct {
 	last     time.Time
 }
 
+// newLoginLimiter limits one address: four free attempts, then 5s, 10s, 20s
+// and so on, up to five minutes.
 func newLoginLimiter() *loginLimiter {
-	return &loginLimiter{failures: map[string]*failureRecord{}}
+	return &loginLimiter{failures: map[string]*failureRecord{}, free: 4, maxDelay: 5 * time.Minute}
+}
+
+// accountKey is the single key the account-wide limiter counts under.
+const accountKey = "*"
+
+// newAccountLimiter limits sign-in attempts from everywhere at once, so
+// guesses spread over many addresses are slowed as well. It is generous and
+// its delay is short, because anyone can trip it: it has to slow a botnet
+// without locking the real administrator out for long.
+func newAccountLimiter() *loginLimiter {
+	return &loginLimiter{failures: map[string]*failureRecord{}, free: 20, maxDelay: 30 * time.Second}
 }
 
 // allow reports whether an attempt may proceed, and how long to wait if not.
@@ -230,11 +245,12 @@ func (l *loginLimiter) fail(ip string) {
 	}
 	r.count++
 	r.last = time.Now()
-	// The first four attempts are free; then back off 5s, 10s, 20s ... 5 min.
-	if r.count > 4 {
-		delay := time.Duration(1<<uint(min(r.count-5, 6))) * 5 * time.Second
-		if delay > 5*time.Minute {
-			delay = 5 * time.Minute
+	// The first few attempts are free; then back off 5s, 10s, 20s ... up to
+	// the cap.
+	if r.count > l.free {
+		delay := time.Duration(1<<uint(min(r.count-l.free-1, 6))) * 5 * time.Second
+		if delay > l.maxDelay {
+			delay = l.maxDelay
 		}
 		r.lockedTo = time.Now().Add(delay)
 	}
@@ -253,38 +269,7 @@ func (l *loginLimiter) succeed(ip string) {
 	l.mu.Unlock()
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 // --- request helpers --------------------------------------------------------
-
-func clientIP(r *http.Request) string {
-	// Trust a forwarding header only when it is present; PZAdmin is expected to
-	// sit behind the operator's own reverse proxy on a private network.
-	if v := r.Header.Get("X-Forwarded-For"); v != "" {
-		parts := strings.Split(v, ",")
-		return strings.TrimSpace(parts[0])
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
-}
-
-// requestIsSecure reports whether the browser reached us over TLS, so the
-// session cookie can carry the Secure flag when it is meaningful and omit it on
-// plain-HTTP LAN access where it would break login entirely.
-func requestIsSecure(r *http.Request) bool {
-	if r.TLS != nil {
-		return true
-	}
-	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
-}
 
 func setSessionCookies(w http.ResponseWriter, r *http.Request, token string, sess *session) {
 	secure := requestIsSecure(r)

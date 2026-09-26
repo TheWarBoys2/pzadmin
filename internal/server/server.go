@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -123,6 +124,13 @@ type App struct {
 	// modRequests are mods asked for through the API, waiting for approval.
 	modRequests *modRequestStore
 	limiter     *loginLimiter
+	// accountLimit slows sign-in guesses from all addresses together.
+	accountLimit *loginLimiter
+	// hashSlots bounds how many sign-in password hashes run at once. Each is
+	// 600,000 rounds of PBKDF2, and they share the CPU with the game servers.
+	hashSlots chan struct{}
+	// proxies says which forwarding headers to believe; see proxy.go.
+	proxies proxyTrust
 	// setupCode is the one-time code the first-run setup form asks for. It is
 	// printed to the log at start and never sent to a browser, so only someone
 	// who can read the container's log can claim a fresh install. Empty once
@@ -176,6 +184,10 @@ type Options struct {
 	// GameImage is the pinned image new stacks use, from PZADMIN_GAME_IMAGE.
 	GameImage string
 
+	// TrustedProxies is PZADMIN_TRUSTED_PROXIES: the reverse proxies whose
+	// X-Forwarded-For and X-Forwarded-Proto headers are believed.
+	TrustedProxies string
+
 	// SetupCode fixes the first-run setup code, for tests. Empty generates a
 	// random one.
 	SetupCode string
@@ -201,35 +213,40 @@ func New(opts Options) (*App, error) {
 	}
 
 	a := &App{
-		cfg:         cfgStore,
-		store:       st,
-		notify:      notify.New(),
-		backup:      pz.NewBackupper(filepath.Join(opts.DataDir, "backups")),
-		scanner:     pz.NewScanner(2 * time.Minute),
-		scripts:     pz.NewScriptScanner(30 * time.Minute),
-		custom:      loadCustomCatalogue(filepath.Join(opts.DataDir, "catalogue.json")),
-		sess:        newSessionStore(filepath.Join(opts.DataDir, "sessions.json")),
-		keys:        newAPIKeyStore(filepath.Join(opts.DataDir, "apikeys.json")),
-		modRequests: newModRequestStore(filepath.Join(opts.DataDir, "modrequests.json")),
-		apiLimit:    newRateLimiter(),
-		apiFail:     newLoginLimiter(),
-		limiter:     newLoginLimiter(),
-		assets:      opts.Assets,
-		dataDir:     opts.DataDir,
-		status:      map[string]*Status{},
-		clients:     map[string]*rcon.Client{},
-		tailers:     map[string]*pz.Tailer{},
-		monitors:    map[string]context.CancelFunc{},
-		caps:        map[string]*Capabilities{},
-		capTried:    map[string]time.Time{},
-		stop:        make(chan struct{}),
-		steamBase:   opts.SteamBase,
-		gameRoot:    strings.TrimSpace(opts.GameRoot),
-		rconHost:    strings.TrimSpace(opts.RCONHost),
-		gameImage:   strings.TrimSpace(opts.GameImage),
+		cfg:          cfgStore,
+		store:        st,
+		notify:       notify.New(),
+		backup:       pz.NewBackupper(filepath.Join(opts.DataDir, "backups")),
+		scanner:      pz.NewScanner(2 * time.Minute),
+		scripts:      pz.NewScriptScanner(30 * time.Minute),
+		custom:       loadCustomCatalogue(filepath.Join(opts.DataDir, "catalogue.json")),
+		sess:         newSessionStore(filepath.Join(opts.DataDir, "sessions.json")),
+		keys:         newAPIKeyStore(filepath.Join(opts.DataDir, "apikeys.json")),
+		modRequests:  newModRequestStore(filepath.Join(opts.DataDir, "modrequests.json")),
+		apiLimit:     newRateLimiter(),
+		apiFail:      newLoginLimiter(),
+		limiter:      newLoginLimiter(),
+		accountLimit: newAccountLimiter(),
+		hashSlots:    make(chan struct{}, 4),
+		assets:       opts.Assets,
+		dataDir:      opts.DataDir,
+		status:       map[string]*Status{},
+		clients:      map[string]*rcon.Client{},
+		tailers:      map[string]*pz.Tailer{},
+		monitors:     map[string]context.CancelFunc{},
+		caps:         map[string]*Capabilities{},
+		capTried:     map[string]time.Time{},
+		stop:         make(chan struct{}),
+		steamBase:    opts.SteamBase,
+		gameRoot:     strings.TrimSpace(opts.GameRoot),
+		rconHost:     strings.TrimSpace(opts.RCONHost),
+		gameImage:    strings.TrimSpace(opts.GameImage),
 	}
 	if a.rconHost == "" {
 		a.rconHost = "host.docker.internal"
+	}
+	if a.proxies, err = parseTrustedProxies(opts.TrustedProxies); err != nil {
+		return nil, err
 	}
 	if !cfg.SetupComplete {
 		a.setupCode = opts.SetupCode
@@ -535,7 +552,7 @@ func (a *App) Handler() http.Handler {
 	a.routeAPIv1(mux)
 
 	mux.HandleFunc("/", a.handleStatic)
-	return securityHeaders(a.logRequests(mux))
+	return securityHeaders(a.withClient(a.logRequests(mux)))
 }
 
 // auth wraps a handler with session and CSRF checks.
@@ -564,7 +581,7 @@ func (a *App) auth(next http.HandlerFunc, mutating bool) http.Handler {
 		if mutating {
 			// Double-submit CSRF: an attacker on another origin can make the
 			// browser send the cookie, but cannot read it to set the header.
-			if r.Header.Get(csrfHeader) != sess.CSRF {
+			if subtle.ConstantTimeCompare([]byte(r.Header.Get(csrfHeader)), []byte(sess.CSRF)) != 1 {
 				httpError(w, http.StatusForbidden, "security token mismatch, reload the page")
 				return
 			}
@@ -715,8 +732,15 @@ func httpError(w http.ResponseWriter, code int, msg string) {
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	return decodeJSONLimit(w, r, dst, 8<<20)
+}
+
+// smallBody is the most the unauthenticated sign-in and setup forms may send.
+const smallBody = 4 << 10
+
+func decodeJSONLimit(w http.ResponseWriter, r *http.Request, dst any, limit int64) bool {
 	defer r.Body.Close()
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<20))
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
 		httpError(w, http.StatusBadRequest, "could not read the request: "+err.Error())
