@@ -64,6 +64,21 @@ func deleteSetup(t *testing.T, f *containerFake) (*App, *client, string, string)
 	return app, c, stacksRoot, dataRoot
 }
 
+// stopMonitors ends every server monitor and waits for them to finish, so a
+// test can set a server's status without a probe overwriting it.
+func stopMonitors(t *testing.T, app *App) {
+	t.Helper()
+	app.mu.Lock()
+	for id, cancel := range app.monitors {
+		cancel()
+		delete(app.monitors, id)
+	}
+	app.mu.Unlock()
+	if !waitTimeout(&app.wg, 10*time.Second) {
+		t.Fatal("the monitors did not stop")
+	}
+}
+
 func TestDeleteMovesTheStackAndKeepsTheWorldByDefault(t *testing.T) {
 	f := &containerFake{exists: true}
 	app, c, stacksRoot, dataRoot := deleteSetup(t, f)
@@ -120,8 +135,13 @@ func TestDeleteRefusesARunningServer(t *testing.T) {
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Stop it first") {
 		t.Fatalf("%d %s", rec.Code, rec.Body.String())
 	}
+	// The monitor's first probe gets no RCON answer and would mark the server
+	// offline, so stop it before pretending the game is answering.
+	stopMonitors(t, app)
 	app.updateStatus("doomed", func(st *Status) { st.Online = true })
+	f.mu.Lock()
 	f.running = false
+	f.mu.Unlock()
 	rec = c.do(http.MethodPost, "/api/server/destroy", map[string]any{"id": "doomed", "confirm": "doomed"})
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("a server answering RCON must not be deleted: %d", rec.Code)
