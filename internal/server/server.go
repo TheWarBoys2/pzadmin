@@ -207,6 +207,10 @@ type Options struct {
 	// GameImage is the pinned image new stacks use, from PZADMIN_GAME_IMAGE.
 	GameImage string
 
+	// BackupDir is where archives are kept, from PZADMIN_BACKUP_DIR. Empty
+	// means a backups folder inside DataDir.
+	BackupDir string
+
 	// TrustedProxies is PZADMIN_TRUSTED_PROXIES: the reverse proxies whose
 	// X-Forwarded-For and X-Forwarded-Proto headers are believed.
 	TrustedProxies string
@@ -239,7 +243,7 @@ func New(opts Options) (*App, error) {
 		cfg:          cfgStore,
 		store:        st,
 		notify:       notify.New(),
-		backup:       pz.NewBackupper(filepath.Join(opts.DataDir, "backups")),
+		backup:       pz.NewBackupper(firstNonBlank(opts.BackupDir, filepath.Join(opts.DataDir, "backups"))),
 		scanner:      pz.NewScanner(2 * time.Minute),
 		scripts:      pz.NewScriptScanner(30 * time.Minute),
 		custom:       loadCustomCatalogue(filepath.Join(opts.DataDir, "catalogue.json")),
@@ -333,6 +337,13 @@ func (a *App) Start() {
 			a.event(store.Event{Kind: "system.error", Severity: store.SevError, Source: "system",
 				Message: "A PZAdmin data file was unreadable", Detail: err.Error()})
 		}
+	}
+	a.prepareBackupDir()
+	if !a.arcane.Configured() {
+		log.Printf("Arcane is not set up (PZADMIN_ARCANE_URL, PZADMIN_ARCANE_ENV_ID and PZADMIN_ARCANE_API_KEY). " +
+			"Without it, start, stop, deploy, creating and deleting servers, container logs and the " +
+			"watchdog's automatic restart of a frozen server are unavailable. Status over RCON, restarts, " +
+			"mods, settings, players, the console, backups and schedules all work without it.")
 	}
 	if code := a.pendingSetupCode(); code != "" {
 		log.Printf("first-time setup: open PZAdmin in your browser and enter this setup code: %s", code)

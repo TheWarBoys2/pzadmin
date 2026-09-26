@@ -18,10 +18,13 @@ func TestComposeNeedsNoEnvFile(t *testing.T) {
 	if strings.Contains(compose, "${") || strings.Contains(compose, "env_file") {
 		t.Error("docker-compose.yml must work without a .env file")
 	}
-	for _, want := range []string{"image: ghcr.io/thewarboys2/pzadmin:latest", "pull_policy: always"} {
-		if !strings.Contains(compose, want) {
-			t.Errorf("docker-compose.yml is missing %q", want)
-		}
+	if !strings.Contains(compose, "image: ghcr.io/thewarboys2/pzadmin:latest") {
+		t.Error("docker-compose.yml should run the published image")
+	}
+	// Updating is a choice the operator makes with docker compose pull, not
+	// something that happens on every up -d.
+	if strings.Contains(compose, "pull_policy: always") {
+		t.Error("docker-compose.yml should not pull on every start")
 	}
 	if strings.Contains(compose, "build:") {
 		t.Error("docker-compose.yml runs the published image; building belongs in docker-compose.dev.yml")
@@ -69,6 +72,17 @@ func TestManagedFoldersAreMountedAtTheSamePath(t *testing.T) {
 	}
 	if !strings.Contains(compose, "host.docker.internal:host-gateway") {
 		t.Error("RCON on the host is unreachable without the host-gateway mapping")
+	}
+}
+
+// Backups are plain files in a folder next to the compose file, so they can
+// be copied off the machine and survive removing PZAdmin's volume.
+func TestBackupsAreBindMounted(t *testing.T) {
+	compose := readOrSkip(t, composeFile)
+	for _, want := range []string{"- ./backups:/backups", "PZADMIN_BACKUP_DIR: /backups", "mkdir backups"} {
+		if !strings.Contains(compose, want) {
+			t.Errorf("compose file is missing %q", want)
+		}
 	}
 }
 

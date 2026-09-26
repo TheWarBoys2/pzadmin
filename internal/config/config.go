@@ -323,7 +323,7 @@ var DefaultPlayerEvents = []string{"server.restart", "server.up"}
 // Defaults returns a Config suitable for a brand new installation.
 func Defaults() Config {
 	return Config{
-		Version:      9,
+		Version:      SchemaVersion,
 		PZRoot:       "/srv/zomboid",
 		Timezone:     "UTC",
 		PasswordIter: pbkdf2Iterations,
@@ -384,6 +384,11 @@ func withMetricsToken(c Config) Config {
 	}
 	return c
 }
+
+// SchemaVersion is written into config.json so a future release can tell
+// which layout it is reading. Bump it when the layout changes in a way that
+// needs migrating.
+const SchemaVersion = 9
 
 // Normalise fills in zero values that would otherwise break behaviour.
 func Normalise(c Config) Config {
@@ -451,7 +456,7 @@ func Normalise(c Config) Config {
 			s.Mods.RestartDelayMinutes = 10
 		}
 	}
-	c.Version = 8
+	c.Version = SchemaVersion
 	return c
 }
 

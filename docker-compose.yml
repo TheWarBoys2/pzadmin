@@ -1,11 +1,11 @@
-# PZAdmin. Copy this file into an empty folder on the server, change the
-# lines marked CHANGE, then run:  docker compose up -d
-# Open http://<host>:27815 and create the admin account.
+# PZAdmin. Put this file in an empty folder on the server, change the lines
+# marked CHANGE, then in that folder run:
+#   mkdir backups && docker compose up -d
+# Open http://<host>:27815 and enter the setup code from: docker logs pzadmin
 
 services:
   pzadmin:
-    image: ghcr.io/thewarboys2/pzadmin:latest
-    pull_policy: always          # every "docker compose up -d" gets the newest build
+    image: ghcr.io/thewarboys2/pzadmin:latest   # update: docker compose pull && docker compose up -d
     container_name: pzadmin
     restart: unless-stopped
     user: "1000:1000"            # CHANGE if needed: must own your server folders (id -u, id -g)
@@ -14,19 +14,29 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"   # reaches each server's RCON port on the host
     volumes:
-      - pzadmin-data:/data
+      - pzadmin-data:/data       # settings, accounts, history
+      - ./backups:/backups       # world backups, as plain files next to this compose file
       # CHANGE: your two server folders. Same path on both sides of the colon.
       - /srv/zomboid:/srv/zomboid
       - /home/youruser/docker/pzserver:/home/youruser/docker/pzserver
     environment:
       PZADMIN_DATA_ROOT: /srv/zomboid                     # CHANGE: same as above
       PZADMIN_STACKS_ROOT: /home/youruser/docker/pzserver # CHANGE: same as above
+      PZADMIN_BACKUP_DIR: /backups
       PZADMIN_ARCANE_URL: http://host.docker.internal:3552 # CHANGE if Arcane is on another machine
       PZADMIN_ARCANE_ENV_ID: "0"
       PZADMIN_ARCANE_API_KEY: your-arcane-api-key         # CHANGE
-      TZ: Europe/London
-      # Optional: the pinned game image new servers are created with.
-      # PZADMIN_GAME_IMAGE: indifferentbroccoli/projectzomboid-server-docker@sha256:...
+      TZ: Europe/London          # times in the container log; schedules use the timezone set in PZAdmin
+      # Optional: the game image new servers are created with. Leave it out to
+      # use the version this PZAdmin release was tested with.
+      # PZADMIN_GAME_IMAGE: indifferentbroccoli/projectzomboid-server-docker:<tag>
+      # Optional: only if PZAdmin sits behind a reverse proxy. The proxy's
+      # address or network, so sign-in limits see real visitor addresses.
+      # PZADMIN_TRUSTED_PROXIES: 172.18.0.0/16
+    stop_grace_period: 30s       # time to finish saving on docker compose down
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]

@@ -92,6 +92,7 @@ func main() {
 		StacksRoot:   stacksRoot,
 		RCONHost:     env("PZADMIN_RCON_HOST", "host.docker.internal"),
 		GameImage:    env("PZADMIN_GAME_IMAGE", defaultGameImage),
+		BackupDir:    env("PZADMIN_BACKUP_DIR", ""),
 		ArcaneURL:    env("PZADMIN_ARCANE_URL", ""),
 		ArcaneEnvID:  env("PZADMIN_ARCANE_ENV_ID", ""),
 		ArcaneAPIKey: env("PZADMIN_ARCANE_API_KEY", ""),
