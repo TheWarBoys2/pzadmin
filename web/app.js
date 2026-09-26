@@ -4172,11 +4172,14 @@ function webhookRow(hook, index) {
       el('button', { class: 'btn small danger', type: 'button', text: 'Remove', onclick: () => removeWebhook(index) })));
 }
 
-// discordQuietHours sets a nightly window when scheduled jobs still run but
-// post nothing to Discord.
+// discordQuietHours sets a nightly window when routine restarts, scheduled,
+// asked for by hand, or both, post nothing to Discord.
 function discordQuietHours() {
   const quiet = ((S.state.config || {}).notify || {}).quietHours || {};
+  const fresh = !quiet.enabled && !quiet.scheduled && !quiet.manual;
   const enabled = el('input', { type: 'checkbox', checked: !!quiet.enabled });
+  const scheduled = el('input', { type: 'checkbox', checked: fresh || !!quiet.scheduled });
+  const manual = el('input', { type: 'checkbox', checked: !!quiet.manual });
   const start = el('input', { type: 'time', value: quiet.start || '23:00' });
   const end = el('input', { type: 'time', value: quiet.end || '08:00' });
   const save = el('button', { class: 'btn primary', type: 'button', text: 'Save' });
@@ -4184,7 +4187,8 @@ function discordQuietHours() {
     save.disabled = true;
     try {
       await api.post('/api/settings', { notify: { quietHours: {
-        enabled: enabled.checked, start: start.value, end: end.value,
+        enabled: enabled.checked, scheduled: scheduled.checked, manual: manual.checked,
+        start: start.value, end: end.value,
       } } });
       toast('Saved.', 'good');
       await refreshState();
@@ -4193,10 +4197,12 @@ function discordQuietHours() {
   return el('div', { class: 'panel' },
     el('div', { class: 'panel-head' }, el('h3', { text: 'Quiet hours' })),
     el('div', { class: 'panel-body' }, el('div', { class: 'form' },
-      el('label', { class: 'check' }, enabled, el('span', { text: 'Keep scheduled jobs quiet in Discord overnight' })),
-      el('p', { class: 'muted', text: 'Scheduled jobs still run, and players in game still see the countdown, but nothing about them is '
-        + 'posted to Discord: no restart or back-online announcements and no Discord steps. Crashes, outages, '
-        + 'failed backups and restarts done by hand still post.' }),
+      el('label', { class: 'check' }, enabled, el('span', { text: 'Keep Discord quiet overnight' })),
+      el('label', { class: 'check' }, scheduled, el('span', { text: 'Scheduled jobs' })),
+      el('label', { class: 'check' }, manual, el('span', { text: 'Restarts I do myself' })),
+      el('p', { class: 'muted', text: 'Ticked restarts still happen, and players in game still see any countdown, '
+        + 'but their restart and back-online posts are not sent. For scheduled jobs that also covers backups and '
+        + 'Discord steps. Crashes, outages and failed backups always post.' }),
       field('From', start, 'Times use ' + (S.state.timezone || 'UTC') + '. A window that ends earlier than it '
         + 'starts runs past midnight.'),
       field('Until', end),

@@ -332,5 +332,8 @@ func cleanQuietHours(q config.QuietHours) (config.QuietHours, error) {
 	if start == end {
 		return q, invalidf("quiet hours must start and end at different times")
 	}
+	if !q.Scheduled && !q.Manual {
+		return q, invalidf("choose what quiet hours keep quiet: scheduled jobs, your own restarts, or both")
+	}
 	return q, nil
 }

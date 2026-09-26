@@ -232,11 +232,15 @@ type Notify struct {
 	Events     []string `json:"events,omitempty"`
 }
 
-// QuietHours is a daily window, in the configured timezone, when scheduled
-// jobs post nothing to Discord: no restart or back-up-again announcements and
-// no Discord steps. Outages, crashes and restarts done by hand still post.
+// QuietHours is a daily window, in the configured timezone, when routine
+// restarts post nothing to Discord. Scheduled and Manual pick which: jobs
+// that run on a schedule (their restart and back-online posts, backups and
+// Discord steps), and restarts someone asks for from the dashboard or the
+// API. Outages, crashes and failed backups always post.
 type QuietHours struct {
-	Enabled bool `json:"enabled"`
+	Enabled   bool `json:"enabled"`
+	Scheduled bool `json:"scheduled"`
+	Manual    bool `json:"manual"`
 	// Start and End are "HH:MM". A window whose end is earlier than its start
 	// runs past midnight.
 	Start string `json:"start,omitempty"`
@@ -434,6 +438,10 @@ func Normalise(c Config) Config {
 	}
 	if c.Notify.MinIntervalSeconds <= 0 {
 		c.Notify.MinIntervalSeconds = d.Notify.MinIntervalSeconds
+	}
+	// Quiet hours saved before there was a choice only covered scheduled jobs.
+	if q := &c.Notify.QuietHours; q.Enabled && !q.Scheduled && !q.Manual {
+		q.Scheduled = true
 	}
 	if c.Servers == nil {
 		c.Servers = []Server{}
