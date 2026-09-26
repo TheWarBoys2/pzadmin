@@ -89,7 +89,7 @@ var iniMeta = map[string]meta{
 	"DefaultPort":              {group: "Network", help: "UDP game port. Players connect to this.", applies: AppliesOnRestart, typ: FieldInt, min: ptr(1), max: ptr(65535)},
 	"UDPPort":                  {group: "Network", help: "Companion UDP port, normally the game port plus one.", applies: AppliesOnRestart, typ: FieldInt, min: ptr(1), max: ptr(65535)},
 	"RCONPort":                 {group: "Network", help: "Port PZAdmin connects to. Changing this needs a restart, and you must update PZAdmin's server settings to match.", applies: AppliesOnRestart, typ: FieldInt, min: ptr(1), max: ptr(65535)},
-	"RCONPassword":             {group: "Network", help: "Password PZAdmin uses. Changing this needs a restart, and you must update PZAdmin's server settings to match.", applies: AppliesOnRestart, secret: true},
+	"RCONPassword":             {group: "Network", help: "Password PZAdmin uses to reach the server's console. It is hidden here and never shown in the browser.", applies: AppliesOnRestart, secret: true},
 	"ServerBrowserAnnouncedIP": {group: "Network", help: "Address advertised to the server browser. Leave blank to detect automatically.", applies: AppliesOnRestart},
 
 	// --- mods and world: startup only ---

@@ -49,6 +49,7 @@ func (a *App) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		"setupComplete":   cfg.SetupComplete,
 		"authenticated":   authed,
 		"version":         Version,
+		"build":           a.assetBuild,
 		"timezone":        cfg.Timezone,
 		"serverTime":      time.Now().Format(time.RFC3339),
 		"secureTransport": requestIsSecure(r),
@@ -287,7 +288,7 @@ func (a *App) snapshot() map[string]any {
 		"events":    a.store.Events("", "", 60),
 		"players":   a.store.Players(""),
 		// "docker" is kept for the current interface; "arcane" carries the detail.
-		"docker":     map[string]any{"available": arc["available"], "message": arc["message"]},
+		"docker":     map[string]any{"available": arc["available"], "message": arc["message"], "detail": arc["detail"]},
 		"arcane":     arc,
 		"storeStats": a.store.Stats(),
 		"version":    Version,
@@ -333,6 +334,11 @@ func (a *App) handleStream(w http.ResponseWriter, r *http.Request) {
 		return true
 	}
 
+	// The build comes first, so a tab that reconnects after an upgrade can
+	// tell it is running the previous version's code.
+	if !send("hello", map[string]any{"version": Version, "build": a.assetBuild}) {
+		return
+	}
 	if !send("status", a.allStatus()) {
 		return
 	}
@@ -944,6 +950,9 @@ func (a *App) handleConfigFiles(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if isServerINI(name) {
+		content = maskINISecrets(content)
+	}
 	writeJSON(w, map[string]any{"file": name, "content": content, "dir": layout.ConfigDir})
 }
 
@@ -982,11 +991,14 @@ func (a *App) handleConfigSave(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "no config directory was detected for this server")
 		return
 	}
+	old := ""
+	if b, err := os.ReadFile(filepath.Join(layout.ConfigDir, filepath.Base(p.File))); err == nil {
+		old = string(b)
+	}
+	if isServerINI(p.File) {
+		p.Content = unmaskINISecrets(p.Content, old)
+	}
 	if locked := a.lockedKeys(srv, p.File); len(locked) > 0 {
-		old := ""
-		if b, err := os.ReadFile(filepath.Join(layout.ConfigDir, filepath.Base(p.File))); err == nil {
-			old = string(b)
-		}
 		before, after := iniValues(old), iniValues(p.Content)
 		for key, reason := range locked {
 			if before[strings.ToLower(key)] != after[strings.ToLower(key)] {

@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -138,7 +140,11 @@ type App struct {
 	setupMu   sync.Mutex
 	setupCode string
 	assets    fs.FS
-	dataDir   string
+	// assetBuild is a hash of the embedded app.js and app.css. It versions
+	// their URLs, so a browser can cache them for good and still never run
+	// an old copy against a new server.
+	assetBuild string
+	dataDir    string
 
 	// apiLimit, apiFail, apiInflight and apiStreams throttle /api/v1; see
 	// apiv1.go.
@@ -267,6 +273,7 @@ func New(opts Options) (*App, error) {
 		return nil, err
 	}
 	a.ctx, a.cancel = context.WithCancel(context.Background())
+	a.assetBuild = assetHash(opts.Assets)
 	if !cfg.SetupComplete {
 		a.setupCode = opts.SetupCode
 		if a.setupCode == "" {
@@ -744,17 +751,53 @@ func (a *App) handleStatic(w http.ResponseWriter, r *http.Request) {
 	case ".html":
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
-	case ".css":
-		w.Header().Set("Content-Type", "text/css; charset=utf-8")
-		w.Header().Set("Cache-Control", "public, max-age=300")
-	case ".js":
-		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
-		w.Header().Set("Cache-Control", "public, max-age=300")
+		data = versionAssetURLs(data, a.assetBuild)
+	case ".css", ".js":
+		if filepath.Ext(name) == ".css" {
+			w.Header().Set("Content-Type", "text/css; charset=utf-8")
+		} else {
+			w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		}
+		// index.html asks for /app.js?v=<build>. That URL changes with every
+		// build, so it can be cached for good. Anything else is revalidated.
+		if v := r.URL.Query().Get("v"); v != "" && v == a.assetBuild {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		etag := `"` + a.assetBuild + `"`
+		w.Header().Set("ETag", etag)
+		if r.Header.Get("If-None-Match") == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
 	case ".svg":
 		w.Header().Set("Content-Type", "image/svg+xml")
 		w.Header().Set("Cache-Control", "public, max-age=86400")
 	}
 	_, _ = w.Write(data)
+}
+
+// assetHash fingerprints the app's script and stylesheet.
+func assetHash(assets fs.FS) string {
+	h := sha256.New()
+	for _, name := range []string{"app.js", "app.css"} {
+		if assets == nil {
+			break
+		}
+		if b, err := fs.ReadFile(assets, name); err == nil {
+			h.Write(b)
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil))[:12]
+}
+
+// versionAssetURLs points index.html at this build's script and stylesheet.
+func versionAssetURLs(html []byte, build string) []byte {
+	s := string(html)
+	s = strings.Replace(s, `href="/app.css"`, `href="/app.css?v=`+build+`"`, 1)
+	s = strings.Replace(s, `src="/app.js"`, `src="/app.js?v=`+build+`"`, 1)
+	return []byte(s)
 }
 
 // --- response helpers -------------------------------------------------------

@@ -172,6 +172,9 @@ func (c *Client) Configured() bool {
 // EnvironmentID returns the configured environment.
 func (c *Client) EnvironmentID() string { return c.env }
 
+// URL returns the Arcane address PZAdmin was given.
+func (c *Client) URL() string { return c.base }
+
 // Available reports whether Arcane answered an authenticated request
 // recently, refreshing at most every 15 seconds.
 //

@@ -177,7 +177,7 @@ func (a *App) catalogueFor(serverID string, refresh bool) (map[string]any, error
 		note = "PZAdmin cannot find this server's Project Zomboid installation, so this list only " +
 			"contains entries you added by hand. It looks for a media/scripts folder inside the " +
 			"server's own directory, which is where a per-server install normally sits. If yours " +
-			"is somewhere else, set the game files path in Settings."
+			"is somewhere else, set Game files in this server's Edit server dialog."
 	case gameRoot == "":
 		note = "Only mod items are listed: PZAdmin found this server's mods but not its media/scripts " +
 			"folder, so the vanilla items are missing. Set the game files path on the server if the " +

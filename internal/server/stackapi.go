@@ -258,19 +258,26 @@ func (a *App) stackPayload(res stacks.Result) map[string]any {
 // arcaneState describes container control for the interface.
 func (a *App) arcaneState() map[string]any {
 	up, err := a.arcane.Available()
-	msg := ""
+	msg, detail := "", ""
 	switch {
 	case errors.Is(err, arcane.ErrNotConfigured):
-		msg = "Arcane is not configured. Set PZADMIN_ARCANE_URL, PZADMIN_ARCANE_ENV_ID and " +
-			"PZADMIN_ARCANE_API_KEY. Restarts still work over RCON; start, stop, status and deploying need Arcane."
+		msg = "Arcane is not set up, so start, stop and deploy are off. Restarts, the console, mods, settings, " +
+			"backups and schedules all work without it. To add it, set PZADMIN_ARCANE_URL, " +
+			"PZADMIN_ARCANE_ENV_ID and PZADMIN_ARCANE_API_KEY in PZAdmin's docker-compose.yml."
 	case err != nil:
-		msg = "Arcane is unavailable: " + err.Error() + ". Restarts still work over RCON."
+		msg = "PZAdmin can't reach Arcane at " + a.arcane.URL() + ", so start, stop and deploy are off " +
+			"for now. Check that Arcane is running and the address and API key are right. Restarts still " +
+			"work over RCON."
+		// The raw error helps with a support question, but it is not the
+		// first thing to show.
+		detail = err.Error()
 	}
 	return map[string]any{
 		"configured":  a.arcane.Configured(),
 		"available":   up,
 		"environment": a.arcane.EnvironmentID(),
 		"message":     msg,
+		"detail":      detail,
 	}
 }
 
