@@ -69,16 +69,13 @@ func main() {
 	}
 	// A read-only or unwritable data directory is the single most common
 	// installation mistake, and it fails in confusing ways later. Fail now.
-	probe := dataDir + "/.writable"
-	if err := os.WriteFile(probe, []byte("ok"), 0o600); err != nil {
-		log.Fatalf("data directory %s is not writable by user %d:%d: %v. "+
-			"It belongs to another user, usually because the user: line in docker-compose.yml "+
+	if err := checkDataDir(dataDir); err != nil {
+		log.Fatalf("%v. It belongs to another user, usually because the user: line in docker-compose.yml "+
 			"changed after the data volume was made. Give it to this user: find the volume's name "+
 			"with docker volume ls (it ends in pzadmin-data, for example myfolder_pzadmin-data), then run "+
 			"docker run --rm -v <that name>:/data busybox chown -R %d:%d /data",
-			dataDir, os.Getuid(), os.Getgid(), err, os.Getuid(), os.Getgid())
+			err, os.Getuid(), os.Getgid())
 	}
-	_ = os.Remove(probe)
 
 	assets, err := fs.Sub(webAssets, "web")
 	if err != nil {
@@ -203,4 +200,32 @@ func env(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// checkDataDir makes sure this user can write the data folder and every file
+// already in it. The image's /data lets any user create files, so after a
+// change of user: the folder itself is writable while the files the old user
+// made are not; checking the folder alone would miss that.
+func checkDataDir(dir string) error {
+	probe := filepath.Join(dir, ".writable")
+	if err := os.WriteFile(probe, []byte("ok"), 0o600); err != nil {
+		return fmt.Errorf("data directory %s is not writable by user %d:%d: %w", dir, os.Getuid(), os.Getgid(), err)
+	}
+	_ = os.Remove(probe)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("cannot read data directory %s: %w", dir, err)
+	}
+	for _, e := range entries {
+		if !e.Type().IsRegular() {
+			continue
+		}
+		f, err := os.OpenFile(filepath.Join(dir, e.Name()), os.O_WRONLY, 0)
+		if err != nil {
+			return fmt.Errorf("%s in the data directory is not writable by user %d:%d: %w",
+				e.Name(), os.Getuid(), os.Getgid(), err)
+		}
+		_ = f.Close()
+	}
+	return nil
 }
