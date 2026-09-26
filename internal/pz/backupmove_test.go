@@ -1,6 +1,7 @@
 package pz
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -26,7 +27,7 @@ func TestBackupsMoveToANewFolder(t *testing.T) {
 	write(filepath.Join(old, "srv2", "20260903-040000.tar.gz"), "old copy")
 	write(filepath.Join(b.Root(), "srv2", "20260903-040000.tar.gz"), "new copy")
 
-	moved, left, err := b.MoveFrom(old)
+	moved, left, err := b.MoveFrom(context.Background(), old)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,10 +46,10 @@ func TestBackupsMoveToANewFolder(t *testing.T) {
 	}
 
 	// Running it again, or with nothing to move, does nothing.
-	if moved, _, err := b.MoveFrom(old); moved != 0 || err != nil {
+	if moved, _, err := b.MoveFrom(context.Background(), old); moved != 0 || err != nil {
 		t.Fatalf("second run moved %d: %v", moved, err)
 	}
-	if moved, _, err := b.MoveFrom(filepath.Join(t.TempDir(), "missing")); moved != 0 || err != nil {
+	if moved, _, err := b.MoveFrom(context.Background(), filepath.Join(t.TempDir(), "missing")); moved != 0 || err != nil {
 		t.Fatalf("missing folder: %d %v", moved, err)
 	}
 }
@@ -61,7 +62,7 @@ func TestMoveFileCopiesWhenRenameFails(t *testing.T) {
 	}
 	// A destination in a folder that does not exist makes rename fail; the
 	// copy then fails too and the source must be left alone.
-	if err := moveFile(src, filepath.Join(dir, "missing", "a.tar.gz")); err == nil {
+	if err := moveFile(context.Background(), src, filepath.Join(dir, "missing", "a.tar.gz")); err == nil {
 		t.Fatal("expected an error")
 	}
 	if _, err := os.Stat(src); err != nil {

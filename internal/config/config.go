@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"log"
 	"os"
 	"sort"
 	"strings"
@@ -415,8 +416,33 @@ func Open(path string) (*Store, error) {
 	if err := json.Unmarshal(b, &cfg); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
+	if cfg.Version != SchemaVersion {
+		keepCopy(path, b, cfg.Version)
+	}
 	s.cfg = withMetricsToken(Normalise(cfg))
 	return s, nil
+}
+
+// keepCopy saves config.json as it was before this release first rewrites
+// it, as config.json.v<N>.bak. Going back to an older PZAdmin then only needs
+// that file copied back: an older release does not know newer fields and
+// would drop them the first time it saved.
+func keepCopy(path string, b []byte, version int) {
+	backup := fmt.Sprintf("%s.v%d.bak", path, version)
+	if _, err := os.Stat(backup); err == nil {
+		return
+	}
+	if err := fsutil.WriteFile(backup, b, 0o600); err != nil {
+		log.Printf("config: could not keep a copy of %s before upgrading it: %v", path, err)
+		return
+	}
+	if version > SchemaVersion {
+		log.Printf("config: %s was written by a newer PZAdmin (layout %d, this one knows %d). "+
+			"Settings this version does not know may be lost when it saves; the original is kept in %s",
+			path, version, SchemaVersion, backup)
+		return
+	}
+	log.Printf("config: kept a copy of %s from before this upgrade in %s", path, backup)
 }
 
 // withMetricsToken gives the metrics endpoint a token as soon as the config

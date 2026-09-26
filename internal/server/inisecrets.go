@@ -3,6 +3,8 @@ package server
 import (
 	"path/filepath"
 	"strings"
+
+	"github.com/TheWarBoys2/pzadmin/internal/pz"
 )
 
 // The raw config editor never shows a server's passwords. On the way out
@@ -12,8 +14,9 @@ import (
 // password.
 const hiddenValue = "<hidden, unchanged>"
 
-// secretINIKeys are the server .ini settings that hold a password.
-var secretINIKeys = map[string]bool{"rconpassword": true, "password": true}
+// secretINIKeys are the server .ini settings that hold a password or token:
+// the ones the settings form hides, so the two can never disagree.
+var secretINIKeys = pz.SecretKeys()
 
 func isServerINI(name string) bool {
 	return strings.EqualFold(filepath.Ext(name), ".ini")

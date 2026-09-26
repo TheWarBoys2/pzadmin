@@ -46,11 +46,15 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
       -ldflags="-s -w -X github.com/TheWarBoys2/pzadmin/internal/server.Version=${VERSION}" \
       -o /out/pzadmin .
 
-# The data directory is owned by the user PZAdmin runs as, so the named volume
-# compose mounts over it is initialised with that owner on first creation.
+# A new named volume copies the owner and mode of the image's /data. The
+# compose file lets people run PZAdmin as any user, so /data is writable by
+# any user rather than only by 1000: otherwise a fresh install with another
+# "user:" cannot write its settings and restarts forever. Everything PZAdmin
+# writes inside it is private to its own user (0600 files), and Docker keeps
+# volumes in a folder only root can open on the host.
 ARG PZADMIN_UID=1000
 ARG PZADMIN_GID=1000
-RUN mkdir -p /out/data && chown ${PZADMIN_UID}:${PZADMIN_GID} /out/data
+RUN mkdir -p /out/data && chown ${PZADMIN_UID}:${PZADMIN_GID} /out/data && chmod 0777 /out/data
 
 FROM scratch
 

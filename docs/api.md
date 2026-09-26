@@ -240,5 +240,5 @@ command is recorded in the event log.
 
 `/metrics` includes `pzadmin_api_requests_total{key,code}` and
 `pzadmin_api_ratelimited_total{key}`. `/metrics` uses its own token, not an API
-key: turn metrics on and make the token under **Settings → Metrics**, then send
-it as `Authorization: Bearer <token>`.
+key: make one with **Make a new token** under **Settings → Metrics** (metrics
+are on by default), then send it as `Authorization: Bearer <token>`.

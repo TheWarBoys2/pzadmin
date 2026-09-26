@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -120,5 +121,70 @@ func TestSignInBodyIsCapped(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("an oversized sign-in body should be refused, got %d", rec.Code)
+	}
+}
+
+// Parallel guesses used to all pass the check before the first failure was
+// counted, so a burst of 40 got 40 password checks.
+func TestParallelWrongPasswordsAreLimited(t *testing.T) {
+	_, handler, _ := newTestApp(t)
+	c := &client{t: t, handler: handler}
+	c.setup("rick", "a-long-enough-password")
+
+	const burst = 40
+	codes := make(chan int, burst)
+	var wg sync.WaitGroup
+	for i := 0; i < burst; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodPost, "/api/login",
+				strings.NewReader(`{"username":"rick","password":"wrong-password-here"}`))
+			req.RemoteAddr = "203.0.113.50:1234"
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			codes <- rec.Code
+		}()
+	}
+	wg.Wait()
+	close(codes)
+	checked := 0
+	for code := range codes {
+		if code == http.StatusUnauthorized {
+			checked++
+		}
+	}
+	// Four free attempts, and the fifth sets the lock.
+	if checked > 5 {
+		t.Fatalf("%d of %d parallel guesses reached the password check; at most 5 should", checked, burst)
+	}
+}
+
+// Anyone can trip the account-wide limit, so an address the administrator
+// has signed in from before is not held back by it.
+func TestKnownAddressSkipsTheAccountLimit(t *testing.T) {
+	app, handler, _ := newTestApp(t)
+	c := &client{t: t, handler: handler} // signs in from 192.0.2.1
+	c.setup("rick", "a-long-enough-password")
+	for i := 0; i < 30; i++ {
+		app.accountLimit.fail(accountKey)
+	}
+	if ok, _ := app.accountLimit.allow(accountKey); ok {
+		t.Fatal("the account limit should be tripped")
+	}
+
+	login := func(addr string) int {
+		req := httptest.NewRequest(http.MethodPost, "/api/login",
+			strings.NewReader(`{"username":"rick","password":"a-long-enough-password"}`))
+		req.RemoteAddr = addr
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if code := login("198.51.100.77:1"); code != http.StatusTooManyRequests {
+		t.Fatalf("a new address should wait out the account limit, got %d", code)
+	}
+	if code := login("192.0.2.1:1"); code != http.StatusOK {
+		t.Fatalf("the administrator's own address should get in, got %d", code)
 	}
 }

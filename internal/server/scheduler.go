@@ -227,7 +227,7 @@ func (a *App) executeStep(ctx context.Context, step config.Step, srv config.Serv
 		if keep <= 0 {
 			keep = 10
 		}
-		res, err := a.backup.Create(srv.ID, layout, srv.Backup.IncludeConfig, keep, "scheduled")
+		res, err := a.backup.Create(ctx, srv.ID, layout, srv.Backup.IncludeConfig, keep, "scheduled")
 		if err != nil {
 			a.event(store.Event{
 				Kind: "backup.failed", Severity: store.SevError, Source: "schedule",

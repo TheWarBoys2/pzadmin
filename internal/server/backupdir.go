@@ -36,7 +36,7 @@ func (a *App) prepareBackupDir() {
 	// Moving can take a while for big worlds, so it runs in the background.
 	// Until it finishes, older archives are simply not listed yet.
 	a.spawn(func() {
-		moved, left, err := a.backup.MoveFrom(old)
+		moved, left, err := a.backup.MoveFrom(a.ctx, old)
 		if moved == 0 && left == 0 && err == nil {
 			return
 		}
@@ -58,7 +58,7 @@ func (a *App) prepareBackupDir() {
 
 // writable creates dir if needed and proves a file can be written in it.
 func writable(dir string) error {
-	if err := os.MkdirAll(dir, 0o750); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	f, err := os.CreateTemp(dir, ".writable-*")

@@ -3,10 +3,16 @@ package server
 import (
 	"bufio"
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/TheWarBoys2/pzadmin/internal/pz"
 )
 
 // An open browser tab used to hold shutdown for the full timeout, so Docker
@@ -87,5 +93,56 @@ func TestCloseCancelsAndWaitsForRunningWork(t *testing.T) {
 	case <-finished:
 	default:
 		t.Fatal("Close returned before the running work finished")
+	}
+}
+
+// Work that ignores cancellation cannot hold shutdown past Docker's stop
+// timeout: Close gives up waiting and still does its final save.
+func TestCloseDoesNotWaitForeverForStuckWork(t *testing.T) {
+	old := shutdownWait
+	shutdownWait = 100 * time.Millisecond
+	t.Cleanup(func() { shutdownWait = old })
+
+	app, _, _ := newTestApp(t)
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	app.spawn(func() { <-release }) // never looks at app.ctx
+
+	done := make(chan struct{})
+	go func() { app.Close(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close waited for work that never stops")
+	}
+	found := false
+	for _, e := range app.store.Events("", "system.stop", 5) {
+		found = found || e.Message == "PZAdmin stopped"
+	}
+	if !found {
+		t.Fatal("the final save did not run")
+	}
+}
+
+// A backup stops at the next file once PZAdmin is shutting down.
+func TestBackupStopsOnShutdown(t *testing.T) {
+	root := t.TempDir()
+	saves := filepath.Join(root, "Saves")
+	if err := os.MkdirAll(saves, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		if err := os.WriteFile(filepath.Join(saves, fmt.Sprintf("map_%d.bin", i)), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b := pz.NewBackupper(t.TempDir())
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := b.Create(ctx, "srv1", pz.Layout{SavesDir: saves}, false, 3, ""); !errors.Is(err, pz.ErrStopped) {
+		t.Fatalf("expected ErrStopped, got %v", err)
+	}
+	if list := b.List("srv1"); len(list) != 0 {
+		t.Fatalf("a stopped backup must not leave an archive: %#v", list)
 	}
 }

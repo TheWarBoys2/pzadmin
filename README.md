@@ -177,8 +177,8 @@ docker compose up -d
 ```
 
 Your settings live in the `pzadmin-data` volume and your backups in
-`./backups`, so both survive. Then refresh the page in your browser; an open
-tab also tells you when a new version is running.
+`./backups`, so both survive. Then refresh the page in your browser. An open
+tab also tells you when the web interface has changed and needs a reload.
 
 `latest` follows the newest build of the main branch. To stay on one version,
 replace `latest` with a release tag from the
@@ -227,10 +227,12 @@ without Arcane you still have:
 - mods, settings, backups and restore
 - Discord, the API and metrics
 
-These need Arcane: start, stop, deploy, creating and deleting servers,
-container logs, container uptime, and the watchdog's recovery of a frozen
-server (a server that no longer answers RCON can't be asked to quit, so it has
-to be stopped and started from outside).
+These need Arcane: start, stop, deploy, deleting servers, container logs,
+container uptime, and the watchdog's recovery of a frozen server. The
+new-server wizard still writes a new server's files without Arcane, but you
+start it yourself with `docker compose up -d` in its folder. The watchdog's
+recovery needs Arcane because a frozen server no longer answers RCON, so it
+can't be asked to quit and has to be stopped and started from outside.
 
 ---
 
@@ -303,10 +305,14 @@ online can still catch a chunk mid-write. The safest backup is a scheduled job
 of *announce → save → wait → back up*, or one taken while the server is
 stopped. Use **Verify** to check an archive reads back cleanly.
 
-**Restore** needs the server stopped. It puts the archive's world in place of
-the current one. The current world isn't deleted: it's moved to a
-`Saves.before-restore` folder next to `Saves`, replacing any copy left by an
-earlier restore. Delete that folder once you're happy.
+**Restore** needs the server stopped. PZAdmin reads the whole archive first
+and changes nothing if it's damaged. Then it puts the archive's world in place
+of the current one, and the server settings too if the backup includes them.
+Nothing is deleted: the current world is moved to `Saves.before-restore` and
+the current settings to `Server.before-restore`, next to the originals. These
+replace the copies from an earlier restore only once the new restore has
+worked, and if it fails, everything is put back. Delete the
+`.before-restore` folders once you're happy.
 
 Upgrading from an earlier PZAdmin that kept backups inside its volume: once
 `PZADMIN_BACKUP_DIR` is set, PZAdmin moves the old archives into the new
@@ -386,9 +392,10 @@ The key is shown once. See [docs/api.md](docs/api.md) for every endpoint.
 
 ## Metrics
 
-Turn on **Publish metrics** under **Settings → Metrics** to serve Prometheus
-metrics at `/metrics`: player counts, uptime, RCON latency, backup sizes,
-missing mods and API use. Scrapes need the metrics token in a header:
+PZAdmin serves Prometheus metrics at `/metrics`: player counts, uptime, RCON
+latency, backup sizes, missing mods and API use. They're on by default and
+protected by a token. Click **Make a new token** under **Settings → Metrics**,
+copy it, and put it in your scrape job:
 
 ```yaml
 scrape_configs:
@@ -397,7 +404,8 @@ scrape_configs:
     authorization: { credentials: <your metrics token> }
 ```
 
-The token is shown once when you make it. **Make a new token** replaces it.
+The token is shown once when you make it; making another replaces it. Untick
+**Publish metrics** to turn `/metrics` off.
 
 ---
 
@@ -445,7 +453,9 @@ you refresh, turn off response buffering for PZAdmin in your proxy.
 
 **PZAdmin won't start.** Run `docker logs pzadmin`, which says why. It's
 usually a server folder path that doesn't match the real folder, or a data
-folder the `user` can't write to.
+volume owned by another user because the `user:` line changed after the
+first start. The log gives the exact command to fix the owner; the volume's
+name, from `docker volume ls`, ends in `pzadmin-data`.
 
 **I lost the setup code.** It's in `docker logs pzadmin`. It changes every
 time PZAdmin restarts until setup is finished, so use the newest one.

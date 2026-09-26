@@ -62,7 +62,7 @@ func (a *App) handleSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ip := clientIP(r)
-	if allowed, wait := a.limiter.allow(ip); !allowed {
+	if allowed, wait := a.limiter.take(ip); !allowed {
 		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
 		httpError(w, http.StatusTooManyRequests,
 			fmt.Sprintf("too many wrong setup codes, try again in %ds", int(wait.Seconds())+1))
@@ -84,7 +84,7 @@ func (a *App) handleSetup(w http.ResponseWriter, r *http.Request) {
 	// The code is checked before anything else, so someone without it learns
 	// nothing about the password rules or the timezone list.
 	if !a.setupCodeOK(p.SetupCode) {
-		a.limiter.fail(ip)
+		// Already counted by take.
 		httpError(w, http.StatusForbidden,
 			"that setup code is not right. PZAdmin prints it in its log when it starts: run docker logs pzadmin")
 		return
@@ -121,6 +121,7 @@ func (a *App) handleSetup(w http.ResponseWriter, r *http.Request) {
 
 	a.clearSetupCode()
 	a.limiter.succeed(ip)
+	a.known.add(ip)
 	token, sess := a.sess.create(strings.TrimSpace(p.Username), ip, r.UserAgent())
 	setSessionCookies(w, r, token, sess)
 	a.event(store.Event{Kind: "auth.setup", Severity: store.SevSuccess, Source: "ui",
@@ -156,9 +157,13 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ip := clientIP(r)
-	allowed, wait := a.limiter.allow(ip)
-	if allowed {
-		allowed, wait = a.accountLimit.allow(accountKey)
+	// Both limits count the attempt before the password is checked, so
+	// parallel guesses cannot all slip through while the hash is computed.
+	// An address the administrator has signed in from before is exempt from
+	// the account-wide limit, which a stranger can trip on purpose.
+	allowed, wait := a.limiter.take(ip)
+	if allowed && !a.known.has(ip) {
+		allowed, wait = a.accountLimit.take(accountKey)
 	}
 	if !allowed {
 		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
@@ -183,8 +188,7 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// take the same amount of time.
 	passOK := config.VerifyPassword(p.Password, cfg.PasswordSalt, cfg.PasswordHash, cfg.PasswordIter)
 	if !cfg.SetupComplete || !userOK || !passOK {
-		a.limiter.fail(ip)
-		a.accountLimit.fail(accountKey)
+		// The failure was already counted by take.
 		a.store.Append(store.Event{Kind: "auth.failed", Severity: store.SevWarn, Source: "ui",
 			Message: "Failed sign-in attempt", Detail: "from " + ip})
 		httpError(w, http.StatusUnauthorized, "incorrect username or password")
@@ -193,6 +197,7 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	a.limiter.succeed(ip)
 	a.accountLimit.succeed(accountKey)
+	a.known.add(ip)
 	token, sess := a.sess.create(cfg.Username, ip, r.UserAgent())
 	setSessionCookies(w, r, token, sess)
 	a.store.Append(store.Event{Kind: "auth.login", Severity: store.SevInfo, Source: "ui",
@@ -484,7 +489,7 @@ func (a *App) handleServerSave(w http.ResponseWriter, r *http.Request) {
 	next.SortHint = in.SortHint
 	next.GameRoot = in.GameRoot
 	next.Recovery = in.Recovery
-	next.Mods = in.Mods
+	next.Mods = cleanModPolicy(in.Mods)
 	next.Backup = in.Backup
 
 	updated, err := a.cfg.Update(func(c *config.Config) error {
@@ -644,7 +649,8 @@ func maskSecret(v string) string {
 	if v == "" {
 		return ""
 	}
-	return strings.Repeat("•", len(v))
+	// A fixed length, so not even the length of the password is shown.
+	return "••••••••"
 }
 
 // --- actions ----------------------------------------------------------------
@@ -800,7 +806,10 @@ func (a *App) handleLifecycle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if _, err := a.rconFor(srv).Exec("save"); err == nil {
-			time.Sleep(2 * time.Second)
+			if pause(ctx, 2*time.Second) != nil {
+				httpError(w, http.StatusServiceUnavailable, "the stop was cancelled before it started")
+				return
+			}
 		}
 		a.markRestarting(srv.ID, "stopping")
 		// Hard stop through Arcane. restart: unless-stopped leaves a
@@ -1137,10 +1146,12 @@ func (a *App) handleBackupCreate(w http.ResponseWriter, r *http.Request) {
 	saved := false
 	if _, err := a.rconFor(srv).Exec("save"); err == nil {
 		saved = true
-		time.Sleep(2 * time.Second)
+		if pause(r.Context(), 2*time.Second) != nil {
+			return // the browser went away
+		}
 	}
 
-	res, err := a.backup.Create(srv.ID, layout, srv.Backup.IncludeConfig, keep, strings.TrimSpace(p.Note))
+	res, err := a.backup.Create(a.ctx, srv.ID, layout, srv.Backup.IncludeConfig, keep, strings.TrimSpace(p.Note))
 	if err != nil {
 		a.event(store.Event{Kind: "backup.failed", Severity: store.SevError, Source: source(r), Actor: actor(r),
 			ServerID: srv.ID, Server: srv.Name, Message: "Backup failed", Detail: err.Error()})
@@ -1198,6 +1209,10 @@ func (a *App) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 	}
 
 	res, err := a.backup.Restore(srv.ID, p.Name, detectLayout(srv))
+	if errors.Is(err, pz.ErrBackupRunning) {
+		httpError(w, http.StatusConflict, "a backup or restore is already running for "+srv.Name+"; wait for it to finish")
+		return
+	}
 	if err != nil {
 		a.event(store.Event{Kind: "backup.failed", Severity: store.SevError, Source: source(r), Actor: actor(r),
 			ServerID: srv.ID, Server: srv.Name, Message: "Restore failed", Detail: err.Error()})
@@ -1215,8 +1230,8 @@ func (a *App) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 
 func restoreSummary(res pz.RestoreResult) string {
 	msg := fmt.Sprintf("Restored %d files.", res.Files)
-	if res.SetAside != "" {
-		msg += " The world as it was just before is kept in " + res.SetAside +
+	if len(res.SetAside) > 0 {
+		msg += " What was there just before is kept in " + strings.Join(res.SetAside, " and ") +
 			" until the next restore; delete it when you no longer need it."
 	}
 	return msg
@@ -1570,11 +1585,12 @@ func (a *App) handleImport(w http.ResponseWriter, r *http.Request) {
 		skippedServers  []string
 		importedJobs    int
 		skippedJobs     []string
+		switchedOff     []string
 		schedulesInFile = len(incoming.Schedules) > 0
 	)
 	_, err := a.cfg.Update(func(c *config.Config) error {
 		matched, importedJobs = 0, 0
-		skippedServers, skippedJobs = nil, nil
+		skippedServers, skippedJobs, switchedOff = nil, nil, nil
 		idMap := map[string]string{}
 		for _, in := range incoming.Servers {
 			found := false
@@ -1588,7 +1604,7 @@ func (a *App) handleImport(w http.ResponseWriter, r *http.Request) {
 					if in.Recovery.FailuresBeforeRestart > 0 {
 						cur.Recovery = in.Recovery
 					}
-					cur.Mods = in.Mods
+					cur.Mods = cleanModPolicy(in.Mods)
 					if public, err := cleanPublicInfo(in.Public); err == nil {
 						cur.Public = public
 					}
@@ -1624,6 +1640,13 @@ func (a *App) handleImport(w http.ResponseWriter, r *http.Request) {
 					skippedJobs = append(skippedJobs, err.Error())
 					continue
 				}
+				// A job that runs game commands can do anything an admin can,
+				// such as make a player an admin. One arriving in a file is
+				// kept but switched off until someone has looked at it.
+				if sc.Enabled && runsCommands(sc) {
+					sc.Enabled = false
+					switchedOff = append(switchedOff, sc.Name)
+				}
 				if sc.ID == "" || seen[sc.ID] {
 					sc.ID = config.RandomToken(8)
 				}
@@ -1654,6 +1677,9 @@ func (a *App) handleImport(w http.ResponseWriter, r *http.Request) {
 		if len(skippedJobs) > 0 {
 			detail += fmt.Sprintf(" %d job(s) left out: %s.", len(skippedJobs), strings.Join(skippedJobs, "; "))
 		}
+		if len(switchedOff) > 0 {
+			detail += fmt.Sprintf(" Switched off because they run game commands: %s.", strings.Join(switchedOff, ", "))
+		}
 	}
 	a.event(store.Event{Kind: "admin.action", Severity: store.SevWarn, Source: source(r), Actor: actor(r),
 		Message: "Configuration imported", Detail: detail})
@@ -1664,9 +1690,30 @@ func (a *App) handleImport(w http.ResponseWriter, r *http.Request) {
 		"schedulesReplaced": schedulesInFile,
 		"schedules":         importedJobs,
 		"skippedSchedules":  nonNil(skippedJobs),
+		"switchedOff":       nonNil(switchedOff),
 		"timezone":          tz,
 		"summary":           detail,
 	})
+}
+
+// cleanModPolicy keeps the restart countdown for mod updates within what the
+// server editor offers, 1 to 120 minutes, falling back to 10.
+func cleanModPolicy(m config.ModPolicy) config.ModPolicy {
+	if m.RestartDelayMinutes < 1 || m.RestartDelayMinutes > 120 {
+		m.RestartDelayMinutes = 10
+	}
+	return m
+}
+
+// runsCommands reports whether a job sends game commands, raw or from the
+// command list, rather than only saving, restarting, backing up and posting.
+func runsCommands(t config.Task) bool {
+	for _, s := range t.Steps {
+		if s.Kind == "command" || s.Kind == "action" {
+			return true
+		}
+	}
+	return false
 }
 
 // nonNil keeps an empty list as [] rather than null in JSON.
@@ -1675,6 +1722,19 @@ func nonNil(v []string) []string {
 		return []string{}
 	}
 	return v
+}
+
+// pause waits for d, or less if ctx ends first, so a wait after a save
+// never holds up a cancelled request or a shutdown.
+func pause(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func firstNonBlank(v ...string) string {

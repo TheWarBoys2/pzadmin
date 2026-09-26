@@ -218,6 +218,7 @@ func newAccountLimiter() *loginLimiter {
 }
 
 // allow reports whether an attempt may proceed, and how long to wait if not.
+// It counts nothing; for sign-in, where the check is slow, use take.
 func (l *loginLimiter) allow(ip string) (bool, time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -236,9 +237,33 @@ func (l *loginLimiter) allow(ip string) (bool, time.Duration) {
 	return true, 0
 }
 
+// take reports whether an attempt may go ahead and, when it may, counts it
+// as a failure straight away; succeed clears it if the attempt turns out to
+// be right. Counting before the slow password check, under the same lock as
+// the check, means a burst of parallel guesses is limited exactly like the
+// same guesses sent one after another.
+func (l *loginLimiter) take(key string) (bool, time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if r, ok := l.failures[key]; ok {
+		if time.Since(r.last) > 15*time.Minute {
+			delete(l.failures, key)
+		} else if time.Now().Before(r.lockedTo) {
+			return false, time.Until(r.lockedTo)
+		}
+	}
+	l.recordLocked(key)
+	return true, 0
+}
+
 func (l *loginLimiter) fail(ip string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.recordLocked(ip)
+}
+
+// recordLocked counts one failure. l.mu must be held.
+func (l *loginLimiter) recordLocked(ip string) {
 	r, ok := l.failures[ip]
 	if !ok {
 		r = &failureRecord{}
@@ -268,6 +293,39 @@ func (l *loginLimiter) succeed(ip string) {
 	l.mu.Lock()
 	delete(l.failures, ip)
 	l.mu.Unlock()
+}
+
+// knownAddresses remembers where the administrator has signed in from, so
+// the account-wide limit, which anyone can trip, never locks the real
+// administrator out of an address they have used before.
+type knownAddresses struct {
+	mu   sync.Mutex
+	seen map[string]time.Time
+}
+
+const knownAddressTTL = 30 * 24 * time.Hour
+
+func (k *knownAddresses) add(ip string) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.seen == nil {
+		k.seen = map[string]time.Time{}
+	}
+	k.seen[ip] = time.Now()
+	if len(k.seen) > 1000 {
+		for addr, at := range k.seen {
+			if time.Since(at) > knownAddressTTL {
+				delete(k.seen, addr)
+			}
+		}
+	}
+}
+
+func (k *knownAddresses) has(ip string) bool {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	at, ok := k.seen[ip]
+	return ok && time.Since(at) < knownAddressTTL
 }
 
 // --- request helpers --------------------------------------------------------

@@ -16,7 +16,7 @@ func TestImportChecksSchedulesLikeTheEditor(t *testing.T) {
 	c.setup("rick", "a-long-enough-password")
 	seedServer(t, app, `{"id":"srv1","stack":"riverside","name":"Riverside","host":"127.0.0.1","rconPort":27015,"enabled":false}`)
 
-	file := `{"servers":[{"id":"old1","stack":"riverside","name":"Riverside"},
+	file := `{"servers":[{"id":"old1","stack":"riverside","name":"Riverside","mods":{"autoRestart":true,"restartDelayMinutes":99999}},
 	                     {"id":"old2","stack":"elsewhere","name":"Muldraugh"}],
 	  "timezone":"Europe/London",
 	  "schedules":[
@@ -25,7 +25,8 @@ func TestImportChecksSchedulesLikeTheEditor(t *testing.T) {
 	    {"id":"c","serverId":"old1","name":"Broken cron","cron":"not a cron","enabled":true,"steps":[{"kind":"save"}]},
 	    {"id":"d","serverId":"old1","name":"Nothing to do","cron":"0 6 * * *","enabled":true,"steps":[]},
 	    {"id":"e","serverId":"old1","name":"Bad step","cron":"0 7 * * *","enabled":true,"steps":[{"kind":"wait","seconds":0}]},
-	    {"id":"f","serverId":"old2","name":"Other server","cron":"0 8 * * *","enabled":true,"steps":[{"kind":"save"}]}
+	    {"id":"f","serverId":"old2","name":"Other server","cron":"0 8 * * *","enabled":true,"steps":[{"kind":"save"}]},
+	    {"id":"g","serverId":"old1","name":"Make admin","cron":"0 9 * * *","enabled":true,"steps":[{"kind":"command","command":"setaccesslevel \"bob\" admin"}]}
 	  ]}`
 	rec := c.raw("/api/import", file)
 	if rec.Code != http.StatusOK {
@@ -44,8 +45,8 @@ func TestImportChecksSchedulesLikeTheEditor(t *testing.T) {
 	if resp.Servers != 1 || len(resp.SkippedServers) != 1 || resp.SkippedServers[0] != "Muldraugh" {
 		t.Fatalf("server matching: %+v", resp)
 	}
-	if resp.Schedules != 2 || len(resp.SkippedSchedules) != 4 {
-		t.Fatalf("expected 2 kept and 4 left out: %+v", resp)
+	if resp.Schedules != 3 || len(resp.SkippedSchedules) != 4 {
+		t.Fatalf("expected 3 kept and 4 left out: %+v %s", resp, rec.Body.String())
 	}
 	for _, name := range []string{"Broken cron", "Nothing to do", "Bad step", "Other server"} {
 		if !strings.Contains(strings.Join(resp.SkippedSchedules, "\n"), name) {
@@ -54,11 +55,22 @@ func TestImportChecksSchedulesLikeTheEditor(t *testing.T) {
 	}
 
 	cfg := app.cfg.Get()
+	if got := cfg.Servers[0].Mods.RestartDelayMinutes; got != 10 {
+		t.Fatalf("an out-of-range mod restart countdown should fall back to 10, got %d", got)
+	}
 	if cfg.Timezone != "Europe/London" {
 		t.Fatalf("timezone not applied: %q", cfg.Timezone)
 	}
-	if len(cfg.Schedules) != 2 {
+	if len(cfg.Schedules) != 3 {
 		t.Fatalf("stored schedules: %#v", cfg.Schedules)
+	}
+	for _, task := range cfg.Schedules {
+		if task.Name == "Make admin" && task.Enabled {
+			t.Fatal("an imported job that runs game commands must arrive switched off")
+		}
+		if task.Name == "Nightly save" && !task.Enabled {
+			t.Fatal("a job that only saves should stay on")
+		}
 	}
 	for _, task := range cfg.Schedules {
 		if task.ServerID != "srv1" {

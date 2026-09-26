@@ -1,6 +1,7 @@
 package pz
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -259,7 +260,7 @@ func TestBackupCreateVerifyRestore(t *testing.T) {
 	l := Detect(base)
 	b := NewBackupper(t.TempDir())
 
-	res, err := b.Create("srv1", l, true, 3, "before mod update")
+	res, err := b.Create(context.Background(), "srv1", l, true, 3, "before mod update")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +298,7 @@ func TestRestoreReplacesTheWorldAndKeepsTheOldOneAside(t *testing.T) {
 	_, base := buildServer(t)
 	l := Detect(base)
 	b := NewBackupper(t.TempDir())
-	res, err := b.Create("srv1", l, false, 3, "")
+	res, err := b.Create(context.Background(), "srv1", l, false, 3, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,7 +318,10 @@ func TestRestoreReplacesTheWorldAndKeepsTheOldOneAside(t *testing.T) {
 	if got, _ := os.ReadFile(filepath.Join(world, "map_t.bin")); string(got) != "world" {
 		t.Fatalf("world not restored: %q", got)
 	}
-	aside := filepath.Join(restored.SetAside, "Multiplayer", "riverside", "map_99_99.bin")
+	aside := filepath.Join(l.SavesDir+".before-restore", "Multiplayer", "riverside", "map_99_99.bin")
+	if len(restored.SetAside) != 1 {
+		t.Fatalf("set aside: %v", restored.SetAside)
+	}
 	if got, _ := os.ReadFile(aside); string(got) != "explored later" {
 		t.Fatalf("the world from before the restore should be kept aside at %s", aside)
 	}
@@ -337,6 +341,43 @@ func TestRestoreReplacesTheWorldAndKeepsTheOldOneAside(t *testing.T) {
 	if got, _ := os.ReadFile(newer); string(got) != "still here" {
 		t.Fatal("a failed restore must put the world back as it was")
 	}
+	// ...and keeps the copy from the earlier restore.
+	if got, _ := os.ReadFile(aside); string(got) != "explored later" {
+		t.Fatal("a failed restore must not lose the earlier set-aside copy")
+	}
+}
+
+// When the archive has the server's settings, they are set aside too, not
+// overwritten with no copy.
+func TestRestoreSetsSettingsAsideToo(t *testing.T) {
+	_, base := buildServer(t)
+	l := Detect(base)
+	if l.ConfigDir == "" {
+		t.Skip("layout has no config folder")
+	}
+	b := NewBackupper(t.TempDir())
+	res, err := b.Create(context.Background(), "srv1", l, true, 3, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited := filepath.Join(l.ConfigDir, "edited-after-backup.ini")
+	if err := os.WriteFile(edited, []byte("PublicName=Edited"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := b.Restore("srv1", res.Archive.Name, l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(restored.SetAside) != 2 {
+		t.Fatalf("world and settings should both be set aside: %v", restored.SetAside)
+	}
+	if _, err := os.Stat(edited); !os.IsNotExist(err) {
+		t.Fatal("settings should be back to the backup's")
+	}
+	kept := filepath.Join(l.ConfigDir+".before-restore", "edited-after-backup.ini")
+	if got, _ := os.ReadFile(kept); string(got) != "PublicName=Edited" {
+		t.Fatal("the settings from before the restore should be kept")
+	}
 }
 
 func TestBackupRetentionPrunesOldest(t *testing.T) {
@@ -344,7 +385,7 @@ func TestBackupRetentionPrunesOldest(t *testing.T) {
 	l := Detect(base)
 	b := NewBackupper(t.TempDir())
 	for i := 0; i < 4; i++ {
-		if _, err := b.Create("srv1", l, false, 2, ""); err != nil {
+		if _, err := b.Create(context.Background(), "srv1", l, false, 2, ""); err != nil {
 			t.Fatal(err)
 		}
 		// Archive names carry a one-second resolution timestamp.
@@ -371,7 +412,7 @@ func TestBackupRefusesConcurrentRuns(t *testing.T) {
 	b.mu.Lock()
 	b.running["srv1"] = true
 	b.mu.Unlock()
-	if _, err := b.Create("srv1", l, false, 3, ""); !errors.Is(err, ErrBackupRunning) {
+	if _, err := b.Create(context.Background(), "srv1", l, false, 3, ""); !errors.Is(err, ErrBackupRunning) {
 		t.Fatalf("expected ErrBackupRunning, got %v", err)
 	}
 }
@@ -477,10 +518,51 @@ func TestBackupRemovesLeftoverPartialArchives(t *testing.T) {
 	if err := os.WriteFile(leftover, []byte("half an archive"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := b.Create("srv1", l, false, 5, ""); err != nil {
+	if _, err := b.Create(context.Background(), "srv1", l, false, 5, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(leftover); !os.IsNotExist(err) {
 		t.Fatal("a .partial left by an interrupted backup should be removed")
+	}
+}
+
+// An archive with no world in it must not leave the server on an empty one.
+func TestRestoreRefusesAnArchiveWithNoWorld(t *testing.T) {
+	_, base := buildServer(t)
+	l := Detect(base)
+	b := NewBackupper(t.TempDir())
+	configOnly := l
+	configOnly.SavesDir = ""
+	res, err := b.Create(context.Background(), "srv1", configOnly, true, 3, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(l.SavesDir, "Multiplayer", "riverside", "map_t.bin")
+	if _, err := b.Restore("srv1", res.Archive.Name, l); err == nil || !strings.Contains(err.Error(), "no world") {
+		t.Fatalf("expected a refusal, got %v", err)
+	}
+	if got, _ := os.ReadFile(marker); string(got) != "world" {
+		t.Fatal("the current world should be put back")
+	}
+}
+
+// Archives can hold the RCON password, so other users on the host must not
+// be able to read them.
+func TestBackupsArePrivate(t *testing.T) {
+	_, base := buildServer(t)
+	l := Detect(base)
+	b := NewBackupper(t.TempDir())
+	res, err := b.Create(context.Background(), "srv1", l, true, 3, "a note")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{res.Archive.Path, res.Archive.Path + ".note", b.Dir("srv1")} {
+		st, err := os.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.Mode().Perm()&0o077 != 0 {
+			t.Errorf("%s is readable by others: %v", p, st.Mode().Perm())
+		}
 	}
 }

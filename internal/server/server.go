@@ -131,6 +131,8 @@ type App struct {
 	limiter     *loginLimiter
 	// accountLimit slows sign-in guesses from all addresses together.
 	accountLimit *loginLimiter
+	// known holds addresses the administrator has signed in from.
+	known knownAddresses
 	// hashSlots bounds how many sign-in password hashes run at once. Each is
 	// 600,000 rounds of PBKDF2, and they share the CPU with the game servers.
 	hashSlots chan struct{}
@@ -335,22 +337,29 @@ func (a *App) Start() {
 	})
 	// A state file that could not be parsed was moved aside at load. Say so
 	// where the operator will see it, not only in the container log.
-	for _, err := range []error{a.keys.loadErr, a.sess.loadErr, a.modRequests.loadErr, a.store.LoadError()} {
-		if err != nil {
-			a.event(store.Event{Kind: "system.error", Severity: store.SevError, Source: "system",
-				Message: "A PZAdmin data file was unreadable", Detail: err.Error()})
-		}
+	for _, err := range []error{a.keys.loadErr, a.sess.loadErr, a.modRequests.loadErr, a.store.LoadError(), a.custom.loadErr} {
+		a.reportLoadError(err)
 	}
 	a.prepareBackupDir()
 	if !a.arcane.Configured() {
 		log.Printf("Arcane is not set up (PZADMIN_ARCANE_URL, PZADMIN_ARCANE_ENV_ID and PZADMIN_ARCANE_API_KEY). " +
-			"Without it, start, stop, deploy, creating and deleting servers, container logs and the " +
-			"watchdog's automatic restart of a frozen server are unavailable. Status over RCON, restarts, " +
-			"mods, settings, players, the console, backups and schedules all work without it.")
+			"Without it, start, stop, deploy (including a new server's first start), deleting servers, " +
+			"container logs and the watchdog's automatic restart of a frozen server are unavailable. " +
+			"Status over RCON, restarts, mods, settings, players, the console, backups, schedules and " +
+			"the new-server wizard's files all work without it.")
 	}
 	if code := a.pendingSetupCode(); code != "" {
 		log.Printf("first-time setup: open PZAdmin in your browser and enter this setup code: %s", code)
 		log.Printf("the code changes every time PZAdmin starts until setup is finished")
+	}
+}
+
+// reportLoadError puts a state file that could not be read, and was moved
+// aside, where the operator will see it, not only in the container log.
+func (a *App) reportLoadError(err error) {
+	if err != nil {
+		a.event(store.Event{Kind: "system.error", Severity: store.SevError, Source: "system",
+			Message: "A PZAdmin data file was unreadable", Detail: err.Error()})
 	}
 }
 
@@ -397,7 +406,12 @@ func (a *App) Close() {
 		a.clients = map[string]*rcon.Client{}
 		a.mu.Unlock()
 
-		a.wg.Wait()
+		// Everything tracked stops at its next check of a.ctx, which for a
+		// backup is the next file. Wait for that, but never so long that
+		// Docker's stop timeout kills PZAdmin before the saves below.
+		if !waitTimeout(&a.wg, shutdownWait) {
+			log.Printf("shutdown: background work did not stop within %s; saving anyway", shutdownWait)
+		}
 		// Close out any live sessions so playtime is not credited while
 		// PZAdmin is not running to observe it.
 		for _, s := range a.cfg.Get().Servers {
@@ -408,6 +422,28 @@ func (a *App) Close() {
 		a.keys.flush()
 		a.notify.Close()
 	})
+}
+
+// shutdownWait is how long Close waits for background work (a variable so
+// tests can shorten it). main gives
+// HTTP shutdown up to 20 seconds and the compose file allows 30 in all.
+var shutdownWait = 8 * time.Second
+
+// waitTimeout waits for wg, and reports false if d passed first.
+func waitTimeout(wg *sync.WaitGroup, d time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-done:
+		return true
+	case <-t.C:
+		return false
+	}
 }
 
 func (a *App) applyNotifyConfig(cfg config.Config) {

@@ -72,9 +72,10 @@ func main() {
 	probe := dataDir + "/.writable"
 	if err := os.WriteFile(probe, []byte("ok"), 0o600); err != nil {
 		log.Fatalf("data directory %s is not writable by user %d:%d: %v. "+
-			"This usually means the user: line in docker-compose.yml was changed after the data "+
-			"volume was created. Give the folder to that user, for example: "+
-			"docker run --rm -v <your data volume or folder>:/data busybox chown -R %d:%d /data",
+			"It belongs to another user, usually because the user: line in docker-compose.yml "+
+			"changed after the data volume was made. Give it to this user: find the volume's name "+
+			"with docker volume ls (it ends in pzadmin-data, for example myfolder_pzadmin-data), then run "+
+			"docker run --rm -v <that name>:/data busybox chown -R %d:%d /data",
 			dataDir, os.Getuid(), os.Getgid(), err, os.Getuid(), os.Getgid())
 	}
 	_ = os.Remove(probe)

@@ -5,9 +5,9 @@
  *  1. Nothing is ever built by concatenating data into HTML. Everything goes
  *     through el() and lands as a text node. A player can call themselves
  *     anything they like — including a string that looks like markup or like
- *     JavaScript — and it will render as literal text. The previous version
- *     interpolated player names into inline onclick handlers, which let anyone
- *     who could join the game run script in the administrator's browser.
+ *     JavaScript — and it will render as literal text. Building HTML from
+ *     strings would let anyone who can join the game run script in the
+ *     administrator's browser just by choosing their name.
  *  2. There are no inline event handlers and no inline styles, so the server
  *     can send a Content-Security-Policy with no 'unsafe-inline' at all.
  *     Dynamic styling goes through the CSSOM, which CSP does not restrict.
@@ -2911,9 +2911,9 @@ async function restoreBackup(server, archive) {
   const confirmed = await confirmDialog({
     title: 'Restore ' + archive.name + '?',
     message: 'The world goes back to how it was at ' + fmtDateTime(archive.createdAt) +
-      '. Everything players did since then is undone.',
-    detail: 'The current world is not deleted: it is moved to a Saves.before-restore folder next to Saves, ' +
-      'replacing any copy left by an earlier restore.',
+      '. Everything players did since then is undone. If the backup includes the server settings, they go back too.',
+    detail: 'Nothing is deleted: the current world moves to a Saves.before-restore folder, and the current ' +
+      'settings to Server.before-restore, replacing copies left by an earlier restore.',
     confirmLabel: 'Restore', danger: true, requireText: server.name,
   });
   if (!confirmed) return;
@@ -3784,7 +3784,7 @@ function viewActivity(main) {
 
   main.append(el('div', { class: 'panel' },
     el('div', { class: 'panel-head' },
-      el('div', { style: { display: 'flex', gap: '8px' } }, kind, server),
+      el('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '8px' } }, kind, server),
       el('button', { class: 'btn small', type: 'button', text: 'Reload', onclick: load })),
     list));
   load();
@@ -4660,7 +4660,7 @@ function settingsMetrics(cfg) {
   return el('div', { class: 'panel' },
     el('div', { class: 'panel-head' }, el('h3', { text: 'Metrics' })),
     el('div', { class: 'panel-body' }, el('div', { class: 'form' },
-      el('p', { class: 'muted', text: 'PZAdmin publishes Prometheus metrics at /metrics: player counts, uptime, RCON latency, backup sizes and missing mods.' }),
+      el('p', { class: 'muted', text: 'PZAdmin publishes Prometheus metrics at /metrics: player counts, uptime, RCON latency, backup sizes, missing mods and API use.' }),
       el('label', { class: 'check' }, enabled, el('span', { text: 'Publish metrics' })),
       el('p', { class: 'muted', text: 'Scrapers need a bearer token in the Authorization header. PZAdmin keeps the '
         + 'token to itself, so to set up a scraper, make a new one here and copy it. Making a new token stops the old one working.' }),
@@ -4749,11 +4749,18 @@ function showImportResult(result) {
       el('p', { text: 'These jobs were left out. Add them again in Schedules if you still want them:' }),
       el('ul', {}, ...skippedJobs.map((reason) => el('li', { text: sentence(reason) })))));
   }
+  const switchedOff = result.switchedOff || [];
+  if (switchedOff.length) {
+    lines.push(el('div', { class: 'notice warn' },
+      el('p', { text: 'These jobs run game commands, so they were imported switched off. Check each one in Schedules, then switch it on:' }),
+      el('ul', {}, ...switchedOff.map((name) => el('li', { text: name })))));
+  }
   if (result.timezone) {
     lines.push(el('p', { class: 'muted', text: 'Timezone set to ' + result.timezone + '.' }));
   }
   openModal({
-    title: skippedJobs.length || skippedServers.length ? 'Imported, with some things left out' : 'Configuration imported',
+    title: skippedJobs.length || skippedServers.length ? 'Imported, with some things left out'
+      : switchedOff.length ? 'Imported, with some jobs switched off' : 'Configuration imported',
     body: el('div', { class: 'form' }, ...lines),
     actions: [el('button', { class: 'btn primary', type: 'button', text: 'Done', onclick: closeModal })],
   });

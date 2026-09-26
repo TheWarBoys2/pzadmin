@@ -32,6 +32,8 @@ Most of this update needs nothing from you. These do:
   (`indifferentbroccoli/projectzomboid-server-docker:v1.1.9`), so the wizard
   works without setting `PZADMIN_GAME_IMAGE`.
 - The log says clearly what doesn't work when Arcane isn't set up.
+- A fresh install works with any `user:` in the compose file, not only
+  1000:1000.
 - The compose file has log rotation and a stop grace period, so PZAdmin always
   gets to finish saving when it's stopped.
 
@@ -40,15 +42,26 @@ Most of this update needs nothing from you. These do:
 - PZAdmin checks at start that it can write to the backups folder, and says
   how to fix it if not, instead of failing at the first scheduled backup.
 - Restore no longer leaves files from after the backup mixed into the
-  restored world. The current world is moved to `Saves.before-restore` first,
-  and put back if the restore fails.
+  restored world. The archive is read through first, and a damaged one
+  changes nothing. The current world, and the settings if the backup has
+  them, are moved to `.before-restore` folders, and put back if the restore
+  fails. An archive with no world in it is refused.
 - Half-written archives from an interrupted backup are cleaned up.
 
 ### Security
-- Sign-in is limited per address and across all addresses, and password
-  checks are capped so a flood of attempts can't overload the machine.
+- Sign-in is limited per address and across all addresses. Each attempt is
+  counted before the password is checked, so a burst of guesses sent at once
+  is limited the same as guesses sent one by one. Addresses the admin has
+  signed in from before aren't held back by the account-wide limit, which a
+  stranger could otherwise trip on purpose. At most four password checks run
+  at once, so a flood of attempts can't overload the machine.
 - Forwarded headers are only trusted from `PZADMIN_TRUSTED_PROXIES`.
-- RCON passwords in the raw ini editor are hidden and kept as they are on save.
+- Backups are readable only by PZAdmin's user, since they can hold the
+  server's RCON password.
+- An imported scheduled job that runs game commands arrives switched off, so
+  a config file can't quietly add one.
+- Passwords and the game's Discord bot token are hidden in the raw ini
+  editor, the same ones the settings form hides, and kept as they are on save.
 - The metrics token can be replaced from Settings, and is only accepted in a
   header.
 - Sign-in and setup requests have a small size limit, and slow requests time
@@ -59,8 +72,10 @@ Most of this update needs nothing from you. These do:
   with a write-then-rename, so a crash or full disk can't leave a half-written
   file. A file that can't be read is kept aside and reported, not silently
   replaced.
-- Shutting down waits for running jobs and closes live connections, so a
-  final save always happens within Docker's stop timeout.
+- Shutting down closes live connections, stops running jobs and backups at
+  their next step, and waits for them at most 8 seconds, so the final save
+  finishes within Docker's stop timeout. A backup cut short is cleaned up
+  next time.
 - An import is checked the same way as settings typed in by hand. Scheduled
   jobs that would be refused are left out and listed, an unknown timezone
   refuses the file, and the import dialog says exactly what was changed.
@@ -107,7 +122,7 @@ Most of this update needs nothing from you. These do:
   each channel from a list instead of pasting a webhook. An existing bot
   works. PZAdmin keeps no connection open; it brings a new bot online once
   when it is connected, which Discord requires before a bot can post.
-- With the bot, a server's channel can show 🟢 or 🔴 in its name. Renames
+- With the bot, a server's channel can show 🟢 (up), 🟠 (restarting) or 🔴 (down) in its name. Renames
   follow the server's settled state and stay within Discord's limit of two
   per ten minutes; turning it off restores the plain name.
 - Restart and Stop ask for an optional reason, which players see in the

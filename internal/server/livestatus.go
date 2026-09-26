@@ -51,12 +51,15 @@ type liveBoard struct {
 	// webhook ID.
 	Names   map[string]*nameState `json:"names,omitempty"`
 	backoff map[string]time.Time
+	// loadErr is set when livestatus.json could not be read at start.
+	loadErr error
 }
 
 func loadLiveBoard(path string) *liveBoard {
 	b := &liveBoard{path: path, Cards: map[string]map[string]*liveCard{}, backoff: map[string]time.Time{}}
 	if _, err := fsutil.ReadJSON(path, b); err != nil {
 		log.Printf("live status: %v", err)
+		b.loadErr = err
 	}
 	if b.Cards == nil {
 		b.Cards = map[string]map[string]*liveCard{}
@@ -79,6 +82,7 @@ func (b *liveBoard) save() {
 func (a *App) liveStatusLoop() {
 	defer a.wg.Done()
 	board := loadLiveBoard(filepath.Join(a.dataDir, "livestatus.json"))
+	a.reportLoadError(board.loadErr)
 	ticker := time.NewTicker(liveStatusEvery)
 	defer ticker.Stop()
 	for {

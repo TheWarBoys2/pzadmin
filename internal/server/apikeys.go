@@ -432,6 +432,9 @@ func (a *App) handleAPIKeyRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
+		a.event(store.Event{Kind: "auth.apikey", Severity: store.SevError, Source: source(r), Actor: actor(r),
+			Message: "API key revoked but not saved: " + k.Name,
+			Detail:  "It stopped working now, but would work again after a restart. " + err.Error()})
 		httpError(w, http.StatusInternalServerError, "the key has stopped working, but the change could not be "+
 			"saved, so it would work again after PZAdmin restarts. Check the data folder has space, then revoke "+
 			"it again: "+err.Error())
@@ -445,6 +448,9 @@ func (a *App) handleAPIKeyRevoke(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleAPIKeyRevokeAll(w http.ResponseWriter, r *http.Request) {
 	n, err := a.keys.revokeAll()
 	if err != nil {
+		a.event(store.Event{Kind: "auth.apikey", Severity: store.SevError, Source: source(r), Actor: actor(r),
+			Message: "All API keys revoked but not saved",
+			Detail:  pluralCount(n, "key", "keys") + " stopped working now, but would work again after a restart. " + err.Error()})
 		httpError(w, http.StatusInternalServerError, "the keys have stopped working, but the change could not be "+
 			"saved, so they would work again after PZAdmin restarts. Check the data folder has space, then try "+
 			"again: "+err.Error())

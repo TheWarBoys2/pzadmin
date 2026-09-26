@@ -54,6 +54,8 @@ type customCatalogue struct {
 	mu      sync.RWMutex
 	path    string
 	Entries []pz.CatalogueEntry `json:"entries"`
+	// loadErr is set when catalogue.json could not be read at start.
+	loadErr error
 }
 
 func loadCustomCatalogue(path string) *customCatalogue {
@@ -61,6 +63,7 @@ func loadCustomCatalogue(path string) *customCatalogue {
 	if _, err := fsutil.ReadJSON(path, c); err != nil {
 		log.Printf("catalogue: %v", err)
 		c.Entries = nil
+		c.loadErr = err
 	}
 	return c
 }

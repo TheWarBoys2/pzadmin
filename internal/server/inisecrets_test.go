@@ -36,3 +36,21 @@ func TestEmptyPasswordIsShownAsEmpty(t *testing.T) {
 		t.Fatalf("an empty password is not a secret: %q", got)
 	}
 }
+
+// Every setting the form treats as secret is hidden in the raw editor too,
+// including the game's own Discord bot token.
+func TestRawEditorHidesEverySchemaSecret(t *testing.T) {
+	disk := "DiscordEnable=true\nDiscordToken=bot-token-value\nRCONPassword=secret\n"
+	masked := maskINISecrets(disk)
+	if strings.Contains(masked, "bot-token-value") || strings.Contains(masked, "=secret") {
+		t.Fatalf("a secret reached the editor:\n%s", masked)
+	}
+	for _, key := range []string{"discordtoken", "rconpassword", "password"} {
+		if !secretINIKeys[key] {
+			t.Errorf("%s should be hidden", key)
+		}
+	}
+	if got := unmaskINISecrets(masked, disk); got != disk {
+		t.Fatalf("saving the untouched text changed the file:\n%s", got)
+	}
+}
