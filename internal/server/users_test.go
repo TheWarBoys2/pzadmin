@@ -189,6 +189,9 @@ func TestUserServerLimitAndPermissions(t *testing.T) {
 	if rec := c.do(http.MethodPost, "/api/console", map[string]any{"serverId": riverside, "command": "players"}); rec.Code != http.StatusForbidden {
 		t.Fatalf("console needs its own permission, got %d", rec.Code)
 	}
+	if rec := c.do(http.MethodPost, "/api/server/world/reset", map[string]any{"serverId": riverside, "confirm": "Riverside"}); rec.Code != http.StatusForbidden {
+		t.Fatalf("resetting the world needs the config permission, got %d", rec.Code)
+	}
 
 	// Their activity has none of PZAdmin's own events, such as sign-ins.
 	events := decode(t, c.do(http.MethodGet, "/api/events", nil))["events"].([]any)
