@@ -123,8 +123,12 @@ func slotsBusyMessage(slots config.PortSlots, busy map[int]config.Server, p prin
 
 // startInSlot starts a slot server: pick a free slot, point .env at it, and
 // deploy through Arcane. It answers at once; the deploy reports in Activity.
-func (a *App) startInSlot(w http.ResponseWriter, r *http.Request, srv config.Server, reason string) {
+func (a *App) startInSlot(w http.ResponseWriter, r *http.Request, srv config.Server, reason string, want int) {
 	cfg := a.cfg.Get()
+	if want < 0 || want > cfg.PortSlots.Count {
+		httpError(w, http.StatusBadRequest, fmt.Sprintf("there is no port slot %d; slots are 1 to %d", want, cfg.PortSlots.Count))
+		return
+	}
 	if !a.arcane.Configured() {
 		httpError(w, http.StatusConflict, "Starting a server in a port slot needs Arcane, which is not configured.")
 		return
@@ -134,7 +138,23 @@ func (a *App) startInSlot(w http.ResponseWriter, r *http.Request, srv config.Ser
 	// set, which happens before the lock is released.
 	a.slotMu.Lock()
 	busy := a.slotHolders(srv.ID)
+	if want > 0 {
+		if holder, taken := busy[want]; taken {
+			a.slotMu.Unlock()
+			name := "another server"
+			if principalFrom(r).allows(holder.ID) {
+				name = holder.Name
+			}
+			sl := cfg.PortSlots.Slots()[want-1]
+			httpError(w, http.StatusConflict, fmt.Sprintf("Not starting %s. Port slot %d (port %d) is in use by %s. "+
+				"Pick another slot or stop %s first.", srv.Name, want, sl.GamePort, name, name))
+			return
+		}
+	}
 	slot, free := pickSlot(cfg.PortSlots, srv, busy)
+	if want > 0 {
+		slot, free = cfg.PortSlots.Slots()[want-1], true
+	}
 	if !free {
 		a.slotMu.Unlock()
 		writeStatusJSON(w, http.StatusConflict, map[string]any{
@@ -312,4 +332,12 @@ func (a *App) statusWithSlot(s config.Server) Status {
 	st := a.statusOf(s.ID)
 	st.Slot = slotHeld(a.cfg.Get().PortSlots, s, st)
 	return st
+}
+
+// lastSlot is the slot a slot server was last in: the one its ports are in.
+func lastSlot(slots config.PortSlots, s config.Server) int {
+	if !s.UseSlot {
+		return 0
+	}
+	return slotNumber(slots, s)
 }

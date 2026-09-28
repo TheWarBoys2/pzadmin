@@ -131,7 +131,7 @@ func (a *App) syncLiveStatus(ctx context.Context, board *liveBoard) {
 			if !wanted[h.ID][s.ID] {
 				continue
 			}
-			st := a.statusOf(s.ID)
+			st := a.statusWithSlot(s)
 			// Not probed since PZAdmin started: say nothing rather than
 			// guess, and leave whatever the card said before.
 			if st.LastCheck.IsZero() && !st.Stopped {
@@ -291,8 +291,17 @@ func liveCardFor(s config.Server, st Status, listPlayers bool) notify.Card {
 	if !st.PendingRestartAt.IsZero() && !st.Stopped {
 		lines = append(lines, "Restart due "+discordTime(st.PendingRestartAt.Time))
 	}
-	if join := joinAddress(s); join != "" {
+	slot := ""
+	if st.Slot > 0 {
+		slot = fmt.Sprintf("Slot %d", st.Slot)
+	}
+	switch join := joinAddress(s); {
+	case join != "" && slot != "":
+		lines = append(lines, "**Join:** `"+join+"` · "+slot)
+	case join != "":
 		lines = append(lines, "**Join:** `"+join+"`")
+	case slot != "":
+		lines = append(lines, fmt.Sprintf("**%s** · port %d", slot, s.GamePort))
 	}
 	if listPlayers && st.Online && len(st.Players) > 0 {
 		names := make([]string, 0, len(st.Players))

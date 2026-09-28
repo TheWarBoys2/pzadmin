@@ -23,19 +23,32 @@ Only the owner can change these settings.
 
 ## What happens when you start a server
 
-- PZAdmin picks a free slot. If the one the server used last time is free, it
-  gets that one again, so its port usually stays the same.
+- PZAdmin asks which slot to use. Busy slots show who has them and can't be
+  picked. The slot the server used last time is marked *last used* and
+  picked for you when it's free, so its port usually stays the same.
+  A start from the API or the Discord cog can name a slot; without one,
+  PZAdmin picks the last-used slot if it's free, otherwise the first free one.
 - It writes the slot's ports into the server's `.env` (`DEFAULT_PORT` and
   `UDP_PORT`) and keeps a copy of the old `.env` with the server's backups.
 - It runs `docker compose up -d` for the server through Arcane. If the ports
   changed, Docker recreates the container with the new ones. If they didn't,
   it just starts it. The result appears in Activity.
-- If every slot is taken, the start is refused and PZAdmin says which servers
-  have them, for example *All 2 port slots are in use: Muldraugh on 16261,
+- If the slot you picked has been taken in the meantime, the start is refused
+  and says by whom. If every slot is taken, the start is refused and PZAdmin
+  says which servers have them, for example *All 2 port slots are in use: Muldraugh on 16261,
   Riverside on 16263. Stop one of them first.*
 
-The dashboard shows which server holds which slot, and each server's row shows
-its slot and port.
+The dashboard shows which server holds which slot. Each server's row shows its
+slot and port while it runs, and *Last: slot N* while it's stopped.
+
+## Discord
+
+PZAdmin's status message for a slot server shows the slot and the port it's on
+now, for example **Join:** `pz.example.com:16263` · Slot 2, or **Slot 2** ·
+port 16263 if you haven't set a join address. You don't type the port in: the
+*Join port* box is ignored for slot servers and the message updates itself when
+the server moves. The API gives the same through `port`, `slot` and `lastSlot`,
+which is what the Discord cog shows.
 
 A server holds its slot while its container is running or starting, so
 restarts (scheduled, manual, mod updates and the watchdog) keep it. Stopping
@@ -74,8 +87,7 @@ by hand to the two lines above.
 - **The join port can change.** If another server has a server's usual slot,
   it starts on the other one. PZAdmin's Discord status message, the API and
   the Discord cog always show the port it's on now. A player's saved favourite
-  in the game can point at the old port. For a slot server, the *Join port* box
-  in its settings is ignored for this reason.
+  in the game can point at the old port.
 - **Starting needs Arcane.** A slot start is a `docker compose up -d`, so the
   Arcane key needs `projects:list` and `projects:deploy`, the same as the
   Deploy button.

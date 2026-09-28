@@ -161,15 +161,17 @@ Most of this update needs nothing from you. These do:
 ### Port slots
 - Servers can share a small range of forwarded ports. Set the range under
   Settings → Port slots and tick **Use a port slot** on a server; each start
-  takes a free slot (the last one it had when that's free), and a start is
-  refused, naming who has them, while every slot is in use. The dashboard
-  shows which server holds which slot. See `docs/port-slots.md`.
+  asks which slot to use, marks and preselects the one it had last, and shows
+  who has the busy ones. A start is refused, naming who has them, while every
+  slot is in use. The dashboard shows which server holds which slot and each
+  stopped server's last slot. See `docs/port-slots.md`.
 - Ticking the box changes the compose file's two game port lines to read
   `DEFAULT_PORT` and `UDP_PORT` from `.env`, keeping a copy of the old file.
   The new-server wizard writes them this way from the start, and keeps new
   servers' own ports outside the slot range.
-- A slot server's join address always uses its current port; the Join port
-  box is ignored for it. The API's server view has a `slot` field.
+- A slot server's Discord status message shows its slot and current port,
+  with no port to type in. The API's server view has `slot` and `lastSlot`,
+  and a start can pick a slot with `"slot": n`.
 
 ### API
 - An HTTP API at `/api/v1` for bots and scripts: server status (with the

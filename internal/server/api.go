@@ -962,6 +962,8 @@ func (a *App) handleLifecycle(w http.ResponseWriter, r *http.Request) {
 		ServerID string `json:"serverId"`
 		Action   string `json:"action"` // restart | stop | start | cancel-pending
 		Reason   string `json:"reason"`
+		// Slot picks the port slot for a start; zero lets PZAdmin choose.
+		Slot int `json:"slot"`
 	}
 	if !decodeJSON(w, r, &p) {
 		return
@@ -1037,7 +1039,7 @@ func (a *App) handleLifecycle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if srv.UseSlot && a.cfg.Get().PortSlots.Enabled() {
-			a.startInSlot(w, r, srv, reason)
+			a.startInSlot(w, r, srv, reason, p.Slot)
 			return
 		}
 		// Check what a start will actually mount. Start reuses the existing

@@ -216,3 +216,60 @@ func TestSlotStartRefusesAComposeFileWithFixedPorts(t *testing.T) {
 		t.Fatal("nothing should have been deployed")
 	}
 }
+
+func TestStartInAChosenSlot(t *testing.T) {
+	f := &deployFake{}
+	url := f.server(t)
+	app, handler, stacksRoot, dataRoot := discoveryApp(t, func(o *Options) {
+		o.ArcaneURL, o.ArcaneEnvID, o.ArcaneAPIKey = url, "0", "k"
+	})
+	base := filepath.Base(stacksRoot)
+	for i, name := range []string{"alpha", "bravo"} {
+		slotStack(t, stacksRoot, dataRoot, name, 16271+10*i)
+		f.projects = append(f.projects, arcane.Project{ID: "p-" + name, Name: name, DirName: name, RelativePath: base + "/" + name})
+	}
+	app.rescan()
+	c := &client{t: t, handler: handler}
+	c.setup("rick", "a-long-enough-password")
+	c.do(http.MethodPost, "/api/settings", map[string]any{"portSlots": map[string]any{"firstPort": 16261, "count": 2}})
+	for _, name := range []string{"alpha", "bravo"} {
+		c.do(http.MethodPost, "/api/server/save", map[string]any{"id": name, "useSlot": true})
+	}
+	start := func(name string, slot int) (int, string) {
+		rec := c.do(http.MethodPost, "/api/lifecycle", map[string]any{"serverId": name, "action": "start", "slot": slot})
+		deadline := time.Now().Add(5 * time.Second)
+		for app.statusOf(name).Deploying && time.Now().Before(deadline) {
+			time.Sleep(20 * time.Millisecond)
+		}
+		return rec.Code, rec.Body.String()
+	}
+	if code, body := start("alpha", 2); code != http.StatusOK || !strings.Contains(body, "slot 2 (port 16263)") {
+		t.Fatalf("%d %s", code, body)
+	}
+	if code, body := start("bravo", 2); code != http.StatusConflict || !strings.Contains(body, "in use by alpha") {
+		t.Fatalf("a busy slot must be refused: %d %s", code, body)
+	}
+	if code, _ := start("bravo", 3); code != http.StatusBadRequest {
+		t.Fatalf("slot 3 does not exist: %d", code)
+	}
+
+	alpha, _ := app.cfg.Server("alpha")
+	card := liveCardFor(alpha, app.statusWithSlot(alpha), false)
+	if !strings.Contains(card.Description, "**Slot 2** · port 16263") {
+		t.Fatalf("the Discord card should say the slot:\n%s", card.Description)
+	}
+	alpha.Public.Address = "pz.example.com"
+	alpha.Public.Port = 1234
+	card = liveCardFor(alpha, app.statusWithSlot(alpha), false)
+	if !strings.Contains(card.Description, "`pz.example.com:16263` · Slot 2") {
+		t.Fatalf("a slot server's join port follows its slot:\n%s", card.Description)
+	}
+
+	// Stopped, alpha holds nothing but still reports the slot it had.
+	app.clearRestarting("alpha")
+	app.updateStatus("alpha", func(st *Status) { st.Stopped = true; st.ContainerState = "exited" })
+	v := apiServerView(alpha, app.statusWithSlot(alpha), app.cfg.Get().PortSlots)
+	if v.Slot != 0 || v.LastSlot != 2 || v.Port != 16263 {
+		t.Fatalf("api view %+v", v)
+	}
+}
