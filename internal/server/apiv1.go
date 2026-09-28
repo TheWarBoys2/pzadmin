@@ -279,6 +279,8 @@ type apiServer struct {
 	Restarting bool   `json:"restarting"`
 	Stopped    bool   `json:"stopped"`
 	Deploying  bool   `json:"deploying"`
+	// Starting is true while a just-started container is still loading.
+	Starting bool `json:"starting,omitempty"`
 
 	Players     []string `json:"players"`
 	PlayerCount int      `json:"playerCount"`
@@ -316,7 +318,8 @@ func apiServerView(s config.Server, st Status, slots config.PortSlots) apiServer
 	v := apiServer{
 		ID: s.ID, Name: s.Name, Enabled: s.Enabled, Missing: s.Missing,
 		Online: st.Online, Restarting: st.Restarting, Stopped: st.Stopped, Deploying: st.Deploying,
-		Players: st.Players, PlayerCount: st.PlayerCount, MaxPlayers: st.MaxPlayers,
+		Starting: st.Starting && !st.Online,
+		Players:  st.Players, PlayerCount: st.PlayerCount, MaxPlayers: st.MaxPlayers,
 		Description: s.Public.Description, Address: s.Public.Address, Port: joinPort(s), Slot: st.Slot,
 		LastSlot:  lastSlot(slots, s),
 		LatencyMS: st.LatencyMS, LastCheck: st.LastCheck, LastOnline: st.LastOnline,

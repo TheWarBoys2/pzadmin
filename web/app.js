@@ -983,19 +983,20 @@ function boardRow(server, st) {
    as a red "Offline" made an ordinary restart look like an outage. */
 function statusDot(server, st) {
   if (!server.enabled) return 'idle';
-  if (st.restarting) return 'busy';
+  if (st.restarting || st.starting) return 'busy';
   return st.online ? 'on' : 'off';
 }
 
 function statusLabel(server, st) {
   if (!server.enabled) return 'Paused';
   if (st.restarting) return st.restartReason === 'stopping' ? 'Stopping' : 'Restarting';
+  if (st.starting && !st.online) return 'Starting';
   return st.online ? 'Online' : 'Offline';
 }
 
 function statusTone(server, st) {
   if (!server.enabled) return '';
-  if (st.restarting) return 'warn';
+  if (st.restarting || (st.starting && !st.online)) return 'warn';
   return st.online ? 'good' : 'bad';
 }
 

@@ -102,6 +102,11 @@ Most of this update needs nothing from you. These do:
 - When Arcane can't be reached, the message is plain, with the technical
   detail behind a toggle.
 - The Control access for API keys says plainly how much it allows.
+- A stopped server just reads Offline, with no "Nothing is listening" warning
+  on every check. A server whose container has just started reads Starting
+  for up to 15 minutes while the world loads. The warning only shows when
+  the container is running and RCON still does not answer, or when there is
+  no container to check. A wrong RCON password is always shown.
 
 ### Project
 - MIT licence, a security policy with private reporting, contributing notes

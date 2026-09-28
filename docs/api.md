@@ -105,6 +105,9 @@ For a server that uses a port slot, `port` is always its current game port and
 `slot` is the slot it holds (left out when it holds none). `lastSlot` is the
 slot a slot server was last in, running or not. See
 [port-slots.md](port-slots.md).
+`starting` is `true` while a server's container has just started and is still loading
+its world (for up to 15 minutes); it is left out otherwise. `error` is left out
+while a server is stopped or starting, since not answering is expected then.
 Times are RFC 3339, or `null` when there is none.
 
 ### `GET /api/v1/servers/{id}`

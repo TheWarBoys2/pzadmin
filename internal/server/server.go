@@ -60,6 +60,9 @@ type Status struct {
 	// Stopped is set when PZAdmin hard-stopped the server on purpose, so
 	// the outage that follows is not reported as one.
 	Stopped bool `json:"stopped,omitempty"`
+	// Starting is set while the container has only just started and RCON
+	// is not answering yet, which is normal while the world loads.
+	Starting bool `json:"starting,omitempty"`
 
 	Players     []string     `json:"players"`
 	PlayerCount int          `json:"playerCount"`
