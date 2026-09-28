@@ -1018,6 +1018,7 @@ function buildChart(samples) {
 const SERVER_TABS = [
   ['overview', 'Overview'],
   ['players', 'Players'],
+  ['live', 'Live'],
   ['commands', 'Commands'],
   ['config', 'Configuration'],
   ['mods', 'Mods'],
@@ -1059,6 +1060,7 @@ function viewServer(main) {
 
   switch (tab) {
     case 'players': tabPlayers(host, server); break;
+    case 'live': tabLive(host, server); break;
     case 'commands': tabCommands(host, server, st); break;
     case 'config': tabConfig(host, server); break;
     case 'mods': tabMods(host, server); break;
@@ -1080,6 +1082,8 @@ function serverLiveBlock(st) {
 
 async function tabOverview(host, server, st) {
   host.append(el('div', { id: 'server-live' }, serverLiveBlock(st)));
+  host.append(el('div', { id: 'server-world' }));
+  loadWorldStrip(server.id, 'server-world');
 
   if (st.error) host.append(el('div', { class: 'notice bad', text: st.error, style: { marginTop: '16px' } }));
 
@@ -1189,6 +1193,220 @@ function tabPlayers(host, server) {
           el('th', { text: 'Sessions' }), el('th', { text: 'Last seen' }), el('th', { text: 'Note' }),
           el('th', { class: 'right', text: '' }))),
         el('tbody', null, rows)))));
+}
+
+// ---------------------------------------------------------------- live tab
+
+/* The PZAdmin Companion mod (mod/ in this repository) writes the world and the
+   online players to a file once a minute. While this tab is open and Started,
+   PZAdmin keeps a flag file a few seconds in the future and the mod writes
+   every two seconds instead. The flag is only renewed while the tab is open,
+   on screen and in the foreground, so leaving any of those ends live mode on
+   its own within about twenty seconds, even if the browser simply vanishes. */
+
+const LIVE_POLL_MS = 2000;
+const LIVE_RENEW_MS = 8000;
+const COMPANION_DOCS = 'https://github.com/TheWarBoys2/pzadmin/blob/main/docs/companion.md';
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
+  'August', 'September', 'October', 'November', 'December'];
+
+// One live session at most. It lives outside the tab because the page is
+// rebuilt on navigation; the loop checks it is still wanted on every step.
+const LIVE = { serverId: '', running: false, timer: null, lastRenew: 0, view: null };
+
+function liveWanted() {
+  return LIVE.running && S.route.name === 'server' && S.route.id === LIVE.serverId &&
+    S.route.tab === 'live' && !(typeof document !== 'undefined' && document.hidden);
+}
+
+function stopLive(tellServer) {
+  const id = LIVE.serverId;
+  const wasRunning = LIVE.running;
+  LIVE.running = false;
+  if (LIVE.timer) { clearTimeout(LIVE.timer); LIVE.timer = null; }
+  LIVE.lastRenew = 0;
+  if (tellServer && wasRunning && id) {
+    api.post('/api/server/companion/live', { serverId: id, on: false }).catch(() => {});
+  }
+}
+
+async function liveStep() {
+  LIVE.timer = null;
+  if (!liveWanted()) {
+    // Paused (tab hidden) keeps LIVE.running so coming back resumes; leaving
+    // the tab ends the session.
+    const away = S.route.name !== 'server' || S.route.id !== LIVE.serverId || S.route.tab !== 'live';
+    if (away) stopLive(true);
+    else if (LIVE.running) api.post('/api/server/companion/live', { serverId: LIVE.serverId, on: false }).catch(() => {});
+    LIVE.lastRenew = 0;
+    paintLive();
+    return;
+  }
+  try {
+    if (Date.now() - LIVE.lastRenew >= LIVE_RENEW_MS) {
+      await api.post('/api/server/companion/live', { serverId: LIVE.serverId, on: true });
+      LIVE.lastRenew = Date.now();
+    }
+    LIVE.view = await api.get('/api/server/companion?id=' + encodeURIComponent(LIVE.serverId));
+  } catch (err) {
+    stopLive(false);
+    toast(err.message, 'bad');
+  }
+  paintLive();
+  if (LIVE.running && !LIVE.timer) LIVE.timer = setTimeout(liveStep, LIVE_POLL_MS);
+}
+
+function startLive(serverId) {
+  stopLive(false);
+  LIVE.serverId = serverId;
+  LIVE.running = true;
+  paintLive();
+  liveStep();
+}
+
+if (typeof document !== 'undefined' && document.addEventListener) {
+  document.addEventListener('visibilitychange', () => {
+    if (LIVE.running && !document.hidden && !LIVE.timer) liveStep();
+  });
+}
+
+function fmtGameTime(w) {
+  if (!w || w.hour === undefined) return '—';
+  return String(w.hour).padStart(2, '0') + ':' + String(w.minute || 0).padStart(2, '0');
+}
+
+function fmtGameDate(w) {
+  if (!w || !w.month) return '';
+  return w.day + ' ' + (MONTHS[w.month - 1] || '') + ' ' + (w.year || '');
+}
+
+function fmtWeather(w) {
+  if (!w) return '—';
+  const words = [];
+  const heavy = (v) => (v >= 0.6 ? 'Heavy ' : v < 0.25 ? 'Light ' : '');
+  if (w.snow > 0.05) words.push(heavy(w.snow) + 'snow');
+  else if (w.rain > 0.05) words.push(heavy(w.rain) + 'rain');
+  if (w.fog > 0.3) words.push('fog');
+  if (!words.length) words.push(w.rain !== undefined ? 'Dry' : '—');
+  const text = words.join(', ');
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function worldStrip(w) {
+  return el('div', { class: 'stat-strip' },
+    stat(w.dayNumber ? 'Day ' + w.dayNumber : '—', fmtGameDate(w) || 'in-game date'),
+    stat(fmtGameTime(w), 'in-game time'),
+    stat(fmtWeather(w), (w.season ? w.season + ', ' : '') +
+      (w.windKph !== undefined ? Math.round(w.windKph) + ' km/h wind' : 'weather')),
+    stat(w.temperatureC !== undefined ? Math.round(w.temperatureC) + '°C' : '—', 'temperature'));
+}
+
+function companionMissing(view) {
+  return el('div', { class: 'empty' },
+    el('h3', { text: 'The PZAdmin Companion mod is not reporting yet' }),
+    view && view.error ? el('p', { class: 'notice bad', text: view.error }) : null,
+    el('p', { text: 'This tab shows where everyone is and how they are doing. That needs the small ' +
+      'PZAdmin Companion mod running on this server, which RCON cannot provide.' }),
+    view && view.dir ? el('p', { class: 'muted', text: 'PZAdmin looks for its file in ' + view.dir + '.' }) : null,
+    el('a', { href: COMPANION_DOCS, target: '_blank', rel: 'noopener', text: 'How to install it' }));
+}
+
+function playerCondition(p) {
+  const bits = [];
+  if (p.dead) bits.push(el('span', { class: 'pill off', text: 'Dead' }));
+  if (p.infected) bits.push(el('span', { class: 'pill off', text: 'Infected' }));
+  if (p.asleep) bits.push(el('span', { class: 'pill', text: 'Asleep' }));
+  if (p.inVehicle) bits.push(el('span', { class: 'pill', text: 'Driving' }));
+  return bits;
+}
+
+function paintLive() {
+  const host = $('#live-host');
+  if (!host) return;
+  const server = serverFor(host.dataset.serverId);
+  if (!server) return;
+  clear(host);
+  const running = LIVE.running && LIVE.serverId === server.id;
+  const view = LIVE.serverId === server.id ? LIVE.view : null;
+  const snap = view && view.snapshot;
+
+  let status;
+  if (!view) status = 'Loading…';
+  else if (!view.found) status = 'Waiting for the mod';
+  else if (running && snap && snap.live) status = 'Live, updating every ' + Math.round(snap.intervalMs / 1000) + ' seconds';
+  else if (running) status = 'Starting live mode… the mod checks for it every few seconds';
+  else status = 'Updated ' + (view.ageSec < 45 ? 'just now' : fmtDuration(view.ageSec) + ' ago') +
+    (view.fresh ? '' : ' (the server may be offline or the mod removed)');
+
+  host.append(el('div', { class: 'panel' },
+    el('div', { class: 'panel-head' },
+      el('h3', { text: 'Live view' }),
+      el('div', { style: { display: 'flex', gap: '10px', alignItems: 'center' } },
+        el('span', { class: 'muted', text: status }),
+        running
+          ? el('button', { class: 'btn small', type: 'button', text: 'Stop', onclick: () => stopLive(true) })
+          : el('button', { class: 'btn small primary', type: 'button', text: 'Start',
+              disabled: !(view && view.found), onclick: () => startLive(server.id) })))),
+    el('p', { class: 'muted', style: { margin: '8px 0 0' }, text: 'Positions and conditions are only shown here, to signed-in admins. ' +
+      'Start updates every two seconds; leaving this tab or the browser stops it.' }));
+
+  if (!view) return;
+  if (!view.found) {
+    host.append(el('div', { class: 'panel', style: { marginTop: '16px' } }, companionMissing(view)));
+    return;
+  }
+  host.append(el('div', { style: { marginTop: '16px' } }, worldStrip(snap.world || {})));
+
+  const players = snap.players || [];
+  const rows = players.map((p) => el('tr', null,
+    el('td', null, el('div', null, el('strong', { text: p.username || '—' })),
+      p.name && p.name !== p.username ? el('div', { class: 'faint', text: p.name }) : null),
+    el('td', { class: 'mono', text: p.x !== undefined ? p.x + ', ' + p.y + (p.z ? '  floor ' + p.z : '') : '—' }),
+    el('td', { class: 'n', text: p.health !== undefined ? Math.round(p.health) + '%' : '—' }),
+    el('td', null, el('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap' } }, playerCondition(p))),
+    el('td', { class: 'n', text: p.kills !== undefined ? String(p.kills) : '—' }),
+    el('td', { class: 'n', text: p.hoursSurvived !== undefined ? fmtDuration(p.hoursSurvived * 3600) : '—' }),
+    el('td', { text: p.profession || '—' }),
+    el('td', { class: 'right' }, el('button', { class: 'btn small', type: 'button', text: 'Actions',
+      onclick: () => playerActions(server, p.username, true) }))));
+
+  host.append(el('div', { class: 'panel', style: { marginTop: '16px' } },
+    el('div', { class: 'panel-head' }, el('h3', { text: players.length === 1 ? '1 player online' : players.length + ' players online' })),
+    el('div', { class: 'panel-body flush' },
+      players.length
+        ? el('table', null,
+            el('thead', null, el('tr', null,
+              el('th', { text: 'Player' }), el('th', { text: 'Position' }), el('th', { class: 'n', text: 'Health' }),
+              el('th', { text: 'Condition' }), el('th', { class: 'n', text: 'Kills' }),
+              el('th', { class: 'n', text: 'Survived' }), el('th', { text: 'Profession' }), el('th', { class: 'right', text: '' }))),
+            el('tbody', null, rows))
+        : el('div', { class: 'empty' }, el('p', { text: 'Nobody is on the server.' })))));
+}
+
+async function tabLive(host, server) {
+  host.append(el('div', { id: 'live-host', data: { serverId: server.id } }));
+  if (LIVE.serverId !== server.id) {
+    stopLive(true);
+    LIVE.serverId = server.id;
+    LIVE.view = null;
+  }
+  paintLive();
+  if (LIVE.running) { if (!LIVE.timer) liveStep(); return; }
+  try {
+    LIVE.view = await api.get('/api/server/companion?id=' + encodeURIComponent(server.id));
+  } catch (err) {
+    LIVE.view = { found: false, error: err.message };
+  }
+  paintLive();
+}
+
+// The in-game strip on the Overview tab, when the companion is reporting.
+async function loadWorldStrip(serverId, hostId) {
+  let view;
+  try { view = await api.get('/api/server/companion?id=' + encodeURIComponent(serverId)); } catch (err) { return; }
+  const host = $('#' + hostId);
+  if (!host || !view.found || !view.fresh || !view.snapshot) return;
+  host.append(el('div', { style: { marginTop: '16px' } }, worldStrip(view.snapshot.world || {})));
 }
 
 function playerActions(server, name, isOnline) {

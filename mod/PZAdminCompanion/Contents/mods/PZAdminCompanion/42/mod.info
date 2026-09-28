@@ -1,0 +1,5 @@
+name=PZAdmin Companion
+id=PZAdminCompanion
+description=Server-side helper for PZAdmin. Writes the in-game time, weather and who is where to a file PZAdmin reads. Does nothing on players' computers.
+modversion=1.0.0
+versionMin=42.0

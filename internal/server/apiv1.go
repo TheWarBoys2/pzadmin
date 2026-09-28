@@ -299,6 +299,11 @@ type apiServer struct {
 	ModsEnabled int      `json:"modsEnabled"`
 	ModsMissing []string `json:"modsMissing"`
 
+	// World is the in-game date, time and weather from the PZAdmin Companion
+	// mod. It is absent when the mod is not installed or has not written
+	// recently. Player positions are never part of the API.
+	World *companionWorld `json:"world,omitempty"`
+
 	BackupCount   int          `json:"backupCount"`
 	LastBackup    OptionalTime `json:"lastBackup"`
 	BackupRunning bool         `json:"backupRunning"`
@@ -350,7 +355,9 @@ func (a *App) apiServerList(k apiKey) []apiServer {
 	out := []apiServer{}
 	for _, s := range config.SortServers(a.cfg.Get().Servers) {
 		if k.allows(s.ID) {
-			out = append(out, apiServerView(s, a.statusOf(s.ID)))
+			v := apiServerView(s, a.statusOf(s.ID))
+			v.World = a.companionWorldFor(s)
+			out = append(out, v)
 		}
 	}
 	return out
@@ -365,7 +372,9 @@ func (a *App) apiServerOne(w http.ResponseWriter, r *http.Request) {
 	if !found {
 		return
 	}
-	writeJSON(w, apiServerView(srv, a.statusOf(srv.ID)))
+	v := apiServerView(srv, a.statusOf(srv.ID))
+	v.World = a.companionWorldFor(srv)
+	writeJSON(w, v)
 }
 
 // apiPlayer leaves out Steam IDs and the operator's private notes.

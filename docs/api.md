@@ -98,7 +98,21 @@ Useful to check a key works.
 ```
 
 `state` is one of `online`, `offline`, `restarting`, `stopped`, `deploying` or
-`unknown` (not checked yet). `description`, `address` and `port` are the public
+`unknown` (not checked yet).
+
+When the server runs the [PZAdmin Companion mod](companion.md) and it has
+reported recently, a `world` object is added with the in-game date, time and
+weather. Every field in it may be missing. It never includes player positions.
+
+```json
+"world": {
+  "dayNumber": 23, "year": 1993, "month": 7, "day": 9, "hour": 14, "minute": 5,
+  "worldAgeHours": 530.3, "season": "Summer",
+  "temperatureC": 21.5, "rain": 0.4, "snow": 0, "fog": 0, "windKph": 12.3
+}
+```
+
+`month` and `day` count from 1. `rain`, `snow` and `fog` run from 0 to 1. `description`, `address` and `port` are the public
 info set for the server's Discord channel; `port` falls back to the game port.
 Times are RFC 3339, or `null` when there is none.
 

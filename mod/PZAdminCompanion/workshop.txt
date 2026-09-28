@@ -1,0 +1,11 @@
+version=1
+title=PZAdmin Companion
+description=Server-side helper for PZAdmin (https://github.com/TheWarBoys2/pzadmin).
+description=
+description=Every minute it writes the in-game date, time and weather, and each online player's position and condition, to a file in the server's Zomboid/Lua folder. PZAdmin reads that file. While someone has PZAdmin's Live tab open it writes every two seconds instead, and goes back to once a minute when they close it.
+description=
+description=It runs only on the server. Players download it because Project Zomboid requires every mod on a server's list, but it does nothing on their computers.
+description=
+description=Build 42 only.
+tags=Build 42;Multiplayer
+visibility=unlisted

@@ -649,6 +649,7 @@ func (a *App) Handler() http.Handler {
 	get("/api/browse", a.handleBrowse)
 	get("/api/containers", a.handleContainers)
 	get("/api/server/detail", a.handleServerDetail)
+	get("/api/server/companion", a.handleCompanion)
 	get("/api/server/config", a.handleConfigFiles)
 	get("/api/server/logs", a.handleLogs)
 	get("/api/server/mods", a.handleMods)
@@ -676,6 +677,7 @@ func (a *App) Handler() http.Handler {
 	post("/api/server/delete", a.handleServerDelete)
 	post("/api/server/destroy", a.handleServerDestroy)
 	post("/api/server/test", a.handleTestConnection)
+	post("/api/server/companion/live", a.handleCompanionLive)
 	post("/api/server/config/save", a.handleConfigSave)
 	post("/api/server/config/apply", a.handleConfigApply)
 	post("/api/mods/resolve", a.handleModResolve)
@@ -803,8 +805,10 @@ func (a *App) logRequests(next http.Handler) http.Handler {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, code: 200}
 		next.ServeHTTP(rec, r)
-		// Successful reads are noise; log the interesting cases only.
-		if rec.code >= 400 || r.Method != http.MethodGet {
+		// Successful reads are noise; log the interesting cases only. The
+		// Live tab renews its flag every few seconds, which is noise too.
+		quiet := r.Method == http.MethodGet || r.URL.Path == "/api/server/companion/live"
+		if rec.code >= 400 || !quiet {
 			log.Printf("%s %s %s %d %s", clientIP(r), r.Method, r.URL.Path, rec.code, time.Since(start).Round(time.Millisecond))
 		}
 	})
