@@ -8,7 +8,9 @@
   in-game date, time and weather, and each online player's position and
   condition. Adds a Live tab to each server with a Start button for
   two-second updates, an in-game strip on the Overview tab, and a `world`
-  field on the API's server objects. See [docs/companion.md](docs/companion.md).
+  field on the API's server objects. Upload a map image of your own, line it
+  up by clicking two spots, and the Live tab shows a pin for each player.
+  See [docs/companion.md](docs/companion.md).
 
 ## 1.0.0-beta.2 (not tagged yet)
 

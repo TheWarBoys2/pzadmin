@@ -15,6 +15,8 @@ meets the real game.
 - A **Live** tab on each server: every online player's position, health,
   infection, kills, time survived and profession, plus the in-game date, time
   and weather. Press **Start** to update every two seconds.
+- A **map** on the Live tab with a pin for each player, if you upload a map
+  image (see [The map](#the-map)). Click a pin for that player's actions.
 - An **in-game strip** on the server's Overview tab: day, time, weather and
   temperature.
 - A `world` field on `GET /api/v1/servers` and `/api/v1/servers/{id}` with the
@@ -70,6 +72,29 @@ like any other mod. It does nothing on players' computers.
 
 Tell your players. The mod reports where everyone is, and people reasonably
 want to know that.
+
+## The map
+
+PZAdmin does not ship a map image, and it never fetches one from the
+internet. You upload your own from the Live tab (**Add a map image**). It is
+shared by every server and kept in PZAdmin's data folder.
+
+- **Which image:** any top-down map of the world as a JPEG or PNG, up to
+  25 MB and 16,384 pixels a side. Around 4,000 to 8,000 pixels wide is a
+  good balance; a full-size map at one pixel per tile is about 20,000 pixels
+  wide and too heavy to pan smoothly. A screenshot or export from an online
+  Build 42 map works.
+- **Lining it up (once):** PZAdmin has to know which pixel is which tile.
+  Press **Start**, stand somewhere you can recognise on the map, press
+  **Line up map**, choose yourself (or type the in-game X and Y) and click
+  that exact spot on the map. Then do the same at a second spot far away
+  and diagonal from the first, for example the opposite corner of a big
+  town. Two spots fix both directions, so any image works, cropped or
+  scaled, including one with modded areas.
+- **A new image** needs lining up again.
+- If pins drift further from the truth the further they are from your two
+  spots, the image is probably not a straight top-down map (some map
+  exports are drawn at an angle). Use a top-down one.
 
 ## Troubleshooting
 

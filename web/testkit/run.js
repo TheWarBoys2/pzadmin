@@ -85,7 +85,7 @@ const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8')
   'newWizard, applyWizardMods, settingsEditor, wizardRequest, ' +
   'commandAvailability, isStopped, powerButton, editWebhook, viewDiscord, editServerChannel, ' +
   'apiKeyCreateDialog, apiKeysBody, modRequestsPanel, renderGate, renderSetup, showImportResult, ' +
-  'tabLive, LIVE, stopLive, fmtWeather };\n';
+  'tabLive, LIVE, stopLive, fmtWeather, mapToPixel, MAPV, mapPanel, paintPins };\n';
 
 vm.createContext(sandbox);
 vm.runInContext(source, sandbox, { filename: 'app.js' });
@@ -100,7 +100,7 @@ const {
   newWizard, applyWizardMods, settingsEditor, wizardRequest,
   commandAvailability, isStopped, powerButton, editWebhook, viewDiscord, editServerChannel,
   apiKeyCreateDialog, apiKeysBody, modRequestsPanel, renderGate, renderSetup, showImportResult,
-  tabLive, LIVE, stopLive, fmtWeather,
+  tabLive, LIVE, stopLive, fmtWeather, mapToPixel, MAPV, mapPanel, paintPins,
 } = sandbox.__exports__;
 
 // The views read from S, so give it the shape a loaded page would have.
@@ -1223,6 +1223,39 @@ test('weather reads as words', () => {
   assert.strictEqual(fmtWeather({ rain: 0, snow: 0, fog: 0 }), 'Dry');
   assert.strictEqual(fmtWeather({ rain: 0.1, snow: 0, fog: 0.5 }), 'Light rain, fog');
   assert.strictEqual(fmtWeather({ rain: 0.7, snow: 0.3, fog: 0 }), 'Snow');
+});
+
+test('map points turn game tiles into image pixels on both axes', () => {
+  const meta = { width: 4000, height: 3000, points: [
+    { x: 1000, y: 2000, px: 100, py: 200 }, { x: 11000, y: 12000, px: 3100, py: 2700 }] };
+  const a = mapToPixel(meta, 6000, 7000);
+  assert.strictEqual(a.px, 1600);
+  assert.strictEqual(a.py, 1450);
+  const b = mapToPixel(meta, 1000, 2000);
+  assert.strictEqual(b.px, 100);
+  assert.strictEqual(b.py, 200);
+});
+
+test('the map draws a pin per placed player, with names as text', () => {
+  const saved = { meta: MAPV.meta, node: MAPV.node, loaded: MAPV.loaded, view: LIVE.view };
+  MAPV.meta = { width: 1000, height: 1000, updatedAt: '2026-09-28T10:00:00Z', points: [
+    { x: 0, y: 0, px: 0, py: 0 }, { x: 1000, y: 1000, px: 1000, py: 1000 }] };
+  MAPV.node = null; MAPV.loaded = true;
+  LIVE.view = { snapshot: { players: [
+    { username: HOSTILE[1], x: 500, y: 250 }, { username: 'nowhere' }] } };
+  try {
+    const panel = mapPanel();
+    MAPV.zoom = 0.5; MAPV.x = 10; MAPV.y = 20;
+    paintPins();
+    const pins = panel.querySelectorAll('.map-pin');
+    assert.strictEqual(pins.length, 1, 'a player without a position gets no pin');
+    assert.strictEqual(pins[0].style.left, '260px');
+    assert.strictEqual(pins[0].style.top, '145px');
+    assert.ok(pins[0].textContent.includes(HOSTILE[1]));
+    assert.strictEqual(panel.querySelectorAll('img').length, 1, 'only the map itself is an image');
+  } finally {
+    MAPV.meta = saved.meta; MAPV.node = saved.node; MAPV.loaded = saved.loaded; LIVE.view = saved.view;
+  }
 });
 
 // --- report -----------------------------------------------------------------

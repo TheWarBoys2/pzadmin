@@ -146,7 +146,7 @@ function sentence(message) {
 async function request(path, options) {
   const opts = Object.assign({ credentials: 'same-origin', headers: {} }, options || {});
   if (opts.method === 'POST') {
-    opts.headers['Content-Type'] = 'application/json';
+    opts.headers['Content-Type'] = opts.contentType || 'application/json';
     opts.headers['X-CSRF-Token'] = csrfToken();
   }
   let response;
@@ -176,6 +176,8 @@ async function request(path, options) {
 const api = {
   get: (path) => request(path, { method: 'GET' }),
   post: (path, body) => request(path, { method: 'POST', body: JSON.stringify(body || {}) }),
+  // upload sends a file as the raw body.
+  upload: (path, file) => request(path, { method: 'POST', body: file, contentType: file.type || 'application/octet-stream' }),
 };
 
 // ---------------------------------------------------------------------- state
@@ -1356,6 +1358,8 @@ function paintLive() {
     return;
   }
   host.append(el('div', { style: { marginTop: '16px' } }, worldStrip(snap.world || {})));
+  host.append(mapPanel());
+  paintPins();
 
   const players = snap.players || [];
   const rows = players.map((p) => el('tr', null,
@@ -1391,6 +1395,8 @@ async function tabLive(host, server) {
     LIVE.view = null;
   }
   paintLive();
+  await loadWorldMap();
+  paintLive();
   if (LIVE.running) { if (!LIVE.timer) liveStep(); return; }
   try {
     LIVE.view = await api.get('/api/server/companion?id=' + encodeURIComponent(server.id));
@@ -1407,6 +1413,251 @@ async function loadWorldStrip(serverId, hostId) {
   const host = $('#' + hostId);
   if (!host || !view.found || !view.fresh || !view.snapshot) return;
   host.append(el('div', { style: { marginTop: '16px' } }, worldStrip(view.snapshot.world || {})));
+}
+
+// ------------------------------------------------------------- world map
+
+/* One uploaded map image, shared by every server, lined up with the game by
+   two points: an in-game tile and the image pixel showing it. The image is a
+   top-down map, so each axis is its own straight line. The map node is built
+   once and kept, because the Live tab repaints every two seconds and a
+   rebuilt node would lose the operator's pan and zoom. */
+const MAPV = { loaded: false, meta: null, node: null, inner: null, pins: null,
+  zoom: 0, x: 0, y: 0, calib: null, calibNode: null };
+
+async function loadWorldMap(force) {
+  if (MAPV.loaded && !force) return;
+  try {
+    const r = await api.get('/api/map');
+    MAPV.meta = r && r.present ? r.map : null;
+  } catch (err) { MAPV.meta = null; }
+  MAPV.loaded = true;
+  MAPV.node = null;
+}
+
+function mapLinedUp(meta) { return !!(meta && meta.points && meta.points.length === 2); }
+
+// mapToPixel turns an in-game tile into a pixel on the image.
+function mapToPixel(meta, x, y) {
+  const [a, b] = meta.points;
+  return {
+    px: a.px + (x - a.x) * (b.px - a.px) / (b.x - a.x),
+    py: a.py + (y - a.y) * (b.py - a.py) / (b.y - a.y),
+  };
+}
+
+function applyMapView() {
+  if (!MAPV.inner) return;
+  MAPV.inner.style.transform = 'translate(' + MAPV.x + 'px,' + MAPV.y + 'px) scale(' + MAPV.zoom + ')';
+  paintPins();
+}
+
+function fitMap() {
+  const w = (MAPV.node && MAPV.node.clientWidth) || 800;
+  const h = (MAPV.node && MAPV.node.clientHeight) || 520;
+  MAPV.zoom = Math.min(w / MAPV.meta.width, h / MAPV.meta.height);
+  MAPV.x = (w - MAPV.meta.width * MAPV.zoom) / 2;
+  MAPV.y = (h - MAPV.meta.height * MAPV.zoom) / 2;
+  applyMapView();
+}
+
+// zoomMap scales by factor about a point in the view, default its centre.
+function zoomMap(factor, cx, cy) {
+  const w = (MAPV.node && MAPV.node.clientWidth) || 800;
+  const h = (MAPV.node && MAPV.node.clientHeight) || 520;
+  if (cx === undefined) { cx = w / 2; cy = h / 2; }
+  const next = Math.min(8, Math.max(0.02, MAPV.zoom * factor));
+  MAPV.x = cx - (cx - MAPV.x) * next / MAPV.zoom;
+  MAPV.y = cy - (cy - MAPV.y) * next / MAPV.zoom;
+  MAPV.zoom = next;
+  applyMapView();
+}
+
+function buildMapNode() {
+  const m = MAPV.meta;
+  const img = el('img', { src: '/api/map/image?v=' + encodeURIComponent(m.updatedAt || ''),
+    alt: 'World map', draggable: 'false', width: String(m.width), height: String(m.height) });
+  MAPV.inner = el('div', { class: 'map-inner' }, img);
+  MAPV.pins = el('div', { class: 'map-pins' });
+  const view = el('div', { class: 'map-view' }, MAPV.inner, MAPV.pins);
+  MAPV.node = view;
+
+  let drag = null;
+  view.addEventListener('pointerdown', (e) => {
+    if (e.target && e.target.closest && e.target.closest('.map-pin')) return;
+    drag = { sx: e.clientX, sy: e.clientY, x: MAPV.x, y: MAPV.y, moved: false };
+    if (view.setPointerCapture) view.setPointerCapture(e.pointerId);
+  });
+  view.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    const dx = e.clientX - drag.sx, dy = e.clientY - drag.sy;
+    if (Math.abs(dx) + Math.abs(dy) > 4) drag.moved = true;
+    MAPV.x = drag.x + dx; MAPV.y = drag.y + dy;
+    applyMapView();
+  });
+  view.addEventListener('pointerup', (e) => {
+    const was = drag;
+    drag = null;
+    if (!was || was.moved || !MAPV.calib) return;
+    const rect = view.getBoundingClientRect();
+    calibClick((e.clientX - rect.left - MAPV.x) / MAPV.zoom, (e.clientY - rect.top - MAPV.y) / MAPV.zoom);
+  });
+  view.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const rect = view.getBoundingClientRect();
+    zoomMap(e.deltaY < 0 ? 1.25 : 0.8, e.clientX - rect.left, e.clientY - rect.top);
+  }, { passive: false });
+  setTimeout(fitMap, 0);
+  return view;
+}
+
+function paintPins() {
+  if (!MAPV.pins) return;
+  clear(MAPV.pins);
+  // Spots already clicked while lining up, drawn even before the map is lined up.
+  if (MAPV.calib) {
+    for (const q of MAPV.calib.points) {
+      MAPV.pins.append(el('span', { class: 'map-mark',
+        style: { left: (MAPV.x + q.px * MAPV.zoom) + 'px', top: (MAPV.y + q.py * MAPV.zoom) + 'px' } }));
+    }
+  }
+  if (!mapLinedUp(MAPV.meta)) return;
+  const view = LIVE.view;
+  const players = (view && view.snapshot && view.snapshot.players) || [];
+  const server = serverFor(LIVE.serverId);
+  for (const p of players) {
+    if (p.x === undefined || p.y === undefined) continue;
+    const at = mapToPixel(MAPV.meta, p.x, p.y);
+    MAPV.pins.append(el('button', {
+      type: 'button', class: 'map-pin' + (p.dead ? ' dead' : p.infected ? ' infected' : ''),
+      title: p.username + '  (' + p.x + ', ' + p.y + ')',
+      style: { left: (MAPV.x + at.px * MAPV.zoom) + 'px', top: (MAPV.y + at.py * MAPV.zoom) + 'px' },
+      onclick: () => { if (server) playerActions(server, p.username, true); },
+    }, el('span', { class: 'map-pin-label', text: p.username || '?' })));
+  }
+}
+
+// --- lining the map up -----------------------------------------------------
+
+function calibPlayers() {
+  const players = (LIVE.view && LIVE.view.snapshot && LIVE.view.snapshot.players) || [];
+  return players.filter((p) => p.x !== undefined && p.y !== undefined);
+}
+
+function startCalib() {
+  MAPV.calib = { points: [] };
+  MAPV.calibNode = buildCalibNode();
+  paintLive();
+}
+
+function buildCalibNode() {
+  const step = MAPV.calib.points.length + 1;
+  const xIn = el('input', { type: 'number', step: '1', 'aria-label': 'In-game X' });
+  const yIn = el('input', { type: 'number', step: '1', 'aria-label': 'In-game Y' });
+  const players = calibPlayers();
+  const pick = el('select', { 'aria-label': 'Player' },
+    el('option', { value: '', text: players.length ? 'Use a player’s position…' : 'Nobody online: type coordinates' }),
+    players.map((p) => el('option', { value: p.username, text: p.username + '  (' + p.x + ', ' + p.y + ')' })));
+  pick.addEventListener('change', () => {
+    // Read the latest position, not the one in the list when it was built.
+    const p = calibPlayers().find((q) => q.username === pick.value);
+    if (p) { xIn.value = String(p.x); yIn.value = String(p.y); }
+  });
+  MAPV.calib.inputs = { xIn, yIn };
+  return el('div', { class: 'notice map-calib' },
+    el('strong', { text: 'Line up the map, spot ' + step + ' of 2. ' }),
+    el('span', { text: step === 1
+      ? 'Press Start first so positions are current. Stand somewhere you can find on the map, choose yourself below, then click that exact spot on the map.'
+      : 'Now a second spot far away, diagonally from the first: move in the game, choose yourself again, and click the new spot.' }),
+    el('div', { class: 'map-calib-row' }, pick,
+      el('label', null, 'X ', xIn), el('label', null, 'Y ', yIn),
+      el('button', { class: 'btn small', type: 'button', text: 'Cancel', onclick: () => {
+        MAPV.calib = null; MAPV.calibNode = null; paintLive();
+      } })));
+}
+
+async function calibClick(px, py) {
+  const c = MAPV.calib;
+  const x = parseFloat(c.inputs.xIn.value), y = parseFloat(c.inputs.yIn.value);
+  if (isNaN(x) || isNaN(y)) { toast('Choose a player or type the in-game X and Y first.', 'bad'); return; }
+  c.points.push({ x, y, px: Math.round(px), py: Math.round(py) });
+  if (c.points.length < 2) {
+    MAPV.calibNode = buildCalibNode();
+    paintLive();
+    return;
+  }
+  try {
+    const r = await api.post('/api/map/calibrate', { points: c.points.map((q) => ({ x: q.x, y: q.y, px: q.px, py: q.py })) });
+    MAPV.meta = r.map;
+    MAPV.calib = null; MAPV.calibNode = null;
+    toast('Map lined up.', 'good');
+  } catch (err) {
+    toast(err.message, 'bad');
+    MAPV.calib = { points: [] };
+    MAPV.calibNode = buildCalibNode();
+  }
+  paintLive();
+}
+
+// --- uploading -------------------------------------------------------------
+
+function mapImageDialog() {
+  const file = el('input', { type: 'file', accept: 'image/jpeg,image/png' });
+  const upload = async () => {
+    const f = file.files && file.files[0];
+    if (!f) { toast('Choose an image first.', 'bad'); return; }
+    try {
+      const r = await api.upload('/api/map/upload', f);
+      MAPV.meta = r.map; MAPV.node = null; MAPV.calib = null; MAPV.calibNode = null;
+      closeModal();
+      toast('Map uploaded. Line it up next so the pins land in the right place.', 'good');
+      paintLive();
+    } catch (err) { toast(err.message, 'bad'); }
+  };
+  const remove = async () => {
+    if (!await confirmDialog({ title: 'Remove the map image?', message: 'The Live tab goes back to the list only.', confirmLabel: 'Remove', danger: true })) return;
+    try {
+      await api.post('/api/map/delete', {});
+      MAPV.meta = null; MAPV.node = null; MAPV.calib = null; MAPV.calibNode = null;
+      closeModal();
+      paintLive();
+    } catch (err) { toast(err.message, 'bad'); }
+  };
+  openModal({
+    title: 'Map image',
+    sub: 'Shared by every server',
+    body: el('div', null,
+      el('p', { text: 'A top-down map of the world as a JPEG or PNG, up to 25 MB and 16,384 pixels a side. ' +
+        'Around 4,000 to 8,000 pixels wide works well. A screenshot from an online Build 42 map is fine.' }),
+      el('p', { class: 'muted', text: 'After uploading, you line it up once by clicking two spots whose in-game position you know.' }),
+      field('Image', file)),
+    actions: [
+      MAPV.meta ? el('button', { class: 'btn danger', type: 'button', text: 'Remove map', onclick: remove }) : null,
+      el('button', { class: 'btn primary', type: 'button', text: 'Upload', onclick: upload }),
+    ],
+  });
+}
+
+function mapPanel() {
+  const m = MAPV.meta;
+  const head = el('div', { class: 'panel-head' },
+    el('h3', { text: 'Map' }),
+    el('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap' } },
+      m ? el('button', { class: 'btn small', type: 'button', text: '+', 'aria-label': 'Zoom in', onclick: () => zoomMap(1.5) }) : null,
+      m ? el('button', { class: 'btn small', type: 'button', text: '−', 'aria-label': 'Zoom out', onclick: () => zoomMap(1 / 1.5) }) : null,
+      m ? el('button', { class: 'btn small', type: 'button', text: 'Fit', onclick: fitMap }) : null,
+      m && !MAPV.calib ? el('button', { class: 'btn small', type: 'button', text: mapLinedUp(m) ? 'Line up again' : 'Line up map', onclick: startCalib }) : null,
+      el('button', { class: 'btn small', type: 'button', text: m ? 'Change image' : 'Add a map image', onclick: mapImageDialog })));
+  if (!m) {
+    return el('div', { class: 'panel', style: { marginTop: '16px' } }, head,
+      el('div', { class: 'panel-body' }, el('p', { class: 'muted', text: 'Add a map image to see everyone as pins on the map.' })));
+  }
+  if (!MAPV.node) buildMapNode();
+  const body = el('div', { class: 'panel-body flush' },
+    MAPV.calib ? MAPV.calibNode : null,
+    !mapLinedUp(m) && !MAPV.calib ? el('div', { class: 'notice warn map-calib', text: 'Line the map up so pins land in the right place.' }) : null,
+    MAPV.node);
+  return el('div', { class: 'panel', style: { marginTop: '16px' } }, head, body);
 }
 
 function playerActions(server, name, isOnline) {
