@@ -29,7 +29,7 @@ server's config files (with passwords hidden) and the list of backups.
 |---|---|
 | Control | Start, stop and restart; run commands from the command list, which includes kick, ban, giving items and setting access levels; make and verify backups; run an existing scheduled job now; player notes; add to the item catalogue |
 | Mods | Change the mod list and load order; approve or reject mod requests |
-| Config | Edit the server's ini, sandbox and `.env`; redeploy; download, restore and delete backups; clear player history |
+| Config | Edit the server's ini, sandbox and `.env`; redeploy; download, restore and delete backups; reset a stopped server's world; clear player history |
 | Console | Send any RCON command |
 
 The presets fill in the ticks: **Viewer** is view only, **Operator** adds
@@ -77,7 +77,8 @@ were given can still do real damage:
   wiping access levels. Give it only to someone you would trust with the
   server itself.
 - **Config** can break a server with a bad setting, restore an old backup over
-  the current world, and download backups, which include the server's config
+  the current world, reset (delete) a stopped server's world, and download
+  backups, which include the server's config
   folder when backups are set to include it.
 - **Control** can kick, ban and give items through the command list, and stop
   a server.

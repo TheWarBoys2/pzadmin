@@ -50,6 +50,12 @@ Most of this update needs nothing from you. These do:
   them, are moved to `.before-restore` folders, and put back if the restore
   fails. An archive with no world in it is refused.
 - Half-written archives from an interrupted backup are cleaned up.
+- **Reset world**, under a server's Config tab, deletes its
+  `Saves/Multiplayer` folder so the next start builds a new world: handy for
+  trying a new mod list or sandbox settings. The server must be stopped, you
+  type its name to confirm, and a backup is taken first unless you untick it.
+  Settings, mods, accounts, the whitelist and bans are kept. Needs the Config
+  permission, and goes in the activity log.
 
 ### Security
 - Sign-in is limited per address and across all addresses. Each attempt is

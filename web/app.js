@@ -2041,6 +2041,7 @@ async function tabConfig(host, server) {
     host.append(el('div', { class: 'panel' }, el('div', { class: 'empty' },
       el('h3', { text: 'No editable files found' }),
       el('p', { text: 'PZAdmin looks for .ini and .lua files in the server config directory.' }))));
+    if (can('config')) worldResetPanel(host, server);
     return;
   }
 
@@ -2061,6 +2062,91 @@ async function tabConfig(host, server) {
           class: 'btn small', type: 'button', text: f.editable ? 'Edit file' : 'Too large',
           disabled: !f.editable, onclick: () => editConfigFile(server, f.name),
         }))))));
+  if (can('config')) worldResetPanel(host, server);
+}
+
+/* worldResetPanel offers to delete the world (Saves/Multiplayer) so the server
+   builds a new one on its next start. It says exactly which folder goes. */
+async function worldResetPanel(host, server) {
+  const body = el('div', { class: 'panel-body' }, el('p', { class: 'muted', text: 'Checking the world folder…' }));
+  host.append(el('div', { class: 'panel', style: { marginTop: '18px' } },
+    el('div', { class: 'panel-head' }, el('h3', { text: 'Reset world' })), body));
+  let world;
+  try {
+    world = await api.get('/api/server/world?id=' + encodeURIComponent(server.id));
+  } catch (err) {
+    clear(body);
+    body.append(el('div', { class: 'notice bad', text: err.message }));
+    return;
+  }
+  clear(body);
+  body.append(el('p', { text: 'Deletes this server\u2019s world so it generates a new map the next time it starts. ' +
+    'Useful for trying out a new mod list or sandbox settings.' }));
+  if (!world.dir) {
+    body.append(el('p', { class: 'muted', text: 'PZAdmin could not find this server\u2019s Saves folder, so there is nothing to reset.' }));
+    return;
+  }
+  body.append(el('div', { class: 'hint mono', style: { overflowWrap: 'anywhere' }, text: world.dir }));
+  if (!world.exists) {
+    body.append(el('p', { class: 'muted', text: 'There is no world here yet. The server makes one when it starts.' }));
+    return;
+  }
+  body.append(el('p', { class: 'muted', text: (world.worlds.length ? 'World: ' + world.worlds.join(', ') + ' · ' : '') +
+    fmtBytes(world.bytes) + (world.truncated ? '+' : '') + ' · ' + world.files + (world.truncated ? '+' : '') + (world.files === 1 ? ' file' : ' files') }));
+  body.append(el('div', null, el('button', { class: 'btn danger', type: 'button', text: 'Reset world\u2026',
+    onclick: () => resetWorldDialog(server, world) })));
+}
+
+function resetWorldDialog(server, world) {
+  const st = statusFor(server.id);
+  const running = !isStopped(server, st) && (st.online || st.restarting || st.deploying ||
+    String(st.containerState || '').toLowerCase() === 'running');
+  const confirmInput = el('input', { type: 'text', autocomplete: 'off', placeholder: server.name });
+  const backup = el('input', { type: 'checkbox', checked: true });
+  const error = el('div', { class: 'error' });
+  const resetBtn = el('button', { class: 'btn danger', type: 'button', text: 'Reset world', disabled: true });
+  const refresh = () => { resetBtn.disabled = running || confirmInput.value.trim() !== server.name; };
+  confirmInput.addEventListener('input', refresh);
+  confirmInput.addEventListener('keydown', (event) => { if (event.key === 'Enter' && !resetBtn.disabled) resetBtn.click(); });
+
+  resetBtn.addEventListener('click', async () => {
+    error.textContent = '';
+    resetBtn.disabled = true;
+    resetBtn.textContent = backup.checked ? 'Backing up and resetting\u2026' : 'Resetting\u2026';
+    try {
+      const result = await api.post('/api/server/world/reset', {
+        serverId: server.id, confirm: confirmInput.value.trim(), backup: backup.checked,
+      });
+      closeAllModals();
+      toast(result.message || 'World deleted.', 'good');
+      go('/servers/' + server.id + '/config');
+    } catch (err) {
+      error.textContent = err.message;
+      resetBtn.textContent = 'Reset world';
+      refresh();
+    }
+  });
+
+  openModal({
+    title: 'Reset ' + server.name + '\u2019s world?',
+    body: el('div', { class: 'form' },
+      running ? el('div', { class: 'notice warn' },
+        el('span', { text: server.name + ' is running. Stop it first, so nobody is playing and the game is not writing the world. ' }),
+        can('control') ? el('button', { class: 'btn small', type: 'button', text: 'Stop it',
+          onclick: async () => { closeAllModals(); await lifecycle(server, 'stop'); } }) : null) : null,
+      el('p', { text: 'The whole Saves/Multiplayer folder is deleted: the map, every player\u2019s character and inventory, ' +
+        'bases, vehicles, and any data mods keep inside the world. The next start generates a new world.' }),
+      el('div', { class: 'hint mono', style: { overflowWrap: 'anywhere' }, text: world.dir }),
+      el('p', { class: 'muted', text: 'Kept: server settings and sandbox rules, the mod list, player accounts, ' +
+        'admins, the whitelist and bans (in db/), logs, and PZAdmin\u2019s backups.' }),
+      el('div', { class: 'field' },
+        el('label', { class: 'check' }, backup, el('span', { text: ' Back up the world first (recommended)' })),
+        el('div', { class: 'hint', text: 'Uses this server\u2019s usual backup settings, so you can put the old world back from the Backups tab. ' +
+          'Counts toward the number of backups kept.' })),
+      field('Type ' + server.name + ' to confirm', confirmInput),
+      error),
+    actions: [el('button', { class: 'btn', type: 'button', text: 'Cancel', onclick: closeModal }), resetBtn],
+  });
 }
 
 // Only files PZAdmin understands well enough to present as a form get one.
@@ -5243,7 +5329,7 @@ function apiKeyReveal(key, meta) {
 const USER_PERMS = [
   ['control', 'Control', 'Start, stop and restart, run commands from the command list (kick, ban, give items and so on), make backups and run existing jobs now.'],
   ['mods', 'Mods', 'Change the mod list and load order, and approve or reject mod requests.'],
-  ['config', 'Config', 'Edit server settings and .env, redeploy, download, restore and delete backups, and clear player history.'],
+  ['config', 'Config', 'Edit server settings and .env, redeploy, download, restore and delete backups, reset the world, and clear player history.'],
   ['console', 'Console', 'Send any RCON command. This skips every check, so only give it to someone you trust with the server itself.'],
 ];
 const USER_PRESETS = [

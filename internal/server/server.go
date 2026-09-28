@@ -677,6 +677,7 @@ func (a *App) Handler() http.Handler {
 	// A backup can hold the server's config folder, passwords included.
 	get("/api/backups/download", needs(permConfig, fromQueryServerID), a.handleBackupDownload)
 	get("/api/stack/env", needs(permConfig, fromQueryID), a.handleStackEnv)
+	get("/api/server/world", needs(permConfig, fromQueryID), a.handleWorldInfo)
 
 	// The account's own password.
 	post("/api/password", view(fromNone), a.handlePassword)
@@ -708,6 +709,7 @@ func (a *App) Handler() http.Handler {
 	post("/api/stack/deploy", needs(permConfig, fromBodyServerID), a.handleStackDeploy)
 	post("/api/backups/restore", needs(permConfig, fromBodyServerID), a.handleBackupRestore)
 	post("/api/backups/delete", needs(permConfig, fromBodyServerID), a.handleBackupDelete)
+	post("/api/server/world/reset", needs(permConfig, fromBodyServerID), a.handleWorldReset)
 	post("/api/player/forget", needs(permConfig, fromBodyServerID), a.handlePlayerForget)
 
 	// The owner's alone: PZAdmin itself, servers coming and going, jobs,

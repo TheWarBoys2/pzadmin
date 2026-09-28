@@ -317,6 +317,30 @@ worked, and if it fails, everything is put back. Delete the
 as a whole, so a settings file added after the backup is only in
 `Server.before-restore` afterwards.
 
+### Reset world
+
+**Reset world** is at the bottom of a server's **Config** tab. It deletes the
+server's `Saves/Multiplayer` folder (the page shows the full path and the
+world's name and size), so the next start generates a brand-new world. It's
+meant for trying out a new mod list or sandbox settings.
+
+What is deleted, for good: the map and everything built on it, every player's
+character, skills and inventory (`players.db` lives in the world folder),
+vehicles, and anything a mod stores inside the world. If the `Multiplayer`
+folder holds more than one world, they all go.
+
+What is kept: the server settings and sandbox rules in `Server/`, the mod
+list, player accounts, admins, the whitelist and bans (Project Zomboid keeps
+those in `db/`, outside `Saves`), logs, and PZAdmin's backups. Files a mod
+writes outside the world folder, such as in `Lua/`, are not touched either.
+
+The server must be stopped, and you type its name to confirm. By default
+PZAdmin takes a backup first with the server's usual backup settings, so you
+can put the old world back with **Restore**; untick the box to skip it. That
+backup counts toward how many are kept, so it can push the oldest one out.
+Only the owner and users with the **Config** permission see the button, and
+each reset goes in the activity log with who did it.
+
 Upgrading from an earlier PZAdmin that kept backups inside its volume: once
 `PZADMIN_BACKUP_DIR` is set, PZAdmin moves the old archives into the new
 folder by itself the next time it starts, and notes it in the activity log.
