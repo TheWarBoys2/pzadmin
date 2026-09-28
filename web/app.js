@@ -815,6 +815,7 @@ function viewDashboard(main) {
     stat(String((S.state.players || []).length), 'players known'),
     stat(missingMods ? String(missingMods) : '0', 'mods missing', missingMods ? 'bad' : null)));
 
+  main.append(el('div', { id: 'slots' }));
   main.append(el('div', { class: 'board', id: 'board' }));
   paintStatus();
 
@@ -835,6 +836,35 @@ function viewDashboard(main) {
   loadChart('', 24, 'chart-host', 'chart-note');
 }
 
+/* slotTable merges the slot list from the last state load with live status,
+   so a slot frees up on screen as soon as its server stops. A slot held by a
+   server this account cannot see arrives only as "busy". */
+function slotTable() {
+  const ps = S.state.portSlots;
+  if (!ps || !ps.enabled) return [];
+  const live = {};
+  for (const server of servers()) {
+    const st = statusFor(server.id);
+    if (st.slot) live[st.slot] = server;
+  }
+  return (ps.slots || []).map((row) => {
+    const server = live[row.number];
+    if (server) return { ...row, busy: true, server: server.name, serverId: server.id };
+    if (row.busy && !row.serverId) return { ...row, busy: true, server: '' };
+    return { ...row, busy: false, server: '', serverId: '' };
+  });
+}
+
+function slotStrip() {
+  const rows = slotTable();
+  if (!rows.length || !servers().some((s) => s.useSlot)) return null;
+  return el('div', { class: 'slot-strip' },
+    el('span', { class: 'muted', text: 'Port slots' }),
+    rows.map((row) => el('span', { class: 'slot ' + (row.busy ? 'busy' : 'free') },
+      el('span', { class: 'mono', text: String(row.gamePort) }),
+      el('span', { text: row.busy ? (row.server || 'in use') : 'free' }))));
+}
+
 function describeFleet(all, docker) {
   if (!all.length) return 'No servers yet.';
   const down = all.filter((s) => s.enabled && !s.online);
@@ -852,6 +882,8 @@ function stat(value, label, tone) {
 }
 
 function paintStatus() {
+  const slotHost = $('#slots');
+  if (slotHost) { clear(slotHost); append(slotHost, [slotStrip()]); }
   const board = $('#board');
   if (board) {
     clear(board);
@@ -891,7 +923,9 @@ function boardRow(server, st) {
       el('div', { class: 'title' },
         el('span', { class: 'dot ' + statusDot(server, st) }),
         el('button', { type: 'button', text: server.name, onclick: () => go('/servers/' + server.id + '/overview') }),
-        !server.enabled ? el('span', { class: 'pill', text: 'Not monitored' }) : null),
+        !server.enabled ? el('span', { class: 'pill', text: 'Not monitored' }) : null,
+        st.slot ? el('span', { class: 'pill on', title: 'Port slot ' + st.slot, text: 'Slot ' + st.slot + ' \u00b7 ' + server.gamePort })
+          : lastSlotOf(server) ? el('span', { class: 'pill', title: 'The port slot it used last', text: 'Last: slot ' + lastSlotOf(server) }) : null),
       el('div', { class: 'meta', text: address })),
 
     el('div', { class: 'cell' },
@@ -1826,7 +1860,69 @@ function powerButton(server, st, cls) {
     onclick: () => lifecycle(server, 'stop') });
 }
 
+/* lastSlotOf is the slot a slot server was last in: the one its game port is
+   in, running or not. */
+function lastSlotOf(server) {
+  if (!server.useSlot) return 0;
+  const row = slotTable().find((r) => r.gamePort === server.gamePort || r.udpPort === server.gamePort);
+  return row ? row.number : 0;
+}
+
+/* pickSlotDialog asks which port slot to start a server in. It resolves to
+   the slot number, or false when cancelled. Busy slots are shown but can't
+   be picked; the last slot the server used is marked and picked by default
+   when it is free. */
+function pickSlotDialog(server) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => { if (settled) return; settled = true; closeModal(); resolve(value); };
+    const rows = slotTable();
+    const last = lastSlotOf(server);
+    const free = rows.filter((r) => !r.busy || r.serverId === server.id);
+    const preferred = free.find((r) => r.number === last) || free[0];
+    const name = 'slot-' + server.id;
+    const options = rows.map((row) => {
+      const mine = row.serverId === server.id;
+      const radio = el('input', { type: 'radio', name: name, value: String(row.number),
+        disabled: row.busy && !mine, checked: preferred && preferred.number === row.number });
+      const notes = [];
+      if (row.number === last) notes.push('last used');
+      if (row.busy && !mine) notes.push('in use by ' + (row.server || 'another server'));
+      else notes.push('free');
+      return el('label', { class: 'check' }, radio,
+        el('span', null, el('span', { text: 'Slot ' + row.number + ' \u00b7 port ' + row.gamePort }),
+          el('span', { class: 'hint', text: notes.join(', ') })));
+    });
+    const go = el('button', { class: 'btn primary', type: 'button', text: 'Start', disabled: !preferred,
+      onclick: () => {
+        const picked = options.map((o) => o.querySelector('input')).find((i) => i.checked);
+        finish(picked ? parseInt(picked.value, 10) : false);
+      } });
+    openModal({
+      title: 'Start ' + server.name + '?',
+      body: el('div', { class: 'form' },
+        el('p', { text: preferred
+          ? 'Pick the port slot it starts in. Players join on that slot\u2019s port.'
+          : 'Every port slot is in use. Stop a server first.' }),
+        last ? el('p', { class: 'muted', text: 'Last used: slot ' + last + '.' }) : null,
+        options),
+      actions: [el('button', { class: 'btn', type: 'button', text: 'Cancel', onclick: () => finish(false) }), go],
+      onDismiss: () => { if (!settled) { settled = true; resolve(false); } },
+    });
+  });
+}
+
 async function lifecycle(server, action) {
+  if (action === 'start' && server.useSlot && S.state.portSlots && S.state.portSlots.enabled) {
+    const slot = await pickSlotDialog(server);
+    if (slot === false) return;
+    try {
+      const result = await api.post('/api/lifecycle', { serverId: server.id, action: 'start', slot: slot });
+      toast(result.message || 'Done.', 'good');
+      setTimeout(refreshState, 1500);
+    } catch (err) { toast(err.message, 'bad'); }
+    return;
+  }
   const prompts = {
     restart: {
       title: 'Restart ' + server.name + '?',
@@ -4085,7 +4181,7 @@ function viewSettings(main) {
     return;
   }
   main.append(el('div', { class: 'grid halves' },
-    settingsGeneral(cfg), settingsMetrics(cfg), settingsData(cfg), settingsAccount(), settingsUsers(), settingsAPIKeys()));
+    settingsGeneral(cfg), settingsPortSlots(cfg), settingsMetrics(cfg), settingsData(cfg), settingsAccount(), settingsUsers(), settingsAPIKeys()));
 }
 
 function settingsGeneral(cfg) {
@@ -4121,6 +4217,58 @@ function settingsGeneral(cfg) {
       el('div', { class: 'row' },
         field('Check servers every (seconds)', poll, 'How often PZAdmin asks each server who is online.'),
         field('Keep history for (days)', retain, 'Activity and player-count history older than this is deleted.')),
+      el('div', { class: 'form-actions' }, save))));
+}
+
+function settingsPortSlots(cfg) {
+  const ps = cfg.portSlots || {};
+  const on = el('input', { type: 'checkbox', checked: ps.count > 0 });
+  const first = el('input', { type: 'number', min: '1024', max: '65534', value: ps.firstPort || 16261 });
+  const count = el('input', { type: 'number', min: '1', max: '16', value: ps.count || 2 });
+  const range = el('p', { class: 'hint' });
+  const showRange = () => {
+    const f = parseInt(first.value, 10) || 0;
+    const n = parseInt(count.value, 10) || 0;
+    range.textContent = on.checked && f && n
+      ? 'Forward UDP ports ' + f + ' to ' + (f + 2 * n - 1) + ' on your router. That is ' + n
+        + (n === 1 ? ' slot' : ' slots') + ' of two ports each.'
+      : 'Off. Every server keeps ports of its own.';
+    first.disabled = count.disabled = !on.checked;
+  };
+  for (const input of [on, first, count]) input.addEventListener('input', showRange);
+  showRange();
+
+  const save = el('button', { class: 'btn primary', type: 'button', text: 'Save' });
+  save.addEventListener('click', async () => {
+    save.disabled = true;
+    try {
+      await api.post('/api/settings', { portSlots: on.checked
+        ? { firstPort: parseInt(first.value, 10) || 0, count: parseInt(count.value, 10) || 0 }
+        : { firstPort: 0, count: 0 } });
+      toast('Port slots saved.', 'good');
+      await refreshState();
+    } catch (err) { toast(err.message, 'bad'); save.disabled = false; }
+  });
+
+  const rows = slotTable();
+  const users = servers().filter((s) => s.useSlot).map((s) => s.name);
+  return el('div', { class: 'panel' },
+    el('div', { class: 'panel-head' }, el('h3', { text: 'Port slots' })),
+    el('div', { class: 'panel-body' }, el('div', { class: 'form' },
+      el('p', { class: 'hint', text: 'Share a few forwarded ports between servers that do not all run at once. '
+        + 'A server set to use a slot takes a free one when it starts and gives it back when it stops. '
+        + 'Tick "Use a port slot" in each server’s settings.' }),
+      el('label', { class: 'check' }, on, el('span', { text: 'Use port slots' })),
+      el('div', { class: 'row' },
+        field('First port', first, 'Each slot is this port and the next one.'),
+        field('Slots', count, 'How many servers can run at once.')),
+      range,
+      rows.length ? el('div', { class: 'slot-strip' }, rows.map((row) => el('span', { class: 'slot ' + (row.busy ? 'busy' : 'free') },
+        el('span', { class: 'mono', text: String(row.gamePort) }),
+        el('span', { text: row.busy ? (row.server || 'in use') : 'free' })))) : null,
+      rows.length ? el('p', { class: 'hint', text: users.length
+        ? 'Using slots: ' + users.join(', ') + '.'
+        : 'No server uses a slot yet.' }) : null,
       el('div', { class: 'form-actions' }, save))));
 }
 
@@ -5340,6 +5488,19 @@ function editServer(existing) {
   const pubPort = el('input', { type: 'number', min: '1', max: '65535', value: pub.port || '',
     placeholder: s.gamePort ? String(s.gamePort) : '16261' });
 
+  const slotsOn = !!(S.state.portSlots && S.state.portSlots.enabled);
+  const useSlot = el('input', { type: 'checkbox', checked: !!s.useSlot, disabled: !slotsOn && !s.useSlot });
+  const portHint = () => useSlot.checked
+    ? 'Follows its port slot, so players are always told the port it is on now.'
+    : 'Leave blank to use the game port' + (s.gamePort ? ' (' + s.gamePort + ').' : '.');
+  const syncPort = () => {
+    pubPort.disabled = useSlot.checked;
+    const hint = pubPort.id && document.getElementById(pubPort.id + '-hint');
+    if (hint) hint.textContent = portHint();
+  };
+  useSlot.addEventListener('change', syncPort);
+  syncPort();
+
   const backup = s.backup || {};
   const bakKeep = el('input', { type: 'number', min: '1', max: '200', value: backup.keep || 10 });
   const bakConfig = el('input', { type: 'checkbox', checked: backup.includeConfig });
@@ -5363,6 +5524,7 @@ function editServer(existing) {
       description: pubDesc.value.trim(), address: pubAddress.value.trim(),
       port: parseInt(pubPort.value, 10) || 0,
     },
+    useSlot: useSlot.checked,
     notes: s.notes || '', sortHint: s.sortHint || 0,
   });
 
@@ -5373,9 +5535,9 @@ function editServer(existing) {
     if (!payload.name) { error.textContent = 'Give the server a name.'; return; }
     save.disabled = true;
     try {
-      await api.post('/api/server/save', payload);
+      const result = await api.post('/api/server/save', payload);
       closeModal();
-      toast('Server saved.', 'good');
+      toast(result && result.message ? 'Server saved. ' + result.message : 'Server saved.', 'good');
       await refreshState();
     } catch (err) {
       error.textContent = err.message;
@@ -5443,7 +5605,18 @@ function editServer(existing) {
           field('Description', pubDesc),
           el('div', { class: 'row' },
             field('Join address', pubAddress, 'Your public IP or domain. Leave blank to not show one.'),
-            field('Join port', pubPort, 'Leave blank to use the game port' + (s.gamePort ? ' (' + s.gamePort + ').' : '.'))))),
+            field('Join port', pubPort, portHint())))),
+
+      el('fieldset', null, el('legend', { text: 'Port slot' }),
+        el('label', { class: 'check' }, useSlot,
+          el('span', null, el('span', { text: 'Use a port slot' }),
+            el('span', { class: 'hint', text: slotsOn
+              ? 'Each start takes a free slot from Settings (ports ' + S.state.portSlots.firstPort + ' to '
+                + S.state.portSlots.lastPort + ') and moves the server onto it, keeping the one it had last time '
+                + 'when that is free. A start is refused while every slot is in use. The first time, PZAdmin makes '
+                + 'the compose file read its game ports from .env and keeps a copy of the old file.'
+              : 'Port slots are off. Turn them on in Settings first.' }))),
+        lastSlotOf(s) ? el('p', { class: 'hint', text: 'Last used: slot ' + lastSlotOf(s) + ' (port ' + s.gamePort + ').' }) : null),
 
       el('fieldset', null, el('legend', { text: 'Watchdog' }),
         el('label', { class: 'check' }, recEnabled,

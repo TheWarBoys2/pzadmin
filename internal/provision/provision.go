@@ -111,6 +111,9 @@ type Env struct {
 	Visible  stacks.Visible
 	PUID     int
 	PGID     int
+	// Slots is the shared port slot range, first and last port, which a new
+	// server's own ports stay out of. Zero means none.
+	Slots [2]int
 }
 
 // Plan is everything Apply will do. It is shown before anything is written.
@@ -242,7 +245,7 @@ func Make(req Request, env Env) (*Plan, error) {
 			"behind the stack's own Server/ folder and not used.")
 	}
 
-	if err := p.allocatePorts(req, env.Existing); err != nil {
+	if err := p.allocatePorts(req, env.Existing, env.Slots); err != nil {
 		return nil, err
 	}
 
@@ -315,7 +318,7 @@ func Make(req Request, env Env) (*Plan, error) {
 	return p, nil
 }
 
-func (p *Plan) allocatePorts(req Request, existing []stacks.Stack) error {
+func (p *Plan) allocatePorts(req Request, existing []stacks.Stack, slots [2]int) error {
 	used := map[int]string{}
 	for _, st := range existing {
 		for _, port := range []int{st.GamePort, st.UDPPort, st.RCONPort} {
@@ -331,8 +334,9 @@ func (p *Plan) allocatePorts(req Request, existing []stacks.Stack) error {
 		}
 		p.GamePort = req.GamePort
 	} else {
+		inSlots := func(n int) bool { return slots[0] > 0 && n >= slots[0] && n <= slots[1] }
 		for n := BaseGamePort; n < BaseGamePort+400; n += 2 {
-			if used[n] == "" && used[n+1] == "" {
+			if used[n] == "" && used[n+1] == "" && !inSlots(n) && !inSlots(n+1) {
 				p.GamePort = n
 				break
 			}
@@ -546,8 +550,9 @@ func renderCompose(p *Plan) string {
 	fmt.Fprintf(&b, "    stop_grace_period: %s\n", StopGrace)
 	b.WriteString("    env_file:\n      - .env\n")
 	b.WriteString("    ports:\n")
-	fmt.Fprintf(&b, "      - \"%d:%d/udp\"\n", p.GamePort, p.GamePort)
-	fmt.Fprintf(&b, "      - \"%d:%d/udp\"\n", p.UDPPort, p.UDPPort)
+	// The game ports come from .env, so a port slot can move them.
+	fmt.Fprintf(&b, "      - %s\n", GamePortMapping)
+	fmt.Fprintf(&b, "      - %s\n", UDPPortMapping)
 	fmt.Fprintf(&b, "      - \"%d:%d/tcp\"   # RCON: PZAdmin needs this\n", p.RCONPort, p.RCONPort)
 	b.WriteString("    volumes:\n")
 	fmt.Fprintf(&b, "      - %s:%s\n", p.DataDir, stacks.TargetData)

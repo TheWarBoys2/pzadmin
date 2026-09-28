@@ -155,6 +155,7 @@ func applyStack(s *config.Server, st stacks.Stack, dataRoot, rconHost string, vi
 	s.RCONPort = st.RCONPort
 	s.RCONPassword = st.RCONPassword
 	s.GamePort = st.GamePort
+	s.UDPPort = st.UDPPort
 	s.PZPath = serverBase(st, dataRoot)
 }
 
