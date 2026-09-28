@@ -182,7 +182,8 @@ Saves the world and takes a backup. The body may be empty.
 
 These let a bot take mod requests from players, for example a Discord command
 in a server's channel. A request waits in the **Requests** section of the
-server's Mods tab until you approve or reject it. Approving adds it to the end
+server's Mods tab until you approve or reject it. The section appears once the
+first request for that server arrives. Approving adds it to the end
 of the load order through the same checks and backup as **Save mod list**; as
 with any mod change, restart the server to load it.
 
