@@ -457,6 +457,7 @@ func (a *App) snapshot(p principal) map[string]any {
 		// "docker" is kept for the current interface; "arcane" carries the detail.
 		"docker":     map[string]any{"available": arc["available"], "message": arc["message"], "detail": arc["detail"]},
 		"arcane":     arc,
+		"portSlots":  a.slotsView(p),
 		"storeStats": a.store.Stats(),
 		"version":    Version,
 		"serverTime": time.Now().Format(time.RFC3339),
@@ -670,6 +671,19 @@ func (a *App) handleServerSave(w http.ResponseWriter, r *http.Request) {
 	next.Recovery = in.Recovery
 	next.Mods = cleanModPolicy(in.Mods)
 	next.Backup = in.Backup
+	next.UseSlot = in.UseSlot
+
+	// Ticking "Use a port slot" makes the compose file's game ports read
+	// .env, which is what lets a start move the server between slots.
+	slotNote := ""
+	if in.UseSlot && !existing.UseSlot {
+		note, err := a.enableSlot(existing)
+		if err != nil {
+			httpError(w, http.StatusBadRequest, "Could not switch "+existing.Name+" to port slots: "+err.Error())
+			return
+		}
+		slotNote = note
+	}
 
 	updated, err := a.cfg.Update(func(c *config.Config) error {
 		for i := range c.Servers {
@@ -688,11 +702,11 @@ func (a *App) handleServerSave(w http.ResponseWriter, r *http.Request) {
 	a.scanner.Invalidate(next.PZPath)
 	a.syncMonitors()
 	a.event(store.Event{Kind: "admin.action", Severity: store.SevInfo, Source: source(r), Actor: actor(r),
-		ServerID: next.ID, Server: next.Name, Message: "Server settings updated"})
+		ServerID: next.ID, Server: next.Name, Message: "Server settings updated", Detail: slotNote})
 
 	server, _ := serverByID(updated.Servers, next.ID)
 	redacted := config.Redact(config.Config{Servers: []config.Server{server}})
-	writeJSON(w, map[string]any{"ok": true, "server": redacted.Servers[0]})
+	writeJSON(w, map[string]any{"ok": true, "server": redacted.Servers[0], "message": slotNote})
 }
 
 func (a *App) handleServerDelete(w http.ResponseWriter, r *http.Request) {
@@ -948,6 +962,8 @@ func (a *App) handleLifecycle(w http.ResponseWriter, r *http.Request) {
 		ServerID string `json:"serverId"`
 		Action   string `json:"action"` // restart | stop | start | cancel-pending
 		Reason   string `json:"reason"`
+		// Slot picks the port slot for a start; zero lets PZAdmin choose.
+		Slot int `json:"slot"`
 	}
 	if !decodeJSON(w, r, &p) {
 		return
@@ -1020,6 +1036,10 @@ func (a *App) handleLifecycle(w http.ResponseWriter, r *http.Request) {
 	case "start":
 		if srv.DockerContainer == "" {
 			httpError(w, http.StatusBadRequest, "no Docker container is configured for this server")
+			return
+		}
+		if srv.UseSlot && a.cfg.Get().PortSlots.Enabled() {
+			a.startInSlot(w, r, srv, reason, p.Slot)
 			return
 		}
 		// Check what a start will actually mount. Start reuses the existing
@@ -1577,9 +1597,16 @@ func (a *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 		Notify    *config.Notify    `json:"notify"`
 		Metrics   *config.Metrics   `json:"metrics"`
 		Interface *config.Interface `json:"interface"`
+		PortSlots *config.PortSlots `json:"portSlots"`
 	}
 	if !decodeJSON(w, r, &p) {
 		return
+	}
+	if p.PortSlots != nil {
+		if err := p.PortSlots.Validate(); err != nil {
+			httpError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 
 	if p.Timezone != "" {
@@ -1649,6 +1676,9 @@ func (a *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if p.Interface != nil {
 			c.Interface = *p.Interface
+		}
+		if p.PortSlots != nil {
+			c.PortSlots = *p.PortSlots
 		}
 		return nil
 	})

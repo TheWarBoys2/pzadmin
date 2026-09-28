@@ -115,6 +115,10 @@ weather. Every field in it may be missing. It never includes player positions.
 
 `month` and `day` count from 1. `rain`, `snow` and `fog` run from 0 to 1. `description`, `address` and `port` are the public
 info set for the server's Discord channel; `port` falls back to the game port.
+For a server that uses a port slot, `port` is always its current game port and
+`slot` is the slot it holds (left out when it holds none). `lastSlot` is the
+slot a slot server was last in, running or not. See
+[port-slots.md](port-slots.md).
 Times are RFC 3339, or `null` when there is none.
 
 ### `GET /api/v1/servers/{id}`
@@ -170,7 +174,10 @@ interface. Returns `{"ok": true, "response": "...", "command": "..."}`.
 { "action": "restart", "reason": "Updating mods" }
 ```
 
-`action` is `restart`, `stop`, `start` or `cancel-pending`. `reason` is
+`action` is `restart`, `stop`, `start` or `cancel-pending`. For a server that
+uses a port slot, a start can add `"slot": 2` to pick the slot; without it,
+PZAdmin uses the last slot the server had if it's free, otherwise the first
+free one. A slot in use is refused with `409`. `reason` is
 optional, up to 200 characters, and is shown to players in Discord
 announcements. A restart or stop can take a few minutes to answer.
 

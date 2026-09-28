@@ -27,7 +27,7 @@ func (a *App) provisionEnv() provision.Env {
 	a.discMu.Lock()
 	existing := append([]stacks.Stack(nil), a.lastScan.Stacks...)
 	a.discMu.Unlock()
-	return provision.Env{
+	env := provision.Env{
 		StacksRoot: cfg.StacksRoot,
 		DataRoot:   cfg.PZRoot,
 		Image:      a.gameImage,
@@ -36,6 +36,10 @@ func (a *App) provisionEnv() provision.Env {
 		PUID:       os.Getuid(),
 		PGID:       os.Getgid(),
 	}
+	if cfg.PortSlots.Enabled() {
+		env.Slots = [2]int{cfg.PortSlots.FirstPort, cfg.PortSlots.LastPort()}
+	}
+	return env
 }
 
 // resolveRequest turns the browser's request into a provision.Request.

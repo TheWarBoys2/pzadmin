@@ -170,6 +170,21 @@ Most of this update needs nothing from you. These do:
   `config.json`, and users live in `users.json`, outside exports. Changing the
   owner's password now signs out only the owner's browsers.
 
+### Port slots
+- Servers can share a small range of forwarded ports. Set the range under
+  Settings → Port slots and tick **Use a port slot** on a server; each start
+  asks which slot to use, marks and preselects the one it had last, and shows
+  who has the busy ones. A start is refused, naming who has them, while every
+  slot is in use. The dashboard shows which server holds which slot and each
+  stopped server's last slot. See `docs/port-slots.md`.
+- Ticking the box changes the compose file's two game port lines to read
+  `DEFAULT_PORT` and `UDP_PORT` from `.env`, keeping a copy of the old file.
+  The new-server wizard writes them this way from the start, and keeps new
+  servers' own ports outside the slot range.
+- A slot server's Discord status message shows its slot and current port,
+  with no port to type in. The API's server view has `slot` and `lastSlot`,
+  and a start can pick a slot with `"slot": n`.
+
 ### API
 - An HTTP API at `/api/v1` for bots and scripts: server status (with the
   public description and join address), players, the event log, a live event

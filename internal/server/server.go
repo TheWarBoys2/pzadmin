@@ -53,6 +53,10 @@ type Status struct {
 	// Deploying is set while Arcane runs docker compose up for the server.
 	Deploying bool `json:"deploying,omitempty"`
 
+	// Slot is the port slot the server is holding, counted from 1. It is
+	// worked out when status is read, never stored.
+	Slot int `json:"slot,omitempty"`
+
 	// Stopped is set when PZAdmin hard-stopped the server on purpose, so
 	// the outage that follows is not reported as one.
 	Stopped bool `json:"stopped,omitempty"`
@@ -134,6 +138,9 @@ type App struct {
 	accountLimit *loginLimiter
 	// known holds addresses the administrator has signed in from.
 	known knownAddresses
+
+	// slotMu makes picking a port slot and claiming it one step.
+	slotMu sync.Mutex
 	// hashSlots bounds how many sign-in password hashes run at once. Each is
 	// 600,000 rounds of PBKDF2, and they share the CPU with the game servers.
 	hashSlots chan struct{}
@@ -599,6 +606,7 @@ func (a *App) allStatus() []Status {
 			cp := *st
 			cp.Name = s.Name
 			cp.Enabled = s.Enabled
+			cp.Slot = slotHeld(cfg.PortSlots, s, cp)
 			out = append(out, cp)
 		} else {
 			out = append(out, Status{ServerID: s.ID, Name: s.Name, Enabled: s.Enabled})

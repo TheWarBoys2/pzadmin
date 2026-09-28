@@ -287,6 +287,11 @@ type apiServer struct {
 	Description string `json:"description"`
 	Address     string `json:"address"`
 	Port        int    `json:"port"`
+	// Slot is the port slot the server holds, or zero.
+	Slot int `json:"slot,omitempty"`
+	// LastSlot is the slot a slot server was last in, whether or not it is
+	// running now. Zero for a server that does not use slots.
+	LastSlot int `json:"lastSlot,omitempty"`
 
 	LatencyMS  int64        `json:"latencyMs"`
 	LastCheck  OptionalTime `json:"lastCheck"`
@@ -312,21 +317,19 @@ type apiServer struct {
 	PendingReason    string       `json:"pendingReason,omitempty"`
 }
 
-func apiServerView(s config.Server, st Status) apiServer {
+func apiServerView(s config.Server, st Status, slots config.PortSlots) apiServer {
 	v := apiServer{
 		ID: s.ID, Name: s.Name, Enabled: s.Enabled, Missing: s.Missing,
 		Online: st.Online, Restarting: st.Restarting, Stopped: st.Stopped, Deploying: st.Deploying,
 		Players: st.Players, PlayerCount: st.PlayerCount, MaxPlayers: st.MaxPlayers,
-		Description: s.Public.Description, Address: s.Public.Address, Port: s.Public.Port,
+		Description: s.Public.Description, Address: s.Public.Address, Port: joinPort(s), Slot: st.Slot,
+		LastSlot:  lastSlot(slots, s),
 		LatencyMS: st.LatencyMS, LastCheck: st.LastCheck, LastOnline: st.LastOnline,
 		StartedAt: st.StartedAt, UptimeSec: st.ContainerUptime,
 		Error: st.Error, ErrorKind: st.ErrorKind,
 		ModsEnabled: st.ModsEnabled, ModsMissing: st.ModsMissing,
 		BackupCount: st.BackupCount, LastBackup: st.LastBackup, BackupRunning: st.BackupRunning,
 		PendingRestartAt: st.PendingRestartAt, PendingReason: st.PendingReason,
-	}
-	if v.Port == 0 {
-		v.Port = s.GamePort
 	}
 	if v.Players == nil {
 		v.Players = []string{}
@@ -355,7 +358,7 @@ func (a *App) apiServerList(k apiKey) []apiServer {
 	out := []apiServer{}
 	for _, s := range config.SortServers(a.cfg.Get().Servers) {
 		if k.allows(s.ID) {
-			v := apiServerView(s, a.statusOf(s.ID))
+			v := apiServerView(s, a.statusWithSlot(s), a.cfg.Get().PortSlots)
 			v.World = a.companionWorldFor(s)
 			out = append(out, v)
 		}
@@ -372,7 +375,7 @@ func (a *App) apiServerOne(w http.ResponseWriter, r *http.Request) {
 	if !found {
 		return
 	}
-	v := apiServerView(srv, a.statusOf(srv.ID))
+	v := apiServerView(srv, a.statusWithSlot(srv), a.cfg.Get().PortSlots)
 	v.World = a.companionWorldFor(srv)
 	writeJSON(w, v)
 }
