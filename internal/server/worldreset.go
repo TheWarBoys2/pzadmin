@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -68,6 +70,12 @@ func (a *App) handleWorldReset(w http.ResponseWriter, r *http.Request) {
 	}
 
 	backup := p.Backup == nil || *p.Backup
+	// Checked before the backup, so a world PZAdmin may not delete is not
+	// backed up for nothing, and a refused reset changes nothing at all.
+	if err := pz.CheckWorld(layout, backup); err != nil {
+		httpError(w, http.StatusConflict, worldAccessHelp(err, srv, layout))
+		return
+	}
 	backupNote := "No backup was taken first."
 	var archive string
 	if backup {
@@ -96,6 +104,11 @@ func (a *App) handleWorldReset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
+		var denied *pz.AccessError
+		if errors.As(err, &denied) {
+			httpError(w, http.StatusConflict, worldAccessHelp(err, srv, layout)+" "+backupNote)
+			return
+		}
 		a.event(store.Event{Kind: "world.reset.failed", Severity: store.SevError, Source: source(r), Actor: actor(r),
 			ServerID: srv.ID, Server: srv.Name, Message: "World reset failed", Detail: err.Error() + " " + backupNote})
 		httpError(w, http.StatusInternalServerError, err.Error())
@@ -139,4 +152,24 @@ func (a *App) worldInUse(ctx context.Context, srv config.Server) string {
 		return "PZAdmin cannot check " + srv.Name + "'s container, so it will not touch the world: " + err.Error()
 	}
 	return ""
+}
+
+// worldAccessHelp turns a permission problem into the commands that fix it.
+// Server folders are mounted at the same path inside PZAdmin as on the host,
+// so the path shown is the one to use there.
+func worldAccessHelp(err error, srv config.Server, layout pz.Layout) string {
+	var denied *pz.AccessError
+	if !errors.As(err, &denied) {
+		return err.Error()
+	}
+	uid, gid := os.Getuid(), os.Getgid()
+	msg := fmt.Sprintf("%s. Nothing was changed. The game server wrote its world as a different user from PZAdmin "+
+		"(often root). To fix it, run this on the host, then try again: sudo chown -R %d:%d %q",
+		denied.Error(), uid, gid, layout.SavesDir)
+	env := "the server's .env file"
+	if srv.StackDir != "" {
+		env = filepath.Join(srv.StackDir, ".env")
+	}
+	return msg + fmt.Sprintf(". So the game stops doing it, set PUID=%d and PGID=%d in %s and redeploy; "+
+		"if the game's image ignores those, the chown is needed before each reset.", uid, gid, env)
 }

@@ -341,6 +341,14 @@ backup counts toward how many are kept, so it can push the oldest one out.
 Only the owner and users with the **Config** permission see the button, and
 each reset goes in the activity log with who did it.
 
+PZAdmin can only delete files its own user is allowed to. If the game server
+runs as a different user, often root, it refuses before changing anything or
+taking a backup, and shows the command to run on the host, such as
+`sudo chown -R 1000:1000 /path/to/Saves`. Setting `PUID` and `PGID` in the
+server's `.env` to PZAdmin's user stops it happening again, if the game's
+image honours them; if it runs as root regardless, run the `chown` before
+each reset.
+
 Upgrading from an earlier PZAdmin that kept backups inside its volume: once
 `PZADMIN_BACKUP_DIR` is set, PZAdmin moves the old archives into the new
 folder by itself the next time it starts, and notes it in the activity log.

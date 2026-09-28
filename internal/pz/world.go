@@ -17,6 +17,25 @@ const multiplayerDir = "Multiplayer"
 // ErrNoWorld is returned when there is no world folder to reset.
 var ErrNoWorld = errors.New("there is no world to reset: the Saves/Multiplayer folder is missing or empty")
 
+// AccessError is returned when PZAdmin's user may not read or delete part
+// of a world. Nothing has been changed when it is returned.
+type AccessError struct {
+	Path string
+	msg  string
+}
+
+func (e *AccessError) Error() string { return e.msg }
+
+// CheckWorld reports whether a reset could delete the whole world, and, with
+// needRead, whether a backup could read it, without changing anything.
+func CheckWorld(l Layout, needRead bool) error {
+	if l.SavesDir == "" {
+		return nil
+	}
+	dir := filepath.Join(l.SavesDir, multiplayerDir)
+	return checkWorldAccess(l.SavesDir, []string{dir, dir + ".resetting"}, needRead)
+}
+
 // WorldInfo describes a server's Saves/Multiplayer folder.
 type WorldInfo struct {
 	// Dir is the Saves/Multiplayer folder, or empty if Saves was not found.
@@ -87,6 +106,10 @@ func (b *Backupper) ResetWorld(serverID string, l Layout) (WorldInfo, error) {
 		return info, err
 	} else if st.Mode()&os.ModeSymlink != 0 {
 		return info, fmt.Errorf("%s is a link to somewhere else; PZAdmin will not delete through it", info.Dir)
+	}
+
+	if err := CheckWorld(l, false); err != nil {
+		return info, err
 	}
 
 	// Move the folder out of the way first, so the world is gone in one step

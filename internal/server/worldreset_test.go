@@ -107,3 +107,52 @@ func TestWorldReset(t *testing.T) {
 		t.Fatalf("an unticked backup box should take no backup, have %d", n)
 	}
 }
+
+func TestWorldResetExplainsAWorldItCannotDelete(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root may delete anything")
+	}
+	app, handler, dir := newTestApp(t)
+	c := &client{t: t, handler: handler}
+	c.setup("rick", "a-long-enough-password")
+
+	root := filepath.Join(dir, "pzroot", "riverside", "projectzomboid")
+	saves := filepath.Join(root, "config", "Saves")
+	locked := filepath.Join(saves, "Multiplayer", "riv")
+	mustMkdir(t, locked)
+	mustMkdir(t, filepath.Join(root, "config", "Server"))
+	mustWrite(t, filepath.Join(root, "config", "Server", "riv.ini"), "PublicName=Riverside\n")
+	mustWrite(t, filepath.Join(locked, "players.db"), "characters")
+	if err := os.Chmod(locked, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	if _, err := app.cfg.Update(func(cfg *config.Config) error {
+		cfg.PZRoot = filepath.Join(dir, "pzroot")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if rec := seedServer(t, app, `{"name":"Riverside","host":"127.0.0.1","rconPort":27015,"rconPassword":"secret",
+		"pzPath":"riverside/projectzomboid"}`); rec.Code != http.StatusOK {
+		t.Fatalf("seed: %d %s", rec.Code, rec.Body.String())
+	}
+	id := app.cfg.Get().Servers[0].ID
+
+	rec := c.raw("/api/server/world/reset", `{"serverId":"`+id+`","confirm":"Riverside","backup":true}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("want a refusal, got %d %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{locked, "Nothing was changed", "sudo chown -R", saves} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("the refusal should mention %q: %s", want, body)
+		}
+	}
+	if n := len(app.backup.List(id)); n != 0 {
+		t.Fatalf("no backup should be taken for a reset that cannot happen, have %d", n)
+	}
+	if _, err := os.Stat(filepath.Join(locked, "players.db")); err != nil {
+		t.Fatal("the world must be left alone")
+	}
+}

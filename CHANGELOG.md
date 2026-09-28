@@ -55,7 +55,9 @@ Most of this update needs nothing from you. These do:
   trying a new mod list or sandbox settings. The server must be stopped, you
   type its name to confirm, and a backup is taken first unless you untick it.
   Settings, mods, accounts, the whitelist and bans are kept. Needs the Config
-  permission, and goes in the activity log.
+  permission, and goes in the activity log. If the game wrote the world as
+  another user (such as root), it refuses before changing anything and shows
+  the `chown` command that fixes it.
 
 ### Security
 - Sign-in is limited per address and across all addresses. Each attempt is
