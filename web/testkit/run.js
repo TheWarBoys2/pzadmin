@@ -84,7 +84,8 @@ const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8')
   'stackStatusPanel, stackServersPanel, stackCreatePanel, paintPlan, buildControl, StackState, ' +
   'newWizard, applyWizardMods, settingsEditor, wizardRequest, ' +
   'commandAvailability, isStopped, powerButton, editWebhook, viewDiscord, editServerChannel, ' +
-  'apiKeyCreateDialog, apiKeysBody, modRequestsPanel, renderGate, renderSetup, showImportResult };\n';
+  'apiKeyCreateDialog, apiKeysBody, modRequestsPanel, renderGate, renderSetup, showImportResult, ' +
+  'movedPageTarget, tabSchedules, buildRail, tabPlayers };\n';
 
 vm.createContext(sandbox);
 vm.runInContext(source, sandbox, { filename: 'app.js' });
@@ -99,6 +100,7 @@ const {
   newWizard, applyWizardMods, settingsEditor, wizardRequest,
   commandAvailability, isStopped, powerButton, editWebhook, viewDiscord, editServerChannel,
   apiKeyCreateDialog, apiKeysBody, modRequestsPanel, renderGate, renderSetup, showImportResult,
+  movedPageTarget, tabSchedules, buildRail, tabPlayers,
 } = sandbox.__exports__;
 
 // The views read from S, so give it the shape a loaded page would have.
@@ -1108,6 +1110,64 @@ test('mod requests from a bot render as text, pending first with buttons', () =>
   assert.ok(panel.textContent.includes('Reason: Too heavy'));
   const buttons = Array.from(panel.querySelectorAll('button')).map((b) => b.textContent);
   assertList(buttons, ['Approve', 'Reject'], 'only the pending request has buttons');
+});
+
+test('with no requests at all the Requests panel is left out', () => {
+  assert.strictEqual(modRequestsPanel({ id: 's1', name: 'Riverside' }, 'riv.ini', [], () => false), null);
+});
+
+// --- layout -----------------------------------------------------------------
+
+function withState(state, fn) {
+  const before = S.state;
+  S.state = Object.assign({ servers: [], status: [], events: [], players: [], schedules: [] }, state);
+  try { return fn(); } finally { S.state = before; }
+}
+
+test('the sidebar has no pages that now live on each server', () => {
+  const links = withState({ servers: [{ id: 'a', name: 'Knights', enabled: true }] },
+    () => Array.from(buildRail().querySelectorAll('.nav a')).map((a) => a.textContent));
+  assertList(links, ['Dashboard', 'Discord', 'Stack', 'Settings']);
+});
+
+test('old page addresses go to the server tab, or the dashboard when it is ambiguous', () => {
+  const one = [{ id: 'a', name: 'Knights' }];
+  const two = one.concat([{ id: 'b', name: 'Riverside' }]);
+  withState({ servers: one }, () => {
+    assert.strictEqual(movedPageTarget({ name: 'players' }), '/servers/a/players');
+    assert.strictEqual(movedPageTarget({ name: 'schedules' }), '/servers/a/schedules');
+    assert.strictEqual(movedPageTarget({ name: 'catalogue' }), '/servers/a/mods');
+    assert.strictEqual(movedPageTarget({ name: 'activity' }), '', 'the full activity log stays');
+    assert.strictEqual(movedPageTarget({ name: 'settings' }), '');
+  });
+  withState({ servers: two }, () => assert.strictEqual(movedPageTarget({ name: 'players' }), '/dashboard'));
+});
+
+test('a server\'s Schedules tab lists only that server\'s jobs', () => {
+  const job = (id, serverId, name) => ({ task: { id, serverId, name, cron: '0 4 * * *', enabled: true, steps: [{ kind: 'save' }] }, describe: 'daily' });
+  const host = el('div');
+  withState({
+    servers: [{ id: 'a', name: 'Knights' }, { id: 'b', name: 'Riverside' }],
+    schedules: [job('1', 'a', 'Knights restart'), job('2', 'b', 'Riverside backup')],
+  }, () => tabSchedules(host, { id: 'a', name: 'Knights' }));
+  assert.ok(host.textContent.includes('Knights restart'));
+  assert.ok(!host.textContent.includes('Riverside backup'));
+  assert.ok(host.textContent.includes('1 job'));
+});
+
+test('a server\'s Players tab lists online players first', () => {
+  const host = el('div');
+  withState({
+    servers: [{ id: 'a', name: 'Knights' }],
+    status: [{ serverId: 'a', online: true, players: ['Glenn'] }],
+    players: [
+      { serverId: 'a', name: 'Rick', lastSeen: new Date().toISOString(), playtimeSec: 10 },
+      { serverId: 'a', name: 'Glenn', lastSeen: new Date(0).toISOString(), playtimeSec: 10 },
+      { serverId: 'b', name: 'Daryl', lastSeen: new Date().toISOString(), playtimeSec: 10 },
+    ],
+  }, () => tabPlayers(host, { id: 'a', name: 'Knights' }));
+  const names = Array.from(host.querySelectorAll('tbody tr')).map((tr) => tr.querySelector('td').textContent);
+  assertList(names, ['Glenn', 'Rick']);
 });
 
 // --- sign-in and setup ------------------------------------------------------

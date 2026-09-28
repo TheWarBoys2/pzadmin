@@ -69,6 +69,14 @@ something wrong, especially anything security related, please report it (see
 - An HTTP API with its own keys, for bots and scripts ([docs/api.md](docs/api.md))
 - Accounts for other admins, each with its own permissions and servers ([docs/users.md](docs/users.md))
 
+**Finding your way around.** The sidebar holds the Dashboard, Discord, Stack
+and Settings, and lists your servers. Everything about one server is on its
+own page, in tabs: Overview, Players, Commands, Schedules, Configuration, Mods,
+Backups, Activity (PZAdmin's record of what happened, and the game's log
+files) and Console. The item catalogue check is at the foot of the Mods tab.
+The dashboard's **All activity** link opens the full log across every server,
+including sign-ins, users, keys and settings changes.
+
 ---
 
 ## Requirements

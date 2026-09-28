@@ -104,6 +104,18 @@ Most of this update needs nothing from you. These do:
 - When Arcane can't be reached, the message is plain, with the technical
   detail behind a toggle.
 - The Control access for API keys says plainly how much it allows.
+- A tidier layout. Players, Schedules and Activity are tabs on each server
+  instead of sidebar pages covering every server, and the game's log files
+  sit under a server's Activity tab. The item catalogue is a small check at
+  the foot of the Mods tab. Old links still work: with one server they open
+  its tab, otherwise the dashboard. The full activity log for every server
+  opens from the dashboard's **All activity** link.
+- The sidebar marks the server you are looking at.
+- The API keys and Users tables in Settings use the full width, and on a
+  phone each row becomes a labelled card instead of a squeezed table.
+- A server's Players tab lists online players first and has a search box
+  once the list is long.
+- The mod Requests panel only shows once a bot has sent a request.
 - A stopped server just reads Offline, with no "Nothing is listening" warning
   on every check. A server whose container has just started reads Starting
   for up to 15 minutes while the world loads. The warning only shows when

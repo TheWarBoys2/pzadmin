@@ -111,6 +111,11 @@ function fmtDateTime(value) {
   });
 }
 
+function fmtDate(value) {
+  if (!hasTime(value)) return '—';
+  return new Date(value).toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
 function fmtAgo(value) {
   if (!hasTime(value)) return 'never';
   const secs = Math.floor((Date.now() - new Date(value).getTime()) / 1000);
@@ -690,8 +695,26 @@ function can(perm) {
   return !!m.owner || perm === 'view' || (m.perms || []).includes(perm);
 }
 
+/* Players, Schedules and the Catalogue used to be pages of their own. They are
+   now tabs on each server, so an old bookmark lands on that tab when there is
+   only one server to mean, and on the dashboard otherwise. */
+const MOVED_PAGES = { players: 'players', schedules: 'schedules', catalogue: 'mods' };
+
+function movedPageTarget(route) {
+  const tab = MOVED_PAGES[route.name];
+  if (!tab) return '';
+  const list = servers();
+  return list.length === 1 ? '/servers/' + list[0].id + '/' + tab : '/dashboard';
+}
+
 function render() {
   if (!S.authenticated || !S.state) return;
+  const moved = movedPageTarget(S.route);
+  if (moved) {
+    // replace, not assign: the back button should skip the old address.
+    location.replace('#' + moved);
+    S.route = parseRoute();
+  }
   const root = $('#root');
   root.className = '';
   clear(root);
@@ -701,11 +724,8 @@ function render() {
 
   switch (S.route.name) {
     case 'server': viewServer(main); break;
-    case 'players': viewPlayers(main); break;
-    case 'schedules': viewSchedules(main); break;
     case 'discord': if (isOwner()) viewDiscord(main); else viewDashboard(main); break;
     case 'activity': viewActivity(main); break;
-    case 'catalogue': viewCatalogue(main); break;
     case 'stack': if (isOwner()) viewStack(main); else viewDashboard(main); break;
     case 'settings': viewSettings(main); break;
     default: viewDashboard(main);
@@ -714,9 +734,6 @@ function render() {
 }
 
 function buildRail() {
-  const online = statuses().filter((s) => s.online).length;
-  const players = statuses().reduce((sum, s) => sum + (s.playerCount || 0), 0);
-
   const navItem = (path, label, count) => el('a', {
     href: '#' + path,
     class: routeMatches(path) ? 'active' : '',
@@ -727,8 +744,10 @@ function buildRail() {
     el('div', { class: 'rail-heading', text: 'Servers' }),
     servers().map((s) => {
       const st = statusFor(s.id);
+      const here = S.route.name === 'server' && S.route.id === s.id;
       return el('button', {
-        class: 'rail-server', type: 'button',
+        class: 'rail-server' + (here ? ' active' : ''), type: 'button',
+        'aria-current': here ? 'page' : null,
         onclick: () => go('/servers/' + s.id + '/overview'),
       },
         el('span', { class: 'dot ' + (!s.enabled ? 'idle' : st.online ? 'on' : 'off') }),
@@ -739,12 +758,8 @@ function buildRail() {
   return el('aside', { class: 'rail' },
     el('div', { class: 'brand' }, 'PZ', el('span', { text: 'ADMIN' }), el('small', { text: S.version })),
     el('nav', { class: 'nav' },
-      navItem('/dashboard', 'Dashboard', online + '/' + servers().length),
-      navItem('/players', 'Players', players || null),
-      navItem('/schedules', 'Schedules', (S.state.schedules || []).length || null),
+      navItem('/dashboard', 'Dashboard', null),
       isOwner() ? navItem('/discord', 'Discord', webhooks().filter((h) => h.enabled).length || null) : null,
-      navItem('/activity', 'Activity', null),
-      navItem('/catalogue', 'Catalogue', null),
       isOwner() ? navItem('/stack', 'Stack', null) : null,
       navItem('/settings', 'Settings', null)),
     railServers,
@@ -754,9 +769,12 @@ function buildRail() {
       el('button', { class: 'btn ghost small', type: 'button', text: 'Sign out', onclick: signOut })));
 }
 
+// A server page is marked in the Servers list instead, and the full activity
+// log is reached from the dashboard, so it keeps Dashboard lit.
 function routeMatches(path) {
   const name = path.replace(/^\//, '').split('/')[0];
-  if (S.route.name === 'server') return name === 'dashboard';
+  if (S.route.name === 'server') return false;
+  if (S.route.name === 'activity') return name === 'dashboard';
   return S.route.name === name;
 }
 
@@ -812,14 +830,13 @@ function viewDashboard(main) {
   main.append(el('div', { class: 'stat-strip' },
     stat(online.length + ' / ' + all.length, 'servers online'),
     stat(String(totalPlayers), 'players connected'),
-    stat(String((S.state.players || []).length), 'players known'),
     stat(missingMods ? String(missingMods) : '0', 'mods missing', missingMods ? 'bad' : null)));
 
   main.append(el('div', { id: 'slots' }));
   main.append(el('div', { class: 'board', id: 'board' }));
   paintStatus();
 
-  main.append(el('div', { class: 'grid two', style: { marginTop: '18px' } },
+  main.append(el('div', { class: 'grid two', style: { marginTop: '18px', alignItems: 'start' } },
     el('div', { class: 'panel' },
       el('div', { class: 'panel-head' },
         el('h3', { text: 'Players, last 24 hours' }),
@@ -1025,7 +1042,10 @@ function paintFeed() {
   for (const item of events) host.append(feedItem(item));
 }
 
-function feedItem(item) {
+// Inside a server's own page the server's name under every line is noise, so
+// those feeds pass hideServer.
+function feedItem(item, hideServer) {
+  const where = [hideServer === true ? null : item.server, item.actor ? 'by ' + item.actor : null].filter(Boolean);
   return el('div', { class: 'feed-item ' + (item.severity || 'info') },
     el('div', { class: 'feed-time', text: fmtClock(item.at) }),
     el('div', { class: 'feed-body' },
@@ -1033,8 +1053,7 @@ function feedItem(item) {
         el('span', { class: 'tag' }),
         el('span', { text: item.message })),
       item.detail ? el('div', { class: 'feed-detail', text: item.detail }) : null,
-      (item.server || item.actor) ? el('div', { class: 'feed-where',
-        text: [item.server, item.actor ? 'by ' + item.actor : null].filter(Boolean).join(' · ') }) : null));
+      where.length ? el('div', { class: 'feed-where', text: where.join(' · ') }) : null));
 }
 
 // ----------------------------------------------------------------- chart (svg)
@@ -1119,12 +1138,16 @@ const SERVER_TABS = [
   ['overview', 'Overview'],
   ['players', 'Players'],
   ['commands', 'Commands'],
+  ['schedules', 'Schedules'],
   ['config', 'Configuration'],
   ['mods', 'Mods'],
-  ['logs', 'Logs'],
   ['backups', 'Backups'],
+  ['activity', 'Activity'],
   ['console', 'Console'],
 ];
+
+// The game's log files live under Activity now; the old address still works.
+const TAB_ALIASES = { logs: 'activity' };
 
 // tabAllowed hides the tabs whose whole point is something the account
 // cannot do. Tabs that are also for reading stay, and the server refuses any
@@ -1143,7 +1166,7 @@ function viewServer(main) {
     return;
   }
   const st = statusFor(server.id);
-  const tab = S.route.tab || 'overview';
+  const tab = TAB_ALIASES[S.route.tab] || S.route.tab || 'overview';
 
   main.append(el('div', { class: 'page-head' },
     el('div', null,
@@ -1174,8 +1197,9 @@ function viewServer(main) {
     case 'players': tabPlayers(host, server); break;
     case 'commands': tabCommands(host, server, st); break;
     case 'config': tabConfig(host, server); break;
+    case 'schedules': tabSchedules(host, server); break;
     case 'mods': tabMods(host, server); break;
-    case 'logs': tabLogs(host, server); break;
+    case 'activity': tabActivity(host, server, S.route.tab === 'logs' ? 'logs' : 'events'); break;
     case 'backups': tabBackups(host, server, st); break;
     case 'console': tabConsole(host, server, st); break;
     default: tabOverview(host, server, st);
@@ -1256,10 +1280,14 @@ async function tabOverview(host, server, st) {
     el('div', { class: 'panel-body', id: 'server-chart' })));
   loadChart(server.id, 24, 'server-chart');
 
+  const recent = (S.state.events || []).filter((e) => e.serverId === server.id).slice(0, 6);
   host.append(el('div', { class: 'panel', style: { marginTop: '18px' } },
-    el('div', { class: 'panel-head' }, el('h3', { text: 'Recent activity' })),
+    el('div', { class: 'panel-head' },
+      el('h3', { text: 'Recent activity' }),
+      el('a', { href: '#/servers/' + server.id + '/activity', class: 'muted', text: 'All activity' })),
     el('div', { class: 'panel-body flush feed' },
-      (S.state.events || []).filter((e) => e.serverId === server.id).slice(0, 20).map(feedItem))));
+      recent.length ? recent.map((e) => feedItem(e, true))
+        : el('div', { class: 'empty' }, el('p', { text: 'Nothing has happened on this server yet.' })))));
 }
 
 function tabPlayers(host, server) {
@@ -1274,7 +1302,7 @@ function tabPlayers(host, server) {
     return;
   }
 
-  const rows = known.map((p) => {
+  const rowFor = (p) => {
     const isOnline = onlineNames.has(p.name);
     return el('tr', null,
       el('td', null, el('div', { style: { display: 'flex', alignItems: 'center', gap: '8px' } },
@@ -1290,19 +1318,39 @@ function tabPlayers(host, server) {
       el('td', { class: 'right' },
         el('button', { class: 'btn small', type: 'button', text: 'Actions',
           onclick: () => playerActions(server, p.name, isOnline) })));
-  });
+  };
+
+  // Online players first, then whoever was seen most recently.
+  known.sort((a, b) => (onlineNames.has(b.name) - onlineNames.has(a.name))
+    || (new Date(b.lastSeen || 0) - new Date(a.lastSeen || 0)));
+  const search = el('input', { type: 'search', placeholder: 'Search players', 'aria-label': 'Search players' });
+  const tbody = el('tbody');
+  const paint = () => {
+    clear(tbody);
+    const term = search.value.trim().toLowerCase();
+    const shown = known.filter((p) => !term || p.name.toLowerCase().includes(term) ||
+      (p.steamId || '').includes(term) || (p.note || '').toLowerCase().includes(term));
+    if (!shown.length) {
+      tbody.append(el('tr', null, el('td', { colspan: '7' },
+        el('div', { class: 'empty' }, el('p', { text: 'No players match that.' })))));
+      return;
+    }
+    for (const p of shown) tbody.append(rowFor(p));
+  };
+  search.addEventListener('input', paint);
 
   host.append(el('div', { class: 'panel' },
     el('div', { class: 'panel-head' },
-      el('h3', { text: known.length + ' known players' }),
-      el('span', { class: 'muted', text: onlineNames.size + ' online now' })),
+      el('h3', { text: known.length + ' known, ' + onlineNames.size + ' online' }),
+      known.length > 8 ? el('div', { style: { width: 'min(260px, 50%)' } }, search) : null),
     el('div', { class: 'panel-body flush' },
       el('table', null,
         el('thead', null, el('tr', null,
           el('th', { text: 'Player' }), el('th', { text: 'Steam ID' }), el('th', { text: 'Playtime' }),
           el('th', { text: 'Sessions' }), el('th', { text: 'Last seen' }), el('th', { text: 'Note' }),
           el('th', { class: 'right', text: '' }))),
-        el('tbody', null, rows)))));
+        tbody))));
+  paint();
 }
 
 function playerActions(server, name, isOnline) {
@@ -1469,7 +1517,7 @@ async function openPicker(server, kind, current, onPick) {
     : el('div', { class: 'empty' },
         el('h3', { text: 'Nothing to choose from yet' }),
         el('p', { text: data.note || 'PZAdmin found no ' + spec.noun + 's. You can still type an ID by hand.' }),
-        el('a', { class: 'btn', href: '#/catalogue', onclick: closeModal, text: 'Open the catalogue' }));
+        el('a', { class: 'btn', href: '#/servers/' + server.id + '/mods', onclick: closeModal, text: 'Check the catalogue' }));
 
   openModal({
     title: spec.title,
@@ -2733,15 +2781,14 @@ async function tabMods(host, server) {
       } catch (err) { toast(err.message, 'bad'); }
     } });
 
-  host.append(
-    el('div', { class: 'notice info' },
-      el('span', { text: 'Load order matters: a mod that builds on another has to come after it. ' +
-        'Changes here need a server restart, because both lines are read only at startup.' })),
+  appendAll(host,
     issuesHost,
     modRequestsPanel(server, data.file, requests, dirty),
     el('div', { class: 'panel' },
       el('div', { class: 'panel-head' },
-        el('h3', { text: 'Load order' }),
+        el('div', null,
+          el('h3', { text: 'Load order' }),
+          el('div', { class: 'muted', style: { fontSize: '12.5px', marginTop: '2px' }, text: 'A mod that builds on another goes after it. Changes apply at the next restart.' })),
         el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
           el('button', { class: 'btn primary', type: 'button', text: 'Add from Workshop',
             onclick: () => addFromWorkshop(server, addMod) }),
@@ -2755,7 +2802,8 @@ async function tabMods(host, server) {
       el('div', { class: 'sticky-bar' }, status,
         el('button', { class: 'btn', type: 'button', text: 'Discard changes',
           onclick: () => go('/servers/' + server.id + '/mods') }),
-        save)));
+        save)),
+    catalogueSection(server));
 
   refresh();
 }
@@ -2834,6 +2882,10 @@ function modRequestsPanel(server, file, requests, isDirty) {
             el('button', { class: 'btn small danger', type: 'button', text: 'Reject', onclick: () => reject(req) }))
         : null);
   };
+
+  // Until a bot has asked for something there is nothing to show, and an empty
+  // panel on every visit is just in the way.
+  if (!requests.length) return null;
 
   return el('div', { class: 'panel', style: { marginBottom: '16px' } },
     el('div', { class: 'panel-head' },
@@ -3029,7 +3081,23 @@ function addFromWorkshop(server, addMod) {
 
 // ------------------------------------------------------------------ logs tab
 
-async function tabLogs(host, server) {
+/* One tab for everything that happened on a server: PZAdmin's own record
+   (joins, restarts, who ran what) and the game's log files. */
+function tabActivity(host, server, mode) {
+  const modes = [['events', 'PZAdmin activity'], ['logs', 'Game logs']];
+  host.append(el('div', { class: 'seg', role: 'tablist' },
+    modes.map(([id, label]) => el('button', {
+      type: 'button', role: 'tab', 'aria-selected': String(mode === id),
+      class: mode === id ? 'active' : '', text: label,
+      onclick: () => go('/servers/' + server.id + '/' + (id === 'logs' ? 'logs' : 'activity')),
+    }))));
+  const body = el('div');
+  host.append(body);
+  if (mode === 'logs') logsPanel(body, server);
+  else activityPanel(body, server.id);
+}
+
+async function logsPanel(host, server) {
   host.append(el('p', { class: 'muted', text: 'Loading logs…' }));
   let data;
   try {
@@ -3262,70 +3330,6 @@ function tabConsole(host, server, st) {
 
 // ------------------------------------------------------------ players (global)
 
-function viewPlayers(main) {
-  const all = S.state.players || [];
-  const online = new Set();
-  for (const st of statuses()) for (const n of st.players || []) online.add(st.serverId + '\u0000' + n);
-
-  main.append(el('div', { class: 'page-head' },
-    el('div', null,
-      el('h1', { text: 'Players' }),
-      el('div', { class: 'sub', text: all.length + ' known across ' + servers().length + ' servers' }))));
-
-  if (!all.length) {
-    main.append(el('div', { class: 'panel' }, el('div', { class: 'empty' },
-      el('h3', { text: 'Nobody yet' }),
-      el('p', { text: 'PZAdmin records players the first time it sees them online, along with how long they have played.' }))));
-    return;
-  }
-
-  const search = el('input', { type: 'search', placeholder: 'Search players', 'aria-label': 'Search players' });
-  const tbody = el('tbody');
-
-  const paint = () => {
-    clear(tbody);
-    const term = search.value.trim().toLowerCase();
-    const rows = all.filter((p) => !term || p.name.toLowerCase().includes(term) ||
-      (p.steamId || '').includes(term) || (p.note || '').toLowerCase().includes(term));
-    if (!rows.length) {
-      tbody.append(el('tr', null, el('td', { colspan: '7' },
-        el('div', { class: 'empty' }, el('p', { text: 'No players match that.' })))));
-      return;
-    }
-    for (const p of rows) {
-      const server = serverFor(p.serverId);
-      const isOnline = online.has(p.serverId + '\u0000' + p.name);
-      tbody.append(el('tr', null,
-        el('td', null, el('div', { style: { display: 'flex', alignItems: 'center', gap: '8px' } },
-          el('span', { class: 'dot ' + (isOnline ? 'on' : 'idle') }),
-          el('span', { text: p.name }),
-          p.banned ? el('span', { class: 'pill off', text: 'Banned' }) : null)),
-        el('td', { text: server ? server.name : 'removed server' }),
-        el('td', { class: 'mono faint', text: p.steamId || '—' }),
-        el('td', { class: 'n', text: fmtDuration(p.playtimeSec) }),
-        el('td', { class: 'n', text: String(p.sessions || 0) }),
-        el('td', { text: isOnline ? 'now' : fmtAgo(p.lastSeen) }),
-        el('td', { class: 'right' }, server
-          ? el('button', { class: 'btn small', type: 'button', text: 'Actions',
-              onclick: () => playerActions(server, p.name, isOnline) })
-          : null)));
-    }
-  };
-  search.addEventListener('input', paint);
-
-  main.append(el('div', { class: 'panel' },
-    el('div', { class: 'panel-head' }, el('h3', { text: 'All players' }),
-      el('div', { style: { width: 'min(280px, 50%)' } }, search)),
-    el('div', { class: 'panel-body flush' },
-      el('table', null,
-        el('thead', null, el('tr', null,
-          el('th', { text: 'Player' }), el('th', { text: 'Server' }), el('th', { text: 'Steam ID' }),
-          el('th', { text: 'Playtime' }), el('th', { text: 'Sessions' }), el('th', { text: 'Last seen' }),
-          el('th', { class: 'right', text: '' }))),
-        tbody))));
-  paint();
-}
-
 // ------------------------------------------------------------------ schedules
 
 /* ---------------------------------------------------------------- schedules
@@ -3402,42 +3406,28 @@ function readCron(expr) {
 
 function pad2(n) { return String(n).padStart(2, '0'); }
 
-function viewSchedules(main) {
-  const tasks = S.state.schedules || [];
+/* Jobs belong to a server, so each server lists its own on its Schedules tab.
+   Saving still sends the whole list, because that is what the API takes. */
+function tabSchedules(host, server) {
+  const all = S.state.schedules || [];
+  const tasks = all.filter((entry) => entry.task.serverId === server.id);
 
-  main.append(el('div', { class: 'page-head' },
-    el('div', null,
-      el('h1', { text: 'Schedules' }),
-      el('div', { class: 'sub', text: 'Jobs that run on their own. Times use ' + (S.state.timezone || 'UTC') + '.' })),
-    isOwner() ? el('div', { class: 'page-actions' },
-      el('button', { class: 'btn', type: 'button', text: 'Start from a template',
-        disabled: !servers().length, onclick: () => pickTemplate() }),
-      el('button', { class: 'btn primary', type: 'button', text: 'New job',
-        disabled: !servers().length, onclick: () => editTask(null) })) : null));
+  const actions = isOwner() ? el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
+    el('button', { class: 'btn small', type: 'button', text: 'Start from a template', onclick: () => pickTemplate(server.id) }),
+    el('button', { class: 'btn small primary', type: 'button', text: 'New job', onclick: () => editTask(null, server.id) })) : null;
 
-  if (!servers().length) {
-    main.append(el('div', { class: 'notice warn', text: 'Add a server before creating jobs.' }));
-    return;
-  }
-  if (!tasks.length && !isOwner()) {
-    main.append(el('div', { class: 'panel' }, el('div', { class: 'empty' },
-      el('h3', { text: 'No scheduled jobs' }),
-      el('p', { text: 'The owner has not set up any jobs for your servers.' }))));
-    return;
-  }
   if (!tasks.length) {
-    main.append(el('div', { class: 'panel' }, el('div', { class: 'empty' },
+    host.append(el('div', { class: 'panel' }, el('div', { class: 'empty' },
       el('h3', { text: 'No scheduled jobs' }),
-      el('p', { text: 'A nightly restart and a daily backup are the two most useful things to add. Templates set both up in one click.' }),
-      el('div', { style: { display: 'flex', gap: '8px', justifyContent: 'center' } },
-        el('button', { class: 'btn', type: 'button', text: 'Start from a template', onclick: () => pickTemplate() }),
-        el('button', { class: 'btn primary', type: 'button', text: 'New job', onclick: () => editTask(null) })))));
+      el('p', { text: isOwner()
+        ? 'A nightly restart and a daily backup are the two most useful things to add. Templates set both up in one click.'
+        : 'The owner has not set up any jobs for this server.' }),
+      actions ? el('div', { style: { display: 'flex', justifyContent: 'center' } }, actions) : null)));
     return;
   }
 
   const rows = tasks.map((entry) => {
     const t = entry.task;
-    const server = serverFor(t.serverId);
     const steps = t.steps || [];
     return el('tr', null,
       el('td', null,
@@ -3445,12 +3435,11 @@ function viewSchedules(main) {
           el('span', { class: 'dot ' + (t.enabled ? 'on' : 'idle') }),
           el('span', { text: t.name })),
         el('div', { class: 'sub', text: summariseSteps(steps) })),
-      el('td', { text: server ? server.name : 'unknown' }),
-      el('td', null,
+      el('td', { 'data-label': 'Runs' },
         el('div', { text: entry.describe || '' }),
         entry.error ? el('div', { class: 'sub bad', text: entry.error }) : null),
-      el('td', { text: t.enabled ? (hasTime(entry.nextRun) ? fmtDateTime(entry.nextRun) : '—') : 'paused' }),
-      el('td', null,
+      el('td', { 'data-label': 'Next', text: t.enabled ? (hasTime(entry.nextRun) ? fmtDateTime(entry.nextRun) : '\u2014') : 'paused' }),
+      el('td', { 'data-label': 'Last run' },
         el('div', { text: hasTime(t.lastRun) ? fmtAgo(t.lastRun) : 'never' }),
         t.lastResult ? el('div', { class: 'sub faint', text: t.lastResult }) : null),
       el('td', { class: 'right' },
@@ -3476,15 +3465,20 @@ function viewSchedules(main) {
               confirmLabel: 'Delete', danger: true,
             });
             if (!confirmed) return;
-            await saveTasks(tasks.map((e) => e.task).filter((x) => x.id !== t.id));
+            // Every server's jobs, not just this one's: the API replaces the list.
+            await saveTasks((S.state.schedules || []).map((e) => e.task).filter((x) => x.id !== t.id));
           } }) : null)));
   });
 
-  main.append(el('div', { class: 'panel' },
+  host.append(el('div', { class: 'panel' },
+    el('div', { class: 'panel-head' },
+      el('h3', { text: tasks.length === 1 ? '1 job' : tasks.length + ' jobs' }),
+      el('div', { style: { display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' } },
+        el('span', { class: 'muted', text: 'Times use ' + (S.state.timezone || 'UTC') }), actions)),
     el('div', { class: 'panel-body flush' },
-      el('table', null,
+      el('table', { class: 'cards' },
         el('thead', null, el('tr', null,
-          el('th', { text: 'Job' }), el('th', { text: 'Server' }), el('th', { text: 'Runs' }),
+          el('th', { text: 'Job' }), el('th', { text: 'Runs' }),
           el('th', { text: 'Next' }), el('th', { text: 'Last run' }), el('th', { class: 'right', text: '' }))),
         el('tbody', null, rows)))));
 }
@@ -3572,7 +3566,7 @@ const TEMPLATES = [
   },
 ];
 
-function pickTemplate() {
+function pickTemplate(serverId) {
   openModal({
     title: 'Start from a template',
     sub: 'Each one opens in the editor so you can change it before saving.',
@@ -3586,7 +3580,7 @@ function pickTemplate() {
         el('button', { class: 'btn small primary', type: 'button', text: 'Use this', onclick: () => {
           closeModal();
           editTask({
-            id: '', serverId: (servers()[0] || {}).id, name: tpl.name, cron: tpl.cron,
+            id: '', serverId: serverId || (servers()[0] || {}).id, name: tpl.name, cron: tpl.cron,
             enabled: true, warnMinutes: tpl.warnMinutes,
             steps: JSON.parse(JSON.stringify(tpl.steps)),
           });
@@ -3606,9 +3600,9 @@ async function saveTasks(tasks) {
   }
 }
 
-function editTask(existing) {
+function editTask(existing, serverId) {
   const t = existing || {
-    id: '', serverId: (servers()[0] || {}).id, name: '', cron: '0 4 * * *',
+    id: '', serverId: serverId || (servers()[0] || {}).id, name: '', cron: '0 4 * * *',
     enabled: true, warnMinutes: [], steps: [{ kind: 'save' }],
   };
   const steps = JSON.parse(JSON.stringify(t.steps || []));
@@ -4016,14 +4010,23 @@ const EVENT_FILTERS = [
   ['auth.failed', 'Failed sign-ins'],
 ];
 
+/* The full log across every server, including what is not about a server at
+   all: sign-ins, users, keys and settings. Reached from the dashboard; each
+   server's own activity is on its Activity tab. */
 function viewActivity(main) {
   main.append(el('div', { class: 'page-head' },
     el('div', null,
-      el('h1', { text: 'Activity' }),
+      el('a', { href: '#/dashboard', class: 'muted', text: '\u2190 Dashboard' }),
+      el('h1', { text: 'Activity', style: { marginTop: '6px' } }),
       el('div', { class: 'sub', text: 'Everything PZAdmin and your servers have done, including who did it.' }))));
+  activityPanel(main, '');
+}
 
+// activityPanel lists events, filtered by kind. With no serverId it also
+// offers a server filter; with one it shows only that server.
+function activityPanel(host, serverId) {
   const kind = el('select', { 'aria-label': 'Event type' }, EVENT_FILTERS.map(([id, label]) => el('option', { value: id, text: label })));
-  const server = el('select', { 'aria-label': 'Server' },
+  const server = serverId ? null : el('select', { 'aria-label': 'Server' },
     el('option', { value: '', text: 'All servers' }),
     servers().map((s) => el('option', { value: s.id, text: s.name })));
   const list = el('div', { class: 'panel-body flush feed', style: { maxHeight: 'none' } });
@@ -4031,26 +4034,27 @@ function viewActivity(main) {
   const load = async () => {
     clear(list);
     list.append(el('div', { class: 'empty' }, el('p', { text: 'Loading…' })));
+    const only = serverId || (server ? server.value : '');
     try {
       const data = await api.get('/api/events?limit=300' +
         (kind.value ? '&kind=' + encodeURIComponent(kind.value) : '') +
-        (server.value ? '&serverId=' + encodeURIComponent(server.value) : ''));
+        (only ? '&serverId=' + encodeURIComponent(only) : ''));
       clear(list);
       const events = data.events || [];
       if (!events.length) {
         list.append(el('div', { class: 'empty' }, el('p', { text: 'Nothing recorded for that filter yet.' })));
         return;
       }
-      for (const item of events) list.append(feedItem(item));
+      for (const item of events) list.append(feedItem(item, !!serverId));
     } catch (err) {
       clear(list);
       list.append(el('div', { class: 'empty' }, el('p', { text: err.message })));
     }
   };
   kind.addEventListener('change', load);
-  server.addEventListener('change', load);
+  if (server) server.addEventListener('change', load);
 
-  main.append(el('div', { class: 'panel' },
+  host.append(el('div', { class: 'panel' },
     el('div', { class: 'panel-head' },
       el('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '8px' } }, kind, server),
       el('button', { class: 'btn small', type: 'button', text: 'Reload', onclick: load })),
@@ -4058,58 +4062,46 @@ function viewActivity(main) {
   load();
 }
 
-// --------------------------------------------------------- catalogue screen
+// ------------------------------------------------------- item catalogue check
 
-function viewCatalogue(main) {
-  const servers_ = servers();
-  main.append(el('div', { class: 'page-head' },
-    el('div', null,
-      el('h1', { text: 'Catalogue' }),
-      el('div', { class: 'sub', text: 'The items, vehicles and skills offered when you spawn something.' }))));
-
-  if (!servers_.length) {
-    main.append(el('div', { class: 'notice warn', text: 'Add a server first. The catalogue is read from its game files.' }));
-    return;
-  }
-
-  const picker = el('select', { 'aria-label': 'Server' }, servers_.map((s) => el('option', { value: s.id, text: s.name })));
+/* catalogueSection is the small check at the foot of a server's Mods tab: how
+   many items, vehicles and skills the spawn pickers can offer, read from this
+   server's game files and mods. It stays folded until opened, and reads the
+   files only then. Entries added by hand are shared by every server. */
+function catalogueSection(server) {
+  const summary = el('span', { class: 'muted', text: 'Open to check what the item, vehicle and skill pickers can offer' });
   const body = el('div');
-  const host = el('div', { class: 'panel' },
-    el('div', { class: 'panel-head' },
-      el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' } },
-        el('span', { class: 'muted', text: 'Read from' }), picker),
-      el('div', { style: { display: 'flex', gap: '8px' } },
-        el('button', { class: 'btn small', type: 'button', text: 'Rescan',
-          onclick: () => load(true) }),
-        el('button', { class: 'btn small primary', type: 'button', text: 'Add an entry',
-          onclick: () => addCatalogueEntry(() => load(true)) }))),
+  const actions = el('div', { style: { display: 'flex', gap: '8px' } },
+    el('button', { class: 'btn small', type: 'button', text: 'Rescan', onclick: () => load(true) }),
+    can('control') ? el('button', { class: 'btn small', type: 'button', text: 'Add an entry',
+      onclick: () => addCatalogueEntry(() => load(true)) }) : null);
+  const details = el('details', { class: 'panel fold', id: 'catalogue', style: { marginTop: '16px' } },
+    el('summary', { class: 'panel-head' },
+      el('h3', { text: 'Item catalogue' }), summary),
+    el('div', { class: 'panel-body tight' }, actions),
     body);
-  main.append(host);
+  let loaded = false;
+  details.addEventListener('toggle', () => { if (details.open && !loaded) { loaded = true; load(false); } });
 
   const load = async (refresh) => {
     clear(body);
     body.append(el('div', { class: 'empty' }, el('p', { text: 'Reading game files…' })));
     let data;
     try {
-      data = await loadCatalogue(picker.value, refresh);
+      data = await loadCatalogue(server.id, refresh);
     } catch (err) {
       clear(body);
       body.append(el('div', { class: 'empty' }, el('p', { text: err.message })));
       return;
     }
     clear(body);
+    summary.textContent = (data.items || []).length + ' items, ' + (data.vehicles || []).length + ' vehicles, '
+      + (data.perks || []).length + ' skills';
 
     if (data.note) {
       body.append(el('div', { class: 'panel-body' },
         el('div', { class: 'notice warn', text: data.note })));
     }
-
-    body.append(el('div', { class: 'panel-body tight' },
-      el('div', { class: 'stat-strip' },
-        stat(String((data.items || []).length), 'items'),
-        stat(String((data.vehicles || []).length), 'vehicles'),
-        stat(String((data.perks || []).length), 'skills'),
-        stat(String((data.sources || []).length), 'sources'))));
 
     if (data.gameRoot) {
       body.append(el('div', { class: 'panel-body tight' },
@@ -4207,8 +4199,7 @@ function viewCatalogue(main) {
             el('p', { text: 'Nothing added by hand. Modded items are picked up automatically when PZAdmin can see the mod folder, so you only need this for content it cannot find.' }))));
   };
 
-  picker.addEventListener('change', () => load(false));
-  load(false);
+  return details;
 }
 
 function addCatalogueEntry(onDone) {
@@ -4267,8 +4258,11 @@ function viewSettings(main) {
     main.append(el('div', { class: 'grid halves' }, settingsAccount(), settingsMyAccess()));
     return;
   }
+  // Users and API keys are tables, so they get the full width; squeezed into
+  // one column their rows spilled out of the panel.
   main.append(el('div', { class: 'grid halves' },
-    settingsGeneral(cfg), settingsPortSlots(cfg), settingsMetrics(cfg), settingsData(cfg), settingsAccount(), settingsUsers(), settingsAPIKeys()));
+    settingsGeneral(cfg), settingsAccount(), settingsPortSlots(cfg), settingsMetrics(cfg), settingsData(cfg),
+    settingsUsers(), settingsAPIKeys()));
 }
 
 function settingsGeneral(cfg) {
@@ -5148,7 +5142,7 @@ const API_SCOPE_LABELS = { read: 'Read', request: 'Request', control: 'Control',
 
 function settingsAPIKeys() {
   const body = el('div', { class: 'panel-body' }, el('p', { class: 'muted', text: 'Loading keys…' }));
-  const panel = el('div', { class: 'panel' },
+  const panel = el('div', { class: 'panel span-all' },
     el('div', { class: 'panel-head' }, el('h3', { text: 'API keys' })),
     body);
 
@@ -5212,12 +5206,12 @@ function apiKeysBody(keys, reload) {
       el('td', null,
         el('div', { text: k.name }),
         el('div', { class: 'mono faint', text: 'pzk_' + k.id + '_…' })),
-      el('td', null, (k.scopes || []).map((s) =>
-        el('span', { class: 'pill' + (s === 'console' ? ' warn' : s === 'control' ? ' on' : ''), text: API_SCOPE_LABELS[s] || s }))),
-      el('td', { text: servers }),
-      el('td', { title: k.lastIp ? 'From ' + k.lastIp : null, text: fmtAgo(k.lastUsed) }),
-      el('td', { class: expired ? 'warn' : null,
-        text: expired ? 'Expired' : hasTime(k.expires) ? fmtDateTime(k.expires) : 'Never' }),
+      el('td', { 'data-label': 'Access' }, el('div', { class: 'pills' }, (k.scopes || []).map((s) =>
+        el('span', { class: 'pill' + (s === 'console' ? ' warn' : s === 'control' ? ' on' : ''), text: API_SCOPE_LABELS[s] || s })))),
+      el('td', { 'data-label': 'Servers', text: servers }),
+      el('td', { 'data-label': 'Last used', class: 'nowrap', title: k.lastIp ? 'From ' + k.lastIp : null, text: fmtAgo(k.lastUsed) }),
+      el('td', { 'data-label': 'Expires', class: 'nowrap' + (expired ? ' warn' : ''), title: hasTime(k.expires) ? fmtDateTime(k.expires) : null,
+        text: expired ? 'Expired' : hasTime(k.expires) ? fmtDate(k.expires) : 'Never' }),
       el('td', { class: 'right' }, revoke));
   });
 
@@ -5225,7 +5219,7 @@ function apiKeysBody(keys, reload) {
     el('p', { class: 'muted', text: 'Keys let scripts and bots, like a Discord bot, use the PZAdmin API at /api/v1. '
       + 'A key cannot change settings, the password or other keys.' }),
     rows.length
-      ? el('table', null,
+      ? el('table', { class: 'cards' },
         el('thead', null, el('tr', null,
           el('th', { text: 'Key' }), el('th', { text: 'Access' }), el('th', { text: 'Servers' }),
           el('th', { text: 'Last used' }), el('th', { text: 'Expires' }), el('th', { class: 'right', text: '' }))),
@@ -5391,9 +5385,9 @@ function usersBody(users, reload) {
       el('td', null,
         el('div', { text: u.name }),
         el('div', { class: 'faint', text: u.disabled ? 'Disabled' : u.mustChange ? 'Has not chosen a password yet' : '' })),
-      el('td', null, permPills(u.perms)),
-      el('td', { text: serverListText(u.servers) }),
-      el('td', { text: hasTime(u.lastLogin) ? fmtAgo(u.lastLogin) : 'never' }),
+      el('td', { 'data-label': 'Can' }, el('div', { class: 'pills' }, permPills(u.perms))),
+      el('td', { 'data-label': 'Servers', text: serverListText(u.servers) }),
+      el('td', { 'data-label': 'Last sign-in', class: 'nowrap', text: hasTime(u.lastLogin) ? fmtAgo(u.lastLogin) : 'never' }),
       el('td', { class: 'right' }, edit));
   });
 
@@ -5401,7 +5395,7 @@ function usersBody(users, reload) {
     el('p', { class: 'muted', text: 'Give other admins their own sign-in. You choose what each can do and which servers they see. '
       + 'Only you can manage users, API keys and PZAdmin\u2019s settings, add or delete servers, and edit jobs.' }),
     rows.length
-      ? el('table', null,
+      ? el('table', { class: 'cards' },
         el('thead', null, el('tr', null,
           el('th', { text: 'User' }), el('th', { text: 'Can' }), el('th', { text: 'Servers' }),
           el('th', { text: 'Last sign-in' }), el('th', { class: 'right', text: '' }))),
