@@ -84,7 +84,8 @@ const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8')
   'stackStatusPanel, stackServersPanel, stackCreatePanel, paintPlan, buildControl, StackState, ' +
   'newWizard, applyWizardMods, settingsEditor, wizardRequest, ' +
   'commandAvailability, isStopped, powerButton, editWebhook, viewDiscord, editServerChannel, ' +
-  'apiKeyCreateDialog, apiKeysBody, modRequestsPanel, renderGate, renderSetup, showImportResult };\n';
+  'apiKeyCreateDialog, apiKeysBody, modRequestsPanel, renderGate, renderSetup, showImportResult, ' +
+  'tabLive, LIVE, stopLive, fmtWeather, mapToPixel, MAPV, mapPanel, paintPins };\n';
 
 vm.createContext(sandbox);
 vm.runInContext(source, sandbox, { filename: 'app.js' });
@@ -99,6 +100,7 @@ const {
   newWizard, applyWizardMods, settingsEditor, wizardRequest,
   commandAvailability, isStopped, powerButton, editWebhook, viewDiscord, editServerChannel,
   apiKeyCreateDialog, apiKeysBody, modRequestsPanel, renderGate, renderSetup, showImportResult,
+  tabLive, LIVE, stopLive, fmtWeather, mapToPixel, MAPV, mapPanel, paintPins,
 } = sandbox.__exports__;
 
 // The views read from S, so give it the shape a loaded page would have.
@@ -1138,6 +1140,122 @@ test('the setup form sends the setup code and shows a wrong code', async () => {
   assert.ok('setupCode' in sent[0].body, 'the setup code is sent');
   assert.strictEqual(root.querySelector('form'), form);
   assert.strictEqual(form.querySelector('.error').textContent, 'That setup code is not right');
+});
+
+
+// --- live tab ---------------------------------------------------------------
+
+function companionFetch(sent, view) {
+  return (path, opts) => {
+    sent.push({ path, method: opts.method, body: opts.body ? JSON.parse(opts.body) : null });
+    const body = opts.method === 'POST' ? '{"ok":true}' : JSON.stringify(view);
+    return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(body) });
+  };
+}
+
+test('the live tab shows players as text and starts and stops live mode', async () => {
+  const sent = [];
+  const fetchBefore = sandbox.fetch;
+  const serversBefore = S.state.servers;
+  const routeBefore = S.route;
+  S.state.servers = [{ id: 'a', name: 'Riverside' }];
+  S.route = { name: 'server', id: 'a', tab: 'live' };
+  sandbox.fetch = companionFetch(sent, {
+    dir: '/z/Lua', found: true, fresh: true, ageSec: 5,
+    snapshot: { intervalMs: 60000, live: false,
+      world: { dayNumber: 23, day: 9, month: 7, year: 1993, hour: 4, minute: 5, rain: 0.8, season: 'Summer', temperatureC: 21.5 },
+      players: [{ username: HOSTILE[1], x: 10890, y: 9412, z: 1, health: 87.6, infected: true, kills: 42, hoursSurvived: 71.3 }] },
+  });
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+  try {
+    const host = el('div');
+    document.body.append(host);
+    await tabLive(host, S.state.servers[0]);
+    const text = host.textContent;
+    assert.ok(text.includes('Day 23') && text.includes('04:05') && text.includes('Heavy rain'), text);
+    assert.ok(text.includes('10890, 9412  floor 1') && text.includes('88%') && text.includes('Infected'), text);
+    assert.ok(text.includes(HOSTILE[1]), 'the hostile name is shown as text');
+    assert.strictEqual(host.querySelectorAll('img').length, 0, 'no markup from player data');
+    assert.ok(!sent.some((r) => r.method === 'POST'), 'opening the tab alone must not start live mode');
+
+    host.querySelectorAll('button').find((b) => b.textContent === 'Start').click();
+    await tick(); await tick();
+    const on = sent.find((r) => r.path === '/api/server/companion/live');
+    assert.ok(on && on.body.on === true && on.body.serverId === 'a', 'Start sets the live flag');
+    assert.ok(LIVE.running);
+
+    host.querySelectorAll('button').find((b) => b.textContent === 'Stop').click();
+    await tick();
+    const off = sent.filter((r) => r.path === '/api/server/companion/live').pop();
+    assert.strictEqual(off.body.on, false, 'Stop clears the live flag');
+    assert.ok(!LIVE.running && LIVE.timer === null, 'nothing keeps polling after Stop');
+    host.remove && host.remove();
+  } finally {
+    stopLive(false);
+    sandbox.fetch = fetchBefore;
+    S.state.servers = serversBefore;
+    S.route = routeBefore;
+  }
+});
+
+test('the live tab explains a missing companion mod', async () => {
+  const sent = [];
+  const fetchBefore = sandbox.fetch;
+  const serversBefore = S.state.servers;
+  S.state.servers = [{ id: 'b', name: 'Muldraugh' }];
+  sandbox.fetch = companionFetch(sent, { dir: '/z/Lua', found: false, fresh: false });
+  try {
+    const host = el('div');
+    document.body.append(host);
+    await tabLive(host, S.state.servers[0]);
+    assert.ok(host.textContent.includes('not reporting yet') && host.textContent.includes('/z/Lua'));
+    const start = host.querySelectorAll('button').find((b) => b.textContent === 'Start');
+    assert.ok(start.attributes.disabled !== undefined, 'Start is disabled until the mod reports');
+    host.remove && host.remove();
+  } finally {
+    stopLive(false);
+    sandbox.fetch = fetchBefore;
+    S.state.servers = serversBefore;
+  }
+});
+
+test('weather reads as words', () => {
+  assert.strictEqual(fmtWeather({ rain: 0, snow: 0, fog: 0 }), 'Dry');
+  assert.strictEqual(fmtWeather({ rain: 0.1, snow: 0, fog: 0.5 }), 'Light rain, fog');
+  assert.strictEqual(fmtWeather({ rain: 0.7, snow: 0.3, fog: 0 }), 'Snow');
+});
+
+test('map points turn game tiles into image pixels on both axes', () => {
+  const meta = { width: 4000, height: 3000, points: [
+    { x: 1000, y: 2000, px: 100, py: 200 }, { x: 11000, y: 12000, px: 3100, py: 2700 }] };
+  const a = mapToPixel(meta, 6000, 7000);
+  assert.strictEqual(a.px, 1600);
+  assert.strictEqual(a.py, 1450);
+  const b = mapToPixel(meta, 1000, 2000);
+  assert.strictEqual(b.px, 100);
+  assert.strictEqual(b.py, 200);
+});
+
+test('the map draws a pin per placed player, with names as text', () => {
+  const saved = { meta: MAPV.meta, node: MAPV.node, loaded: MAPV.loaded, view: LIVE.view };
+  MAPV.meta = { width: 1000, height: 1000, updatedAt: '2026-09-28T10:00:00Z', points: [
+    { x: 0, y: 0, px: 0, py: 0 }, { x: 1000, y: 1000, px: 1000, py: 1000 }] };
+  MAPV.node = null; MAPV.loaded = true;
+  LIVE.view = { snapshot: { players: [
+    { username: HOSTILE[1], x: 500, y: 250 }, { username: 'nowhere' }] } };
+  try {
+    const panel = mapPanel();
+    MAPV.zoom = 0.5; MAPV.x = 10; MAPV.y = 20;
+    paintPins();
+    const pins = panel.querySelectorAll('.map-pin');
+    assert.strictEqual(pins.length, 1, 'a player without a position gets no pin');
+    assert.strictEqual(pins[0].style.left, '260px');
+    assert.strictEqual(pins[0].style.top, '145px');
+    assert.ok(pins[0].textContent.includes(HOSTILE[1]));
+    assert.strictEqual(panel.querySelectorAll('img').length, 1, 'only the map itself is an image');
+  } finally {
+    MAPV.meta = saved.meta; MAPV.node = saved.node; MAPV.loaded = saved.loaded; LIVE.view = saved.view;
+  }
 });
 
 // --- report -----------------------------------------------------------------

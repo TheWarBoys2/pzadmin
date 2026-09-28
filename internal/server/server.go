@@ -675,6 +675,13 @@ func (a *App) Handler() http.Handler {
 	get("/api/backups/download", needs(permConfig, fromQueryServerID), a.handleBackupDownload)
 	get("/api/stack/env", needs(permConfig, fromQueryID), a.handleStackEnv)
 
+	// Live: where players are, from the Companion mod, and the map they are
+	// drawn on. Positions are sensitive, so they have their own permission.
+	get("/api/server/companion", needs(permLive, fromQueryID), a.handleCompanion)
+	post("/api/server/companion/live", needs(permLive, fromBodyServerID), a.handleCompanionLive)
+	get("/api/map", needs(permLive, fromNone), a.handleWorldMap)
+	get("/api/map/image", needs(permLive, fromNone), a.handleWorldMapImage)
+
 	// The account's own password.
 	post("/api/password", view(fromNone), a.handlePassword)
 
@@ -742,6 +749,10 @@ func (a *App) Handler() http.Handler {
 	post("/api/users/disable", ownerOnly, a.handleUserDisable)
 	post("/api/users/reset", ownerOnly, a.handleUserReset)
 	post("/api/users/remove", ownerOnly, a.handleUserRemove)
+	// The map image is shared by every server.
+	post("/api/map/upload", ownerOnly, a.handleWorldMapUpload)
+	post("/api/map/calibrate", ownerOnly, a.handleWorldMapCalibrate)
+	post("/api/map/delete", ownerOnly, a.handleWorldMapDelete)
 
 	// The external API. It takes an API key only, never a session cookie,
 	// and the routes above take a session only, never a key: a key cannot
@@ -857,8 +868,10 @@ func (a *App) logRequests(next http.Handler) http.Handler {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, code: 200}
 		next.ServeHTTP(rec, r)
-		// Successful reads are noise; log the interesting cases only.
-		if rec.code >= 400 || r.Method != http.MethodGet {
+		// Successful reads are noise; log the interesting cases only. The
+		// Live tab renews its flag every few seconds, which is noise too.
+		quiet := r.Method == http.MethodGet || r.URL.Path == "/api/server/companion/live"
+		if rec.code >= 400 || !quiet {
 			log.Printf("%s %s %s %d %s", clientIP(r), r.Method, r.URL.Path, rec.code, time.Since(start).Round(time.Millisecond))
 		}
 	})

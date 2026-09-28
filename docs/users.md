@@ -31,10 +31,12 @@ server's config files (with passwords hidden) and the list of backups.
 | Mods | Change the mod list and load order; approve or reject mod requests |
 | Config | Edit the server's ini, sandbox and `.env`; redeploy; download, restore and delete backups; clear player history |
 | Console | Send any RCON command |
+| Live | See where every player is and how they are doing on the Live tab and map, and turn on live updates (needs the [Companion mod](companion.md)) |
 
 The presets fill in the ticks: **Viewer** is view only, **Operator** adds
 Control, **Manager** adds Control, Mods and Config. Console is never part of a
-preset.
+preset, and neither is Live. Only the owner can upload or line up the map
+image.
 
 ## Only the owner can
 
@@ -73,6 +75,8 @@ that server is disabled, not given every server.
 The permissions stop someone doing what they weren't given, but what they
 were given can still do real damage:
 
+- **Live** shows every player's position in real time. Someone who has it
+  can find people in the game, so treat it like the Console.
 - **Console** can do anything RCON can, including banning every player or
   wiping access levels. Give it only to someone you would trust with the
   server itself.

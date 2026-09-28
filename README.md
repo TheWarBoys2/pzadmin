@@ -59,6 +59,7 @@ something wrong, especially anything security related, please report it (see
 - Player history: sessions, playtime and Steam IDs
 - Give items, vehicles and XP from searchable lists built from your server's own files, modded items included
 - A full RCON console
+- Optional [Companion mod](docs/companion.md) for a Live tab with where everyone is and how they're doing, and in-game time and weather (Build 42, early)
 
 **Automation**
 - Scheduled jobs made of steps, e.g. *announce → wait 1 min → save → back up → restart*

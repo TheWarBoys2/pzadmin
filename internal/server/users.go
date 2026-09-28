@@ -35,13 +35,17 @@ const (
 	// permConfig edits server settings and .env, redeploys, restores and
 	// deletes backups, and clears player history.
 	permConfig = "config"
+	// permLive sees where players are and how they are doing, from the
+	// PZAdmin Companion mod, and turns on live updates. Positions are more
+	// sensitive than anything permView shows, so it is granted separately.
+	permLive = "live"
 	// permOwner marks a route only the owner may use. No user can hold it.
 	permOwner = "owner"
 
 	maxUsers = 50
 )
 
-var userPerms = []string{permView, permControl, permConsole, permMods, permConfig}
+var userPerms = []string{permView, permControl, permConsole, permMods, permConfig, permLive}
 
 // user is one admin account other than the owner.
 type user struct {

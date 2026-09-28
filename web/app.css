@@ -958,3 +958,21 @@ ol.steps { margin: 0; padding-left: 18px; display: grid; gap: 4px; }
 .notice details summary { cursor: pointer; color: var(--dust); }
 .notice details code, .panel-body details code { display: block; margin-top: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .empty .row-actions { justify-content: center; }
+
+/* --- Live tab map ---------------------------------------------------------- */
+.map-view { position: relative; height: 520px; overflow: hidden; background: #0e0c09; cursor: grab; touch-action: none; user-select: none; }
+.map-view:active { cursor: grabbing; }
+.map-inner { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+.map-inner img { display: block; max-width: none; image-rendering: auto; pointer-events: none; }
+.map-pins { position: absolute; inset: 0; pointer-events: none; }
+.map-pin { position: absolute; width: 14px; height: 14px; margin: -7px 0 0 -7px; padding: 0; border-radius: 50%;
+  border: 2px solid #1a1206; background: var(--brass); box-shadow: 0 0 0 2px rgba(0,0,0,.35); cursor: pointer; pointer-events: auto; }
+.map-pin.infected { background: var(--rust); }
+.map-pin.dead { background: #8a8378; }
+.map-pin-label { position: absolute; left: 16px; top: -4px; white-space: nowrap; font-size: 12px; color: #f3ead8;
+  text-shadow: 0 1px 2px #000, 0 0 3px #000; pointer-events: none; }
+.map-mark { position: absolute; width: 18px; height: 18px; margin: -9px 0 0 -9px; border: 2px solid var(--moss); border-radius: 50%; }
+.map-calib { margin: 12px; }
+.map-calib-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+.map-calib-row input { width: 110px; }
+@media (max-width: 640px) { .map-view { height: 380px; } }
