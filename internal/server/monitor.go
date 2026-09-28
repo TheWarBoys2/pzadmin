@@ -197,6 +197,7 @@ func (a *App) probe(ctx context.Context, s config.Server) {
 			st.LastOnline = TimeNow()
 			st.Error = ""
 			st.ErrorKind = ""
+			st.Starting = false
 			st.Layout = layout
 			st.ModsEnabled = countEnabled(report)
 			st.ModsMissing = report.Missing
@@ -250,6 +251,12 @@ func (a *App) probe(ctx context.Context, s config.Server) {
 		window = restartWindow
 	}
 	stalled := prev.Restarting && prev.RestartingSince.Since() > window
+	// The container state is read first, so a server that is simply stopped
+	// or still booting never shows a connection error, not even for one tick.
+	a.refreshContainerState(ctx, s)
+	fresh := a.statusOf(s.ID)
+	quiet, starting := expectedOutage(kind, fresh)
+	reason := friendlyRCONError(kind, s)
 	st := a.updateStatus(s.ID, func(st *Status) {
 		if stalled {
 			st.Restarting = false
@@ -264,8 +271,12 @@ func (a *App) probe(ctx context.Context, s config.Server) {
 		st.PlayerCount = 0
 		st.LatencyMS = 0
 		st.LastCheck = TimeNow()
-		st.Error = friendlyRCONError(kind, s)
+		st.Error = reason
+		if quiet {
+			st.Error = ""
+		}
 		st.ErrorKind = kind
+		st.Starting = starting
 		st.Layout = layout
 		st.ModsEnabled = countEnabled(report)
 		st.ModsMissing = report.Missing
@@ -282,7 +293,7 @@ func (a *App) probe(ctx context.Context, s config.Server) {
 				Kind: "server.down", Severity: store.SevError, Source: "monitor",
 				ServerID: s.ID, Server: s.Name,
 				Message: s.Name + " went offline",
-				Detail:  st.Error,
+				Detail:  reason,
 			})
 		}
 	}
@@ -292,15 +303,40 @@ func (a *App) probe(ctx context.Context, s config.Server) {
 			ServerID: s.ID, Server: s.Name,
 			Message: s.Name + " has not come back from its restart",
 			Detail: fmt.Sprintf("Still unreachable %s after the restart began. %s",
-				humanSince(prev.RestartingSince.Time), st.Error),
+				humanSince(prev.RestartingSince.Time), reason),
 		})
 	}
 	a.store.AddSample(store.Sample{ServerID: s.ID, Online: false, Players: 0})
-	a.refreshContainerState(ctx, s)
-	// Recovery decides on the container state just read, not the one from
-	// before this probe.
-	st.ContainerState = a.statusOf(s.ID).ContainerState
+	// Recovery decides on the container state read during this probe.
+	st.Error = reason
 	a.maybeRecover(ctx, s, st)
+}
+
+// startupGrace is how long a freshly started container may go without
+// answering RCON before that counts as a fault. A container start can run
+// Steam validation and Workshop downloads first, so it matches restartWindow.
+const startupGrace = restartWindow
+
+// expectedOutage reports whether a failed RCON check is simply what a stopped
+// or booting server looks like, so there is nothing to warn about. quiet hides
+// the connection error; starting says the container is up and still loading.
+// A rejected password is always shown, since waiting will not fix it.
+func expectedOutage(kind string, st Status) (quiet, starting bool) {
+	if kind == "auth" {
+		return false, false
+	}
+	if st.Stopped {
+		return true, false
+	}
+	switch st.ContainerState {
+	case "exited", "created", "dead", "not created":
+		return true, false
+	case "running":
+		if !st.StartedAt.IsZero() && st.StartedAt.Since() < startupGrace {
+			return true, true
+		}
+	}
+	return false, false
 }
 
 func countEnabled(r pz.ModReport) int {

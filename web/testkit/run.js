@@ -406,6 +406,31 @@ test('a genuinely offline server still reads as offline', () => {
   assert.ok(row.textContent.includes('Nothing is listening'), 'a real outage should show the reason');
 });
 
+test('a stopped server reads as offline with no warning', () => {
+  const server = { id: 'x', name: 'Riverside', enabled: true, host: '127.0.0.1', rconPort: 27015, dockerContainer: 'pz' };
+  const status = {
+    serverId: 'x', online: false, restarting: false, players: [], playerCount: 0,
+    lastCheck: new Date().toISOString(), errorKind: 'refused', containerState: 'exited',
+    modsMissing: [],
+  };
+  const row = boardRow(server, status);
+  assert.ok(row.textContent.includes('Offline'));
+  assert.ok(!row.querySelector('.board-alert'), 'a stopped server has nothing to warn about');
+});
+
+test('a booting server reads as starting', () => {
+  const server = { id: 'x', name: 'Riverside', enabled: true, host: '127.0.0.1', rconPort: 27015, dockerContainer: 'pz' };
+  const status = {
+    serverId: 'x', online: false, restarting: false, starting: true, players: [], playerCount: 0,
+    lastCheck: new Date().toISOString(), errorKind: 'refused', containerState: 'running',
+    modsMissing: [],
+  };
+  const row = boardRow(server, status);
+  assert.ok(row.textContent.includes('Starting'), 'the state should say Starting: ' + row.textContent);
+  assert.ok(!row.textContent.includes('Offline'));
+  assert.ok(!row.querySelector('.board-alert'), 'loading is not a fault');
+});
+
 test('the restart button is disabled while a restart is running', () => {
   const server = { id: 'x', name: 'Riverside', enabled: true, host: '127.0.0.1', rconPort: 27015, dockerContainer: 'pz' };
   const busy = boardRow(server, { serverId: 'x', online: false, restarting: true, players: [], modsMissing: [] });
