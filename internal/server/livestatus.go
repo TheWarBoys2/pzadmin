@@ -318,10 +318,7 @@ func joinAddress(s config.Server) string {
 	if s.Public.Address == "" {
 		return ""
 	}
-	port := s.Public.Port
-	if port == 0 {
-		port = s.GamePort
-	}
+	port := joinPort(s)
 	if port == 0 {
 		return s.Public.Address
 	}

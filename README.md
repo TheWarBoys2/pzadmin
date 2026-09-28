@@ -206,7 +206,7 @@ instead, using a key limited to exactly what it needs.
    | --- | --- |
    | `containers:list`, `containers:read` | Server status |
    | `containers:start`, `containers:stop` | Start and stop |
-   | `projects:list`, `projects:deploy` | Deploying and creating servers |
+   | `projects:list`, `projects:deploy` | Deploying and creating servers, and starting servers that use port slots |
    | `containers:logs` *(optional)* | Container log view |
    | `containers:delete` *(optional)* | Deleting servers |
 
@@ -382,6 +382,17 @@ Project Zomboid also has its own Discord bot, which relays in-game chat. It's se
 `DiscordCommandChannel`), and the settings form has a Discord group for it. The two work side by side: the game's bot
 relays chat, and PZAdmin announces restarts. Anyone who can post in the command channel can run admin commands, so
 keep that channel to staff.
+
+## Port slots
+
+If only a couple of your servers run at once, they can share a few forwarded
+ports. Set a range under **Settings → Port slots** (for example 16261 to
+16264, which is two slots) and tick **Use a port slot** on each server. A
+server takes a free slot when you start it from PZAdmin and gives it back when
+it stops, and a start is refused while every slot is in use. The first time,
+PZAdmin changes the compose file's two game port lines to read `.env`, keeping
+a copy of the old file. See [docs/port-slots.md](docs/port-slots.md),
+including how the join port can change.
 
 ## Other admins
 

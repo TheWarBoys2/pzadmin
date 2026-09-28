@@ -59,6 +59,71 @@ type Config struct {
 	Notify    Notify    `json:"notify"`
 	Metrics   Metrics   `json:"metrics"`
 	Interface Interface `json:"interface"`
+	// PortSlots is a small shared range of game ports that servers take
+	// turns on, so only that range needs forwarding.
+	PortSlots PortSlots `json:"portSlots"`
+}
+
+// PortSlots is a range of game ports shared between servers. Slot n uses
+// FirstPort+2n for the game port and the port after it for UDPPort. A server
+// that uses slots takes a free one each time it starts and gives it back
+// when it stops. Count zero means slots are off.
+type PortSlots struct {
+	FirstPort int `json:"firstPort,omitempty"`
+	Count     int `json:"count,omitempty"`
+}
+
+// MaxPortSlots bounds the range, which is meant to be small.
+const MaxPortSlots = 16
+
+// Enabled reports whether slots are configured.
+func (p PortSlots) Enabled() bool { return p.Count > 0 && p.FirstPort > 0 }
+
+// Slot is one pair of ports in the range. Number counts from 1.
+type Slot struct {
+	Number   int `json:"number"`
+	GamePort int `json:"gamePort"`
+	UDPPort  int `json:"udpPort"`
+}
+
+// Slots lists the slots in order.
+func (p PortSlots) Slots() []Slot {
+	if !p.Enabled() {
+		return nil
+	}
+	out := make([]Slot, 0, p.Count)
+	for i := 0; i < p.Count; i++ {
+		g := p.FirstPort + 2*i
+		out = append(out, Slot{Number: i + 1, GamePort: g, UDPPort: g + 1})
+	}
+	return out
+}
+
+// LastPort is the highest port in the range.
+func (p PortSlots) LastPort() int {
+	if !p.Enabled() {
+		return 0
+	}
+	return p.FirstPort + 2*p.Count - 1
+}
+
+// Contains reports whether a port falls in the range.
+func (p PortSlots) Contains(port int) bool {
+	return p.Enabled() && port >= p.FirstPort && port <= p.LastPort()
+}
+
+// Validate checks the range. Zero Count is valid and means off.
+func (p PortSlots) Validate() error {
+	if p.Count == 0 {
+		return nil
+	}
+	if p.Count < 0 || p.Count > MaxPortSlots {
+		return fmt.Errorf("the number of slots must be from 1 to %d", MaxPortSlots)
+	}
+	if p.FirstPort < 1024 || p.FirstPort+2*p.Count-1 > 65535 {
+		return errors.New("the slot ports must be between 1024 and 65535")
+	}
+	return nil
 }
 
 // Server is one managed Project Zomboid instance.
@@ -82,6 +147,11 @@ type Server struct {
 	GameRoot string `json:"gameRoot,omitempty"`
 	// GamePort is informational: shown to users so they can copy a join address.
 	GamePort int `json:"gamePort,omitempty"`
+	// UDPPort is the second game port, read from the stack like GamePort.
+	UDPPort int `json:"udpPort,omitempty"`
+	// UseSlot makes the server take a free port slot each time it starts,
+	// instead of keeping ports of its own. See PortSlots.
+	UseSlot bool `json:"useSlot,omitempty"`
 
 	DockerContainer string `json:"dockerContainer"`
 

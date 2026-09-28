@@ -101,6 +101,9 @@ Useful to check a key works.
 `state` is one of `online`, `offline`, `restarting`, `stopped`, `deploying` or
 `unknown` (not checked yet). `description`, `address` and `port` are the public
 info set for the server's Discord channel; `port` falls back to the game port.
+For a server that uses a port slot, `port` is always its current game port and
+`slot` is the slot it holds (left out when it holds none). See
+[port-slots.md](port-slots.md).
 Times are RFC 3339, or `null` when there is none.
 
 ### `GET /api/v1/servers/{id}`
