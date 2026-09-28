@@ -62,3 +62,37 @@ func TestResetWorldWaitsForABackup(t *testing.T) {
 		t.Fatalf("a reset during a backup should be refused, got %v", err)
 	}
 }
+
+func TestResetWorldRefusesWhatItCannotDelete(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root may delete anything")
+	}
+	saves := filepath.Join(t.TempDir(), "Saves")
+	locked := filepath.Join(saves, "Multiplayer", "servertest", "map")
+	if err := os.MkdirAll(locked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(locked, "chunk.bin"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// As if another user owned it: PZAdmin can read but not delete inside.
+	if err := os.Chmod(locked, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	l := Layout{SavesDir: saves}
+	var denied *AccessError
+	if err := CheckWorld(l, false); !errors.As(err, &denied) || denied.Path != locked {
+		t.Fatalf("the check should name %s, got %v", locked, err)
+	}
+	if _, err := NewBackupper(t.TempDir()).ResetWorld("s", l); !errors.As(err, &denied) {
+		t.Fatalf("the reset should be refused up front, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(locked, "chunk.bin")); err != nil {
+		t.Fatal("a refused reset must leave the whole world in place")
+	}
+	if _, err := os.Stat(filepath.Join(saves, "Multiplayer")); err != nil {
+		t.Fatal("the world folder must not have been moved")
+	}
+}
