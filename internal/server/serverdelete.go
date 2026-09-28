@@ -237,6 +237,7 @@ func (a *App) removeServer(id string) error {
 	})
 	a.dropRCON(id)
 	a.modRequests.forgetServer(id)
+	a.users.forgetServer(id)
 	a.syncMonitors()
 	return err
 }

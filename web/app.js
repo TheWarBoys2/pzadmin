@@ -164,6 +164,11 @@ async function request(path, options) {
   const text = await response.text();
   let payload = null;
   if (text) { try { payload = JSON.parse(text); } catch (err) { payload = null; } }
+  if (response.status === 403 && payload && payload.mustChangePassword) {
+    stopStream();
+    renderChoosePassword();
+    throw new ApiError('Choose your own password first.', 403);
+  }
   if (!response.ok) {
     const message = sentence((payload && payload.error) || ('Request failed (' + response.status + ')'));
     const error = new ApiError(message, response.status);
@@ -476,6 +481,8 @@ async function boot() {
 }
 
 async function loadAndRender() {
+  const who = await api.get('/api/me');
+  if (who.me && who.me.mustChangePassword) return renderChoosePassword();
   const [state, commands] = await Promise.all([api.get('/api/state'), api.get('/api/commands')]);
   S.state = state;
   S.commands = commands.commands || [];
@@ -551,9 +558,49 @@ function renderSetup() {
 
   root.append(el('div', { class: 'card' },
     el('div', { class: 'brand' }, 'PZ', el('span', { text: 'ADMIN' })),
-    el('p', { class: 'lede', text: 'Set up the administrator account. PZAdmin has one account and stores it on this machine only. The setup code proves you can see this PZAdmin\'s log, so nobody else who reaches this page first can claim it.' }),
+    el('p', { class: 'lede', text: 'Set up the owner account. It can do everything, and can add other admins later. PZAdmin stores accounts on this machine only. The setup code proves you can see this PZAdmin\'s log, so nobody else who reaches this page first can claim it.' }),
     form));
   code.focus();
+}
+
+/* A new admin, or one whose password the owner reset, signs in with a
+ * temporary password and has to choose their own before anything else. */
+function renderChoosePassword() {
+  S.authenticated = false;
+  const root = clear($('#root'));
+  root.className = 'gate';
+
+  const current = el('input', { type: 'password', autocomplete: 'current-password', required: true });
+  const next = el('input', { type: 'password', autocomplete: 'new-password', required: true });
+  const confirm = el('input', { type: 'password', autocomplete: 'new-password', required: true });
+  const error = el('div', { class: 'error' });
+  const submit = el('button', { class: 'btn primary block', type: 'submit', text: 'Save and continue' });
+
+  const form = el('form', { class: 'form', onsubmit: async (event) => {
+    event.preventDefault();
+    error.textContent = '';
+    if (next.value !== confirm.value) { error.textContent = 'The two new passwords do not match.'; return; }
+    submit.disabled = true;
+    try {
+      await api.post('/api/password', { current: current.value, new: next.value });
+      await loadAndRender();
+    } catch (err) {
+      error.textContent = err.message;
+      submit.disabled = false;
+    }
+  } },
+    field('Temporary password', current, 'The one the owner gave you.'),
+    field('New password', next, 'At least 10 characters. Only you will know it.'),
+    field('Confirm new password', confirm),
+    error,
+    submit,
+    el('button', { class: 'btn ghost block', type: 'button', text: 'Sign out', onclick: signOut }));
+
+  root.append(el('div', { class: 'card' },
+    el('div', { class: 'brand' }, 'PZ', el('span', { text: 'ADMIN' })),
+    el('p', { class: 'lede', text: 'Choose your own password to finish setting up your account.' }),
+    form));
+  current.focus();
 }
 
 function renderGate() {
@@ -635,6 +682,16 @@ function statusFor(id) { return statuses().find((s) => s.serverId === id) || { s
 function serverFor(id) { return servers().find((s) => s.id === id) || null; }
 function webhooks() { return (S.state && S.state.config && S.state.config.notify && S.state.config.notify.webhooks) || []; }
 
+/* Who is signed in. The owner can do everything; other admins have the
+ * permissions the owner ticked. The server checks every request, so these
+ * only keep buttons someone cannot use out of their way. */
+function me() { return (S.state && S.state.me) || { owner: true, perms: [] }; }
+function isOwner() { return !!me().owner; }
+function can(perm) {
+  const m = me();
+  return !!m.owner || perm === 'view' || (m.perms || []).includes(perm);
+}
+
 function render() {
   if (!S.authenticated || !S.state) return;
   const root = $('#root');
@@ -648,10 +705,10 @@ function render() {
     case 'server': viewServer(main); break;
     case 'players': viewPlayers(main); break;
     case 'schedules': viewSchedules(main); break;
-    case 'discord': viewDiscord(main); break;
+    case 'discord': if (isOwner()) viewDiscord(main); else viewDashboard(main); break;
     case 'activity': viewActivity(main); break;
     case 'catalogue': viewCatalogue(main); break;
-    case 'stack': viewStack(main); break;
+    case 'stack': if (isOwner()) viewStack(main); else viewDashboard(main); break;
     case 'settings': viewSettings(main); break;
     default: viewDashboard(main);
   }
@@ -687,14 +744,15 @@ function buildRail() {
       navItem('/dashboard', 'Dashboard', online + '/' + servers().length),
       navItem('/players', 'Players', players || null),
       navItem('/schedules', 'Schedules', (S.state.schedules || []).length || null),
-      navItem('/discord', 'Discord', webhooks().filter((h) => h.enabled).length || null),
+      isOwner() ? navItem('/discord', 'Discord', webhooks().filter((h) => h.enabled).length || null) : null,
       navItem('/activity', 'Activity', null),
       navItem('/catalogue', 'Catalogue', null),
-      navItem('/stack', 'Stack', null),
+      isOwner() ? navItem('/stack', 'Stack', null) : null,
       navItem('/settings', 'Settings', null)),
     railServers,
     el('div', { class: 'rail-foot' },
       el('div', { class: 'conn', id: 'conn-state' }),
+      el('div', { class: 'faint', text: 'Signed in as ' + (me().name || '') + (isOwner() ? ' (owner)' : '') }),
       el('button', { class: 'btn ghost small', type: 'button', text: 'Sign out', onclick: signOut })));
 }
 
@@ -725,7 +783,7 @@ function viewDashboard(main) {
       el('div', { class: 'sub', text: describeFleet(all, S.state.docker) })),
     el('div', { class: 'page-actions' },
       el('button', { class: 'btn', type: 'button', text: 'Refresh', onclick: refreshState }),
-      el('button', { class: 'btn primary', type: 'button', text: 'New server', onclick: newServer }))));
+      isOwner() ? el('button', { class: 'btn primary', type: 'button', text: 'New server', onclick: newServer }) : null)));
 
   if (S.state.docker && !S.state.docker.available && servers().some((s) => s.dockerContainer)) {
     const docker = S.state.docker;
@@ -734,6 +792,12 @@ function viewDashboard(main) {
       docker.detail ? el('details', null, el('summary', { text: 'Details' }), el('code', { class: 'mono', text: docker.detail })) : null));
   }
 
+  if (!servers().length && !isOwner()) {
+    main.append(el('div', { class: 'panel' }, el('div', { class: 'empty' },
+      el('h3', { text: 'No servers to show' }),
+      el('p', { text: 'Your account has not been given any servers yet. Ask the owner.' }))));
+    return;
+  }
   if (!servers().length) {
     main.append(el('div', { class: 'panel' }, el('div', { class: 'empty' },
       el('h3', { text: 'No servers yet' }),
@@ -850,17 +914,18 @@ function boardRow(server, st) {
 
     el('div', { class: 'board-actions' },
       el('button', { class: 'btn small', type: 'button', text: 'Manage', onclick: () => go('/servers/' + server.id + '/overview') }),
-      el('button', { class: 'btn small', type: 'button', text: 'Save', disabled: !st.online,
-        onclick: () => runCommand(server, 'save', []) }),
-      el('button', { class: 'btn small', type: 'button', text: 'Say', disabled: !st.online,
-        onclick: () => promptBroadcast(server) }),
-      el('button', {
-        class: 'btn small danger', type: 'button',
-        text: st.restarting ? 'Restarting…' : 'Restart',
-        disabled: !!st.restarting || isStopped(server, st),
-        onclick: () => lifecycle(server, 'restart'),
-      }),
-      powerButton(server, st, 'btn small')));
+      can('control') ? [
+        el('button', { class: 'btn small', type: 'button', text: 'Save', disabled: !st.online,
+          onclick: () => runCommand(server, 'save', []) }),
+        el('button', { class: 'btn small', type: 'button', text: 'Say', disabled: !st.online,
+          onclick: () => promptBroadcast(server) }),
+        el('button', {
+          class: 'btn small danger', type: 'button',
+          text: st.restarting ? 'Restarting…' : 'Restart',
+          disabled: !!st.restarting || isStopped(server, st),
+          onclick: () => lifecycle(server, 'restart'),
+        }),
+        powerButton(server, st, 'btn small')] : null));
 
   if (st.restarting) {
     row.append(el('div', { class: 'board-alert notice' },
@@ -871,8 +936,8 @@ function boardRow(server, st) {
   if (hasTime(st.pendingRestartAt)) {
     row.append(el('div', { class: 'board-alert notice' },
       el('span', { text: 'Automatic restart at ' + fmtClock(st.pendingRestartAt) + ' (' + (st.pendingReason || 'scheduled') + '). ' }),
-      el('button', { class: 'btn small', type: 'button', text: 'Cancel it',
-        onclick: () => lifecycle(server, 'cancel-pending') })));
+      can('control') ? el('button', { class: 'btn small', type: 'button', text: 'Cancel it',
+        onclick: () => lifecycle(server, 'cancel-pending') }) : null));
   }
   if ((st.modsMissing || []).length) {
     row.append(el('div', { class: 'board-alert' },
@@ -1029,6 +1094,16 @@ const SERVER_TABS = [
   ['console', 'Console'],
 ];
 
+// tabAllowed hides the tabs whose whole point is something the account
+// cannot do. Tabs that are also for reading stay, and the server refuses any
+// change the account is not allowed to make.
+function tabAllowed(id) {
+  if (id === 'console') return can('console');
+  if (id === 'live') return can('live');
+  if (id === 'commands') return can('control');
+  return true;
+}
+
 function viewServer(main) {
   const server = serverFor(S.route.id);
   if (!server) {
@@ -1046,12 +1121,12 @@ function viewServer(main) {
       el('div', { class: 'sub mono', text: server.host + ':' + server.rconPort +
         (server.dockerContainer ? '  ·  ' + server.dockerContainer : '') })),
     el('div', { class: 'page-actions' },
-      el('button', { class: 'btn', type: 'button', text: 'Edit server', onclick: () => editServer(server) }),
-      powerButton(server, st, 'btn'),
-      el('button', { class: 'btn danger', type: 'button', text: 'Restart', disabled: isStopped(server, st),
-        onclick: () => lifecycle(server, 'restart') }))));
+      isOwner() ? el('button', { class: 'btn', type: 'button', text: 'Edit server', onclick: () => editServer(server) }) : null,
+      can('control') ? powerButton(server, st, 'btn') : null,
+      can('control') ? el('button', { class: 'btn danger', type: 'button', text: 'Restart', disabled: isStopped(server, st),
+        onclick: () => lifecycle(server, 'restart') }) : null)));
 
-  main.append(el('div', { class: 'tabs' }, SERVER_TABS.map(([id, label]) =>
+  main.append(el('div', { class: 'tabs' }, SERVER_TABS.filter(([id]) => tabAllowed(id)).map(([id, label]) =>
     el('button', {
       type: 'button', class: tab === id ? 'active' : '', text: label,
       onclick: () => go('/servers/' + server.id + '/' + id),
@@ -1060,6 +1135,10 @@ function viewServer(main) {
   const host = el('div', { id: 'tab-host' });
   main.append(host);
 
+  if (!tabAllowed(tab)) {
+    host.append(el('div', { class: 'notice warn', text: 'Your account does not have access to this tab. Ask the owner.' }));
+    return;
+  }
   switch (tab) {
     case 'players': tabPlayers(host, server); break;
     case 'live': tabLive(host, server); break;
@@ -1085,7 +1164,7 @@ function serverLiveBlock(st) {
 async function tabOverview(host, server, st) {
   host.append(el('div', { id: 'server-live' }, serverLiveBlock(st)));
   host.append(el('div', { id: 'server-world' }));
-  loadWorldStrip(server.id, 'server-world');
+  if (can('live')) loadWorldStrip(server.id, 'server-world');
 
   if (st.error) host.append(el('div', { class: 'notice bad', text: st.error, style: { marginTop: '16px' } }));
 
@@ -1118,8 +1197,9 @@ async function tabOverview(host, server, st) {
             el('dt', { text: 'World size' }), el('dd', { text: st.savesBytes ? fmtBytes(st.savesBytes) : 'not measured yet' }))
         : el('div', null,
             el('p', { text: 'PZAdmin could not find this server\u2019s files in the folders its stack mounts.' }),
-            el('p', { class: 'muted', text: 'Without them, config editing, mod checks, log viewing and backups are unavailable. The Stack screen shows what was checked and why it failed.' }),
-            el('button', { class: 'btn', type: 'button', text: 'Open Stack', onclick: () => go('/stack') }))));
+            el('p', { class: 'muted', text: 'Without them, config editing, mod checks, log viewing and backups are unavailable. '
+              + (isOwner() ? 'The Stack screen shows what was checked and why it failed.' : 'The owner can see why on the Stack screen.') }),
+            isOwner() ? el('button', { class: 'btn', type: 'button', text: 'Open Stack', onclick: () => go('/stack') }) : null)));
 
   const recovery = server.recovery || {};
   const ops = el('div', { class: 'panel' },
@@ -1646,16 +1726,20 @@ function mapPanel() {
       m ? el('button', { class: 'btn small', type: 'button', text: '+', 'aria-label': 'Zoom in', onclick: () => zoomMap(1.5) }) : null,
       m ? el('button', { class: 'btn small', type: 'button', text: '−', 'aria-label': 'Zoom out', onclick: () => zoomMap(1 / 1.5) }) : null,
       m ? el('button', { class: 'btn small', type: 'button', text: 'Fit', onclick: fitMap }) : null,
-      m && !MAPV.calib ? el('button', { class: 'btn small', type: 'button', text: mapLinedUp(m) ? 'Line up again' : 'Line up map', onclick: startCalib }) : null,
-      el('button', { class: 'btn small', type: 'button', text: m ? 'Change image' : 'Add a map image', onclick: mapImageDialog })));
+      m && !MAPV.calib && isOwner() ? el('button', { class: 'btn small', type: 'button', text: mapLinedUp(m) ? 'Line up again' : 'Line up map', onclick: startCalib }) : null,
+      isOwner() ? el('button', { class: 'btn small', type: 'button', text: m ? 'Change image' : 'Add a map image', onclick: mapImageDialog }) : null));
   if (!m) {
     return el('div', { class: 'panel', style: { marginTop: '16px' } }, head,
-      el('div', { class: 'panel-body' }, el('p', { class: 'muted', text: 'Add a map image to see everyone as pins on the map.' })));
+      el('div', { class: 'panel-body' }, el('p', { class: 'muted', text: isOwner()
+        ? 'Add a map image to see everyone as pins on the map.'
+        : 'The owner can add a map image to show everyone as pins.' })));
   }
   if (!MAPV.node) buildMapNode();
   const body = el('div', { class: 'panel-body flush' },
     MAPV.calib ? MAPV.calibNode : null,
-    !mapLinedUp(m) && !MAPV.calib ? el('div', { class: 'notice warn map-calib', text: 'Line the map up so pins land in the right place.' }) : null,
+    !mapLinedUp(m) && !MAPV.calib ? el('div', { class: 'notice warn map-calib', text: isOwner()
+      ? 'Line the map up so pins land in the right place.'
+      : 'The owner has not lined this map up yet, so there are no pins.' }) : null,
     MAPV.node);
   return el('div', { class: 'panel', style: { marginTop: '16px' } }, head, body);
 }
@@ -3320,7 +3404,7 @@ async function tabBackups(host, server, st) {
     }
   });
 
-  host.append(el('div', { class: 'panel' },
+  if (can('control')) host.append(el('div', { class: 'panel' },
     el('div', { class: 'panel-head' },
       el('h3', { text: 'Create an archive' }),
       el('span', { class: 'muted', text: fmtBytes(data.totalBytes || 0) + ' used by ' + (data.backups || []).length + ' archives' })),
@@ -3335,18 +3419,18 @@ async function tabBackups(host, server, st) {
     el('td', { class: 'n', text: fmtBytes(a.size) }),
     el('td', { class: 'right' },
       el('div', { style: { display: 'flex', gap: '6px', justifyContent: 'flex-end', flexWrap: 'wrap' } },
-        el('a', { class: 'btn small', href: '/api/backups/download?serverId=' + encodeURIComponent(server.id) +
-          '&name=' + encodeURIComponent(a.name), text: 'Download' }),
-        el('button', { class: 'btn small', type: 'button', text: 'Verify', onclick: async () => {
+        can('config') ? el('a', { class: 'btn small', href: '/api/backups/download?serverId=' + encodeURIComponent(server.id) +
+          '&name=' + encodeURIComponent(a.name), text: 'Download' }) : null,
+        can('control') ? el('button', { class: 'btn small', type: 'button', text: 'Verify', onclick: async () => {
           try {
             const result = await api.post('/api/backups/verify', { serverId: server.id, name: a.name });
             toast(result.message, 'good');
           } catch (err) { toast(err.message, 'bad'); }
-        } }),
-        el('button', { class: 'btn small', type: 'button', text: 'Restore', disabled: st.online,
+        } }) : null,
+        can('config') ? el('button', { class: 'btn small', type: 'button', text: 'Restore', disabled: st.online,
           title: st.online ? 'Stop the server first' : '',
-          onclick: () => restoreBackup(server, a) }),
-        el('button', { class: 'btn small danger', type: 'button', text: 'Delete', onclick: async () => {
+          onclick: () => restoreBackup(server, a) }) : null,
+        can('config') ? el('button', { class: 'btn small danger', type: 'button', text: 'Delete', onclick: async () => {
           const confirmed = await confirmDialog({
             title: 'Delete this archive?', message: a.name + ' will be removed permanently.',
             confirmLabel: 'Delete', danger: true,
@@ -3357,7 +3441,7 @@ async function tabBackups(host, server, st) {
             toast('Archive deleted.', 'good');
             go('/servers/' + server.id + '/backups');
           } catch (err) { toast(err.message, 'bad'); }
-        } })))));
+        } }) : null))));
 
   host.append(el('div', { class: 'panel', style: { marginTop: '18px' } },
     el('div', { class: 'panel-head' }, el('h3', { text: 'Archives' })),
@@ -3616,14 +3700,20 @@ function viewSchedules(main) {
     el('div', null,
       el('h1', { text: 'Schedules' }),
       el('div', { class: 'sub', text: 'Jobs that run on their own. Times use ' + (S.state.timezone || 'UTC') + '.' })),
-    el('div', { class: 'page-actions' },
+    isOwner() ? el('div', { class: 'page-actions' },
       el('button', { class: 'btn', type: 'button', text: 'Start from a template',
         disabled: !servers().length, onclick: () => pickTemplate() }),
       el('button', { class: 'btn primary', type: 'button', text: 'New job',
-        disabled: !servers().length, onclick: () => editTask(null) }))));
+        disabled: !servers().length, onclick: () => editTask(null) })) : null));
 
   if (!servers().length) {
     main.append(el('div', { class: 'notice warn', text: 'Add a server before creating jobs.' }));
+    return;
+  }
+  if (!tasks.length && !isOwner()) {
+    main.append(el('div', { class: 'panel' }, el('div', { class: 'empty' },
+      el('h3', { text: 'No scheduled jobs' }),
+      el('p', { text: 'The owner has not set up any jobs for your servers.' }))));
     return;
   }
   if (!tasks.length) {
@@ -3656,7 +3746,7 @@ function viewSchedules(main) {
         t.lastResult ? el('div', { class: 'sub faint', text: t.lastResult }) : null),
       el('td', { class: 'right' },
         el('div', { style: { display: 'flex', gap: '6px', justifyContent: 'flex-end' } },
-          el('button', { class: 'btn small', type: 'button', text: 'Run now', onclick: async () => {
+          can('control') ? el('button', { class: 'btn small', type: 'button', text: 'Run now', onclick: async () => {
             const confirmed = await confirmDialog({
               title: 'Run ' + t.name + ' now?',
               message: 'This does exactly what the schedule would do, immediately.',
@@ -3669,16 +3759,16 @@ function viewSchedules(main) {
               const result = await api.post('/api/schedules/run', { id: t.id });
               toast(result.message, 'good');
             } catch (err) { toast(err.message, 'bad'); }
-          } }),
-          el('button', { class: 'btn small', type: 'button', text: 'Edit', onclick: () => editTask(t) }),
-          el('button', { class: 'btn small danger', type: 'button', text: 'Delete', onclick: async () => {
+          } }) : null,
+          isOwner() ? el('button', { class: 'btn small', type: 'button', text: 'Edit', onclick: () => editTask(t) }) : null,
+          isOwner() ? el('button', { class: 'btn small danger', type: 'button', text: 'Delete', onclick: async () => {
             const confirmed = await confirmDialog({
               title: 'Delete ' + t.name + '?', message: 'The job will stop running.',
               confirmLabel: 'Delete', danger: true,
             });
             if (!confirmed) return;
             await saveTasks(tasks.map((e) => e.task).filter((x) => x.id !== t.id));
-          } }))));
+          } }) : null)));
   });
 
   main.append(el('div', { class: 'panel' },
@@ -4464,8 +4554,12 @@ function viewSettings(main) {
       el('h1', { text: 'Settings' }),
       el('div', { class: 'sub', text: 'PZAdmin ' + S.version }))));
 
+  if (!isOwner()) {
+    main.append(el('div', { class: 'grid halves' }, settingsAccount(), settingsMyAccess()));
+    return;
+  }
   main.append(el('div', { class: 'grid halves' },
-    settingsGeneral(cfg), settingsMetrics(cfg), settingsData(cfg), settingsAccount(), settingsAPIKeys()));
+    settingsGeneral(cfg), settingsMetrics(cfg), settingsData(cfg), settingsAccount(), settingsUsers(), settingsAPIKeys()));
 }
 
 function settingsGeneral(cfg) {
@@ -5255,11 +5349,11 @@ function settingsAccount() {
     } catch (err) { error.textContent = err.message; change.disabled = false; }
   });
 
-  const revoke = el('button', { class: 'btn danger', type: 'button', text: 'Sign out everywhere' });
-  revoke.addEventListener('click', async () => {
+  const revoke = isOwner() ? el('button', { class: 'btn danger', type: 'button', text: 'Sign out everywhere' }) : null;
+  if (revoke) revoke.addEventListener('click', async () => {
     const confirmed = await confirmDialog({
       title: 'Sign out of every browser?',
-      message: 'All sessions end immediately, including this one.',
+      message: 'Every session ends immediately: yours, including this one, and every other admin\u2019s.',
       confirmLabel: 'Sign out everywhere', danger: true,
     });
     if (!confirmed) return;
@@ -5274,6 +5368,8 @@ function settingsAccount() {
   return el('div', { class: 'panel' },
     el('div', { class: 'panel-head' }, el('h3', { text: 'Account' })),
     el('div', { class: 'panel-body' }, el('div', { class: 'form' },
+      el('p', { class: 'muted', text: 'Signed in as ' + (me().name || '') + (isOwner() ? ', the owner.' : '.')
+        + ' Changing your password signs out all your browsers.' }),
       field('Current password', current),
       field('New password', next, 'At least 10 characters.'),
       field('Confirm new password', confirm),
@@ -5458,6 +5554,231 @@ function apiKeyReveal(key, meta) {
     actions: [
       el('button', { class: 'btn', type: 'button', text: 'Copy example', onclick: () => copyText(example) }),
       el('button', { class: 'btn primary', type: 'button', text: 'Copy key', onclick: () => copyText(key) }),
+      el('button', { class: 'btn', type: 'button', text: 'Done', onclick: closeModal }),
+    ],
+  });
+}
+
+// --------------------------------------------------------------------- users
+
+/* Other admins. The owner adds them, ticks what each can do and can limit
+ * them to some servers. PZAdmin makes a temporary password, shown once, that
+ * the owner passes on; the admin chooses their own at first sign-in. */
+
+const USER_PERMS = [
+  ['control', 'Control', 'Start, stop and restart, run commands from the command list (kick, ban, give items and so on), make backups and run existing jobs now.'],
+  ['mods', 'Mods', 'Change the mod list and load order, and approve or reject mod requests.'],
+  ['config', 'Config', 'Edit server settings and .env, redeploy, download, restore and delete backups, and clear player history.'],
+  ['console', 'Console', 'Send any RCON command. This skips every check, so only give it to someone you trust with the server itself.'],
+  ['live', 'Live', 'See where every player is and how they are doing on the Live tab and map (needs the Companion mod). Positions are sensitive, so only give it to people you trust with them.'],
+];
+const USER_PRESETS = [
+  ['viewer', 'Viewer', []],
+  ['operator', 'Operator', ['control']],
+  ['manager', 'Manager', ['control', 'mods', 'config']],
+];
+const PERM_LABELS = { view: 'View', control: 'Control', mods: 'Mods', config: 'Config', console: 'Console', live: 'Live' };
+
+function permPills(perms) {
+  return (perms || []).map((p) => el('span', {
+    class: 'pill' + (p === 'console' ? ' warn' : p !== 'view' ? ' on' : ''), text: PERM_LABELS[p] || p }));
+}
+
+function serverListText(ids) {
+  return (ids || []).length ? ids.map((id) => (serverFor(id) || { name: id }).name).join(', ') : 'All';
+}
+
+function settingsMyAccess() {
+  const m = me();
+  return el('div', { class: 'panel' },
+    el('div', { class: 'panel-head' }, el('h3', { text: 'Your access' })),
+    el('div', { class: 'panel-body' },
+      el('dl', { class: 'kv' },
+        el('dt', { text: 'Can' }), el('dd', null, permPills(['view'].concat((m.perms || []).filter((p) => p !== 'view')))),
+        el('dt', { text: 'Servers' }), el('dd', { text: serverListText(m.servers) })),
+      el('p', { class: 'muted', text: 'The owner sets these. Ask them if you need more.' })));
+}
+
+function settingsUsers() {
+  const body = el('div', { class: 'panel-body' }, el('p', { class: 'muted', text: 'Loading users…' }));
+  const panel = el('div', { class: 'panel span-all' },
+    el('div', { class: 'panel-head' }, el('h3', { text: 'Users' })),
+    body);
+
+  async function load() {
+    let users;
+    try {
+      users = (await api.get('/api/users')).users || [];
+    } catch (err) {
+      clear(body);
+      body.append(el('div', { class: 'error', text: err.message }));
+      return;
+    }
+    clear(body);
+    appendAll(body, usersBody(users, load));
+  }
+  load();
+  return panel;
+}
+
+function usersBody(users, reload) {
+  const add = el('button', { class: 'btn primary', type: 'button', text: 'Add user',
+    onclick: () => userDialog(null, reload) });
+
+  const rows = users.map((u) => {
+    const edit = el('button', { class: 'btn small', type: 'button', text: 'Manage', onclick: () => userDialog(u, reload) });
+    return el('tr', { class: u.disabled ? 'muted' : null },
+      el('td', null,
+        el('div', { text: u.name }),
+        el('div', { class: 'faint', text: u.disabled ? 'Disabled' : u.mustChange ? 'Has not chosen a password yet' : '' })),
+      el('td', null, permPills(u.perms)),
+      el('td', { text: serverListText(u.servers) }),
+      el('td', { text: hasTime(u.lastLogin) ? fmtAgo(u.lastLogin) : 'never' }),
+      el('td', { class: 'right' }, edit));
+  });
+
+  return [
+    el('p', { class: 'muted', text: 'Give other admins their own sign-in. You choose what each can do and which servers they see. '
+      + 'Only you can manage users, API keys and PZAdmin\u2019s settings, add or delete servers, and edit jobs.' }),
+    rows.length
+      ? el('table', null,
+        el('thead', null, el('tr', null,
+          el('th', { text: 'User' }), el('th', { text: 'Can' }), el('th', { text: 'Servers' }),
+          el('th', { text: 'Last sign-in' }), el('th', { class: 'right', text: '' }))),
+        el('tbody', null, rows))
+      : el('p', { class: 'muted', text: 'No other users yet.' }),
+    el('div', { class: 'form-actions' }, add),
+  ];
+}
+
+function userDialog(existing, reload) {
+  const name = el('input', { type: 'text', maxlength: '64', autocomplete: 'off', placeholder: 'glenn',
+    value: existing ? existing.name : '', disabled: !!existing });
+  const have = new Set(existing ? existing.perms : []);
+  const boxes = USER_PERMS.map(([id, label, hint]) => ({ id, box: el('input', { type: 'checkbox', checked: have.has(id) }), label, hint }));
+  const preset = el('select', { 'aria-label': 'Preset' },
+    el('option', { value: '', text: 'Custom' }),
+    USER_PRESETS.map(([id, label]) => el('option', { value: id, text: label })));
+  const matchPreset = () => {
+    const ticked = boxes.filter((b) => b.box.checked).map((b) => b.id).sort().join(',');
+    const found = USER_PRESETS.find(([, , perms]) => perms.slice().sort().join(',') === ticked);
+    preset.value = found ? found[0] : '';
+  };
+  preset.addEventListener('change', () => {
+    const found = USER_PRESETS.find(([id]) => id === preset.value);
+    if (!found) return;
+    for (const b of boxes) b.box.checked = found[2].includes(b.id);
+  });
+  for (const b of boxes) b.box.addEventListener('change', matchPreset);
+  if (!existing) preset.value = 'operator';
+  if (!existing) for (const b of boxes) b.box.checked = b.id === 'control';
+  else matchPreset();
+
+  const limited = existing && (existing.servers || []).length;
+  const allServers = el('input', { type: 'checkbox', checked: !limited });
+  const picks = servers().map((s) => ({ id: s.id, name: s.name,
+    box: el('input', { type: 'checkbox', checked: !!(existing && (existing.servers || []).includes(s.id)) }) }));
+  const pickList = el('div', { class: 'form' + (limited ? '' : ' hidden') }, picks.map((p) =>
+    el('label', { class: 'check' }, p.box, el('span', { text: p.name }))));
+  allServers.addEventListener('change', () => pickList.classList.toggle('hidden', allServers.checked));
+  const error = el('div', { class: 'error' });
+
+  const save = el('button', { class: 'btn primary', type: 'button', text: existing ? 'Save' : 'Add user' });
+  save.addEventListener('click', async () => {
+    error.textContent = '';
+    const perms = ['view'].concat(boxes.filter((b) => b.box.checked).map((b) => b.id));
+    const chosen = allServers.checked ? [] : picks.filter((p) => p.box.checked).map((p) => p.id);
+    if (!allServers.checked && !chosen.length) { error.textContent = 'Pick at least one server, or allow all.'; return; }
+    save.disabled = true;
+    try {
+      if (existing) {
+        await api.post('/api/users/update', { id: existing.id, perms: perms, servers: chosen });
+        closeModal();
+        toast('Saved. It applies from ' + existing.name + '\u2019s next click.', 'good');
+        reload();
+      } else {
+        const res = await api.post('/api/users/create', { name: name.value.trim(), perms: perms, servers: chosen });
+        closeModal();
+        reload();
+        userPasswordReveal(res.user.name, res.password);
+      }
+    } catch (err) { error.textContent = err.message; save.disabled = false; }
+  });
+
+  // Account actions for an existing user. Each asks first, then closes the
+  // dialog and reloads the list.
+  const act = async (path, payload, done) => {
+    try {
+      const res = await api.post(path, payload);
+      closeModal();
+      reload();
+      if (done) done(res);
+    } catch (err) { error.textContent = err.message; }
+  };
+  const accountActions = existing ? el('div', { class: 'field' },
+    el('label', { text: 'Account' }),
+    el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
+      el('button', { class: 'btn small', type: 'button', text: 'Reset password', onclick: async () => {
+        const confirmed = await confirmDialog({
+          title: 'Reset ' + existing.name + '\u2019s password?',
+          message: 'They are signed out and get a new temporary password, which you pass on to them.',
+          confirmLabel: 'Reset',
+        });
+        if (confirmed) act('/api/users/reset', { id: existing.id }, (res) => userPasswordReveal(existing.name, res.password));
+      } }),
+      el('button', { class: 'btn small', type: 'button', text: existing.disabled ? 'Enable' : 'Disable', onclick: async () => {
+        if (!existing.disabled) {
+          const confirmed = await confirmDialog({
+            title: 'Disable ' + existing.name + '?',
+            message: 'They are signed out now and cannot sign in until you enable them again. Their history is kept.',
+            confirmLabel: 'Disable', danger: true,
+          });
+          if (!confirmed) return;
+        }
+        act('/api/users/disable', { id: existing.id, disabled: !existing.disabled });
+      } }),
+      el('button', { class: 'btn small danger', type: 'button', text: 'Remove', onclick: async () => {
+        const confirmed = await confirmDialog({
+          title: 'Remove ' + existing.name + '?',
+          message: 'They are signed out and the account is deleted. What they did stays in the activity log.',
+          confirmLabel: 'Remove', danger: true,
+        });
+        if (confirmed) act('/api/users/remove', { id: existing.id }, () => toast(existing.name + ' removed.', 'good'));
+      } }))) : null;
+
+  openModal({
+    title: existing ? 'Edit ' + existing.name : 'Add a user',
+    sub: 'Another admin with their own sign-in',
+    body: el('div', { class: 'form' },
+      existing ? null : field('Username', name, 'What they type to sign in, and the name the activity log shows.'),
+      field('Preset', preset, 'Fills in the ticks below. Viewer can only look; Operator can also press the buttons; Manager can also change mods and settings.'),
+      el('div', { class: 'field' },
+        el('label', { text: 'Can' }),
+        el('label', { class: 'check' }, el('input', { type: 'checkbox', checked: true, disabled: true }),
+          el('span', null, 'View', el('span', { class: 'hint', text: 'Status, players, logs, activity, charts and the list of backups. Everyone has this.' }))),
+        boxes.map((b) => el('label', { class: 'check' }, b.box,
+          el('span', null, b.label, el('span', { class: 'hint', text: b.hint }))))),
+      el('div', { class: 'field' },
+        el('label', { text: 'Servers' }),
+        el('label', { class: 'check' }, allServers, el('span', { text: 'All servers, including ones added later' })),
+        pickList),
+      accountActions,
+      error),
+    actions: [el('button', { class: 'btn', type: 'button', text: 'Cancel', onclick: closeModal }), save],
+  });
+}
+
+function userPasswordReveal(name, password) {
+  openModal({
+    title: 'Send ' + name + ' their password',
+    sub: 'Temporary, shown once',
+    body: el('div', { class: 'form' },
+      el('p', { text: 'Give ' + name + ' this password and the address of this page. When they sign in, '
+        + 'PZAdmin asks them to choose their own, and this one stops working.' }),
+      el('pre', { class: 'command' }, el('code', { text: password })),
+      el('div', { class: 'notice warn', text: 'This is the only time it is shown. If it gets lost, use Reset password to make a new one.' })),
+    actions: [
+      el('button', { class: 'btn primary', type: 'button', text: 'Copy password', onclick: () => copyText(password) }),
       el('button', { class: 'btn', type: 'button', text: 'Done', onclick: closeModal }),
     ],
   });

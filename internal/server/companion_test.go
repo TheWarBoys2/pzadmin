@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -182,5 +183,34 @@ func TestAPIServerCarriesWorldButNoPositions(t *testing.T) {
 	mustWrite(t, filepath.Join(lua, companionSnapshotFile), companionSample(t, time.Now().Add(-time.Hour)))
 	if _, has := get()["world"]; has {
 		t.Fatal("an hour-old snapshot should not be reported")
+	}
+}
+
+func TestLiveNeedsItsOwnPermission(t *testing.T) {
+	_, owner, id, lua := companionApp(t)
+	mustMkdir(t, lua)
+	mustWrite(t, filepath.Join(lua, companionSnapshotFile), companionSample(t, time.Now()))
+	handler := owner.handler
+
+	_, temp := addUser(t, owner, map[string]any{"name": "glenn", "perms": []string{"control", "config", "mods"}})
+	glenn := signInUser(t, handler, "glenn", temp)
+	for _, rec := range []*httptest.ResponseRecorder{
+		glenn.do(http.MethodGet, "/api/server/companion?id="+id, nil),
+		glenn.do(http.MethodPost, "/api/server/companion/live", map[string]any{"serverId": id, "on": true}),
+		glenn.do(http.MethodGet, "/api/map", nil),
+	} {
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("positions need the live permission, got %d %s", rec.Code, rec.Body.String())
+		}
+	}
+
+	_, temp = addUser(t, owner, map[string]any{"name": "maggie", "perms": []string{"live"}})
+	maggie := signInUser(t, handler, "maggie", temp)
+	if rec := maggie.do(http.MethodGet, "/api/server/companion?id="+id, nil); rec.Code != http.StatusOK {
+		t.Fatalf("live should see positions: %d %s", rec.Code, rec.Body.String())
+	}
+	// The map image is shared by every server, so only the owner changes it.
+	if rec := maggie.do(http.MethodPost, "/api/map/delete", map[string]any{}); rec.Code != http.StatusForbidden {
+		t.Fatalf("only the owner changes the map, got %d", rec.Code)
 	}
 }

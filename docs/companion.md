@@ -21,7 +21,8 @@ meets the real game.
   temperature.
 - A `world` field on `GET /api/v1/servers` and `/api/v1/servers/{id}` with the
   date, time and weather, for bots. Player positions and details are never
-  part of the API. They are only shown to signed-in admins.
+  part of the API. They are only shown to the owner and to admin accounts
+  given the **Live** permission (see [users.md](users.md)).
 
 Build 42 only.
 
