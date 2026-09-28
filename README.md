@@ -67,6 +67,7 @@ something wrong, especially anything security related, please report it (see
 - Discord: staff alerts, player announcements when a server restarts and comes back, a status message per server, and Discord posts from scheduled jobs
 - Prometheus metrics and an audit log of every action
 - An HTTP API with its own keys, for bots and scripts ([docs/api.md](docs/api.md))
+- Accounts for other admins, each with its own permissions and servers ([docs/users.md](docs/users.md))
 
 ---
 
@@ -382,6 +383,18 @@ Project Zomboid also has its own Discord bot, which relays in-game chat. It's se
 relays chat, and PZAdmin announces restarts. Anyone who can post in the command channel can run admin commands, so
 keep that channel to staff.
 
+## Other admins
+
+The account you make at setup is the **owner**. Under **Settings → Users** the
+owner can add accounts for other admins, tick what each one can do (control,
+mods, config, console) and limit each to some servers. PZAdmin makes a
+temporary password to pass on, and they choose their own when they first sign
+in. Only the owner can manage users, keys and PZAdmin's settings, add or delete
+servers and edit jobs. See [docs/users.md](docs/users.md), including what each
+permission can break.
+
+---
+
 ## API
 
 Bots and scripts can read server status, players and the event log, and run
@@ -419,8 +432,10 @@ The token is shown once when you make it; making another replaces it. Untick
   capabilities and no privilege escalation.
 - **Secrets stay on the server.** RCON passwords, webhook URLs and tokens are
   never sent to the browser or included in exports.
-- **One admin account**, set up with a one-time code from the log, with
-  rate-limited sign-in, CSRF protection and an audit log.
+- **One owner account**, set up with a one-time code from the log, with
+  rate-limited sign-in, CSRF protection and an audit log. The owner can add
+  other admins with limited permissions; the server checks every request
+  against them.
 - **API keys are scoped and hashed.** A key only reaches `/api/v1`, never
   settings, the password or other keys, and PZAdmin keeps only a hash of it.
 

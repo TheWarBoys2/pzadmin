@@ -107,6 +107,9 @@ const (
 	maxSamples      = 20000 // roughly a week of one-minute samples for four servers
 )
 
+// MaxRecentEvents is the most Events returns: every event kept in memory.
+const MaxRecentEvents = maxRecentEvents
+
 // LoadError reports a player registry that could not be read at start. The
 // file has been moved aside and the registry started empty.
 func (s *Store) LoadError() error { return s.loadErr }
@@ -282,6 +285,12 @@ func (s *Store) AddSample(sm Sample) {
 // History returns samples for a server within the last window, thinned to at
 // most points entries so a chart request never returns megabytes.
 func (s *Store) History(serverID string, window time.Duration, points int) []Sample {
+	return s.HistoryWhere(nil, serverID, window, points)
+}
+
+// HistoryWhere is History over only the servers keep accepts. A nil keep
+// accepts every server.
+func (s *Store) HistoryWhere(keep func(serverID string) bool, serverID string, window time.Duration, points int) []Sample {
 	if points <= 0 {
 		points = 240
 	}
@@ -294,6 +303,9 @@ func (s *Store) History(serverID string, window time.Duration, points int) []Sam
 			continue
 		}
 		if serverID != "" && sm.ServerID != serverID {
+			continue
+		}
+		if keep != nil && !keep(sm.ServerID) {
 			continue
 		}
 		filtered = append(filtered, sm)

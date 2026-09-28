@@ -141,6 +141,23 @@ Most of this update needs nothing from you. These do:
   (`DiscordEnable`, `DiscordToken`, and the Build 42 chat, log and command
   channels). The bot token is treated as a secret, like the RCON password.
 
+### Other admins
+- The owner can add accounts for other admins under Settings → Users. Each
+  gets view access plus any of control, mods, config and console, and can be
+  limited to some servers. Presets (Viewer, Operator, Manager) fill in the
+  ticks. See `docs/users.md`.
+- A new user signs in with a temporary password shown once to the owner, and
+  must choose their own before anything else. The owner can reset, disable or
+  remove them, which signs them out.
+- Users see only their servers everywhere: dashboard, activity, charts,
+  players and the live feed. Events with no server are the owner's alone.
+- Only the owner manages users, API keys and PZAdmin's settings, adds or
+  deletes servers and edits jobs. Everything a user does is logged under
+  their name.
+- Nothing changes for an existing install: the owner account stays in
+  `config.json`, and users live in `users.json`, outside exports. Changing the
+  owner's password now signs out only the owner's browsers.
+
 ### API
 - An HTTP API at `/api/v1` for bots and scripts: server status (with the
   public description and join address), players, the event log, a live event
