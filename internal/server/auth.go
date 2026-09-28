@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,14 +25,17 @@ const (
 type session struct {
 	// TokenHash is stored rather than the token itself, so a leaked
 	// sessions.json cannot be replayed as a live login.
-	TokenHash string    `json:"tokenHash"`
-	CSRF      string    `json:"csrf"`
-	Username  string    `json:"username"`
-	Created   time.Time `json:"created"`
-	Expires   time.Time `json:"expires"`
-	LastSeen  time.Time `json:"lastSeen"`
-	IP        string    `json:"ip"`
-	Agent     string    `json:"agent"`
+	TokenHash string `json:"tokenHash"`
+	CSRF      string `json:"csrf"`
+	Username  string `json:"username"`
+	// UserID is the user the session belongs to. It is empty for the owner,
+	// which is also what every session made before users existed says.
+	UserID   string    `json:"userId,omitempty"`
+	Created  time.Time `json:"created"`
+	Expires  time.Time `json:"expires"`
+	LastSeen time.Time `json:"lastSeen"`
+	IP       string    `json:"ip"`
+	Agent    string    `json:"agent"`
 }
 
 // sessionStore keeps live sessions and persists them so a container restart
@@ -58,12 +62,13 @@ func hashToken(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (s *sessionStore) create(username, ip, agent string) (token string, sess *session) {
+func (s *sessionStore) create(username, userID, ip, agent string) (token string, sess *session) {
 	token = config.RandomToken(32)
 	sess = &session{
 		TokenHash: hashToken(token),
 		CSRF:      config.RandomToken(16),
 		Username:  username,
+		UserID:    userID,
 		Created:   time.Now(),
 		Expires:   time.Now().Add(sessionTTL),
 		LastSeen:  time.Now(),
@@ -114,6 +119,28 @@ func (s *sessionStore) revokeAll() {
 	s.save()
 }
 
+// revokeUser signs out every browser of one account: a user by ID, or the
+// owner when userID is empty. keep, when not empty, is a session token to
+// leave signed in.
+func (s *sessionStore) revokeUser(userID string, keep ...string) {
+	keepHash := ""
+	if len(keep) > 0 && keep[0] != "" {
+		keepHash = hashToken(keep[0])
+	}
+	s.mu.Lock()
+	removed := 0
+	for k, v := range s.byID {
+		if v.UserID == userID && k != keepHash {
+			delete(s.byID, k)
+			removed++
+		}
+	}
+	s.mu.Unlock()
+	if removed > 0 {
+		s.save()
+	}
+}
+
 // gc removes expired sessions. lookup only drops an expired session when its
 // token is presented again, so without this the list would grow forever.
 func (s *sessionStore) gc() int {
@@ -152,33 +179,66 @@ func (s *sessionStore) save() {
 	defer s.saveMu.Unlock()
 	// Marshal under the lock: lookup updates LastSeen in place.
 	s.mu.RLock()
-	list := make([]*session, 0, len(s.byID))
+	owner := make([]*session, 0, len(s.byID))
+	users := make([]*session, 0)
 	for _, v := range s.byID {
-		list = append(list, v)
+		if v.UserID == "" {
+			owner = append(owner, v)
+		} else {
+			users = append(users, v)
+		}
 	}
-	b, err := json.Marshal(list)
+	b, err := json.Marshal(owner)
+	var ub []byte
+	if err == nil {
+		ub, err = json.Marshal(users)
+	}
 	s.mu.RUnlock()
+	// Other users' sessions are kept in their own file. A version of PZAdmin
+	// from before users existed reads sessions.json and treats every session
+	// in it as the administrator's, so after a downgrade a user's session must
+	// not be there to be promoted.
 	if err == nil {
 		err = fsutil.WriteFile(s.path, b, 0o600)
+	}
+	if err == nil {
+		err = fsutil.WriteFile(s.userPath(), ub, 0o600)
 	}
 	if err != nil {
 		log.Printf("saving sessions: %v", err)
 	}
 }
 
+// userPath is where other users' sessions are kept.
+func (s *sessionStore) userPath() string {
+	return strings.TrimSuffix(s.path, ".json") + "-users.json"
+}
+
 func (s *sessionStore) load() error {
-	var list []*session
-	if _, err := fsutil.ReadJSON(s.path, &list); err != nil {
-		log.Printf("sessions: %v", err)
-		return err
-	}
 	now := time.Now()
-	for _, v := range list {
-		if v != nil && now.Before(v.Expires) {
+	var firstErr error
+	for _, path := range []string{s.path, s.userPath()} {
+		var list []*session
+		if _, err := fsutil.ReadJSON(path, &list); err != nil {
+			log.Printf("sessions: %v", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		for _, v := range list {
+			// A session with a user in the owner's file is not believed:
+			// only this version writes users, and it never writes them there.
+			if v == nil || !now.Before(v.Expires) || (path == s.path && v.UserID != "") {
+				continue
+			}
+			if path != s.path && v.UserID == "" {
+				continue
+			}
 			s.byID[v.TokenHash] = v
 		}
 	}
-	return nil
+	return firstErr
 }
 
 // --- login rate limiting ----------------------------------------------------

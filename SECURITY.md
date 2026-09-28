@@ -27,10 +27,14 @@ Only the latest release gets fixes. Update with `docker compose pull` and
 - A leaked export file or API key file (exports hold no secrets; API keys are
   stored hashed).
 - An API key doing more than it was given (scopes and per-server limits).
+- Another admin doing more than the owner gave them (permissions and
+  per-server limits are checked on every request, and a new route is owner
+  only unless it says otherwise).
 
 ## What it is not designed for
 
 - Being exposed directly to the internet. It serves plain HTTP. Use a VPN, or
   at least a reverse proxy with HTTPS (see the README).
-- Several admin accounts with different permissions. There is one admin.
+- Protecting a server from an admin you gave Console or Config to. Those can
+  do real damage within their servers; see [docs/users.md](docs/users.md).
 - Protecting against someone who can already run commands on the Docker host.

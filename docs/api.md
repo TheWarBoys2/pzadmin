@@ -32,7 +32,8 @@ password does not revoke them. **Revoke all** does.
 
 A key cannot sign in to the web interface, change settings or the password, or
 make and revoke keys. The web interface's own `/api/...` routes refuse keys, and
-`/api/v1` refuses browser sessions.
+`/api/v1` refuses browser sessions. Only the owner can make or revoke keys;
+other admins (see [users.md](users.md)) cannot.
 
 Keys are sent in a header, so use HTTPS if the API is reached over anything but
 your own network.

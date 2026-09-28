@@ -261,6 +261,7 @@ button { cursor: pointer; }
 .grid { display: grid; gap: var(--gap); }
 .grid.two { grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); }
 .grid.halves { grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); }
+.grid > .span-all { grid-column: 1 / -1; }
 .grid.thirds { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
 
 .panel { background: var(--panel); border: 1px solid var(--rule); border-radius: var(--radius); }

@@ -124,7 +124,7 @@ func (a *App) handleSetup(w http.ResponseWriter, r *http.Request) {
 	a.clearSetupCode()
 	a.limiter.succeed(ip)
 	a.known.add(ip)
-	token, sess := a.sess.create(strings.TrimSpace(p.Username), ip, r.UserAgent())
+	token, sess := a.sess.create(strings.TrimSpace(p.Username), "", ip, r.UserAgent())
 	setSessionCookies(w, r, token, sess)
 	a.event(store.Event{Kind: "auth.setup", Severity: store.SevSuccess, Source: "ui",
 		Actor: p.Username, Message: "Administrator account created"})
@@ -185,26 +185,48 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg := a.cfg.Get()
-	userOK := strings.EqualFold(strings.TrimSpace(p.Username), cfg.Username)
-	// The hash is computed either way so a wrong username and a wrong password
-	// take the same amount of time.
-	passOK := config.VerifyPassword(p.Password, cfg.PasswordSalt, cfg.PasswordHash, cfg.PasswordIter)
-	if !cfg.SetupComplete || !userOK || !passOK {
+	name := strings.TrimSpace(p.Username)
+	// The owner is checked first, then the other users. Exactly one hash is
+	// computed either way, against the owner's when no account has the
+	// name, so a wrong username and a wrong password take the same time.
+	ownerName := strings.EqualFold(name, cfg.Username)
+	u, isUser := user{}, false
+	if !ownerName {
+		u, isUser = a.users.byName(name)
+	}
+	var passOK bool
+	if isUser {
+		passOK = config.VerifyPassword(p.Password, u.PasswordSalt, u.PasswordHash, u.PasswordIter)
+	} else {
+		passOK = config.VerifyPassword(p.Password, cfg.PasswordSalt, cfg.PasswordHash, cfg.PasswordIter)
+	}
+	if !cfg.SetupComplete || !(ownerName || isUser) || !passOK {
 		// The failure was already counted by take.
 		a.store.Append(store.Event{Kind: "auth.failed", Severity: store.SevWarn, Source: "ui",
 			Message: "Failed sign-in attempt", Detail: "from " + ip})
 		httpError(w, http.StatusUnauthorized, "incorrect username or password")
 		return
 	}
+	// Only someone with the right password learns the account is disabled.
+	if isUser && u.Disabled {
+		a.limiter.succeed(ip)
+		httpError(w, http.StatusForbidden, "this account is disabled; ask the owner to turn it back on")
+		return
+	}
 
 	a.limiter.succeed(ip)
 	a.accountLimit.succeed(accountKey)
 	a.known.add(ip)
-	token, sess := a.sess.create(cfg.Username, ip, r.UserAgent())
+	username, userID, mustChange := cfg.Username, "", false
+	if isUser {
+		username, userID, mustChange = u.Name, u.ID, u.MustChange
+		a.users.touch(u.ID)
+	}
+	token, sess := a.sess.create(username, userID, ip, r.UserAgent())
 	setSessionCookies(w, r, token, sess)
 	a.store.Append(store.Event{Kind: "auth.login", Severity: store.SevInfo, Source: "ui",
-		Actor: cfg.Username, Message: "Signed in", Detail: "from " + ip})
-	ok(w, map[string]any{"csrf": sess.CSRF})
+		Actor: username, Message: "Signed in", Detail: "from " + ip})
+	ok(w, map[string]any{"csrf": sess.CSRF, "mustChangePassword": mustChange})
 }
 
 func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -221,6 +243,11 @@ func (a *App) handlePassword(w http.ResponseWriter, r *http.Request) {
 		New     string `json:"new"`
 	}
 	if !decodeJSON(w, r, &p) {
+		return
+	}
+	me := principalFrom(r)
+	if !me.Owner {
+		a.handleUserPassword(w, r, me, p.Current, p.New)
 		return
 	}
 	cfg := a.cfg.Get()
@@ -241,13 +268,67 @@ func (a *App) handlePassword(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// Changing the password signs every browser out, including this one.
-	a.sess.revokeAll()
+	// Changing the password signs every one of the owner's browsers out,
+	// including this one. Other users stay signed in: their passwords did
+	// not change.
+	a.sess.revokeUser("")
 	clearSessionCookies(w, r)
 	a.event(store.Event{Kind: "auth.password", Severity: store.SevWarn, Source: "ui",
-		Actor: actor(r), Message: "Administrator password changed",
-		Detail: "All sessions were signed out."})
+		Actor: actor(r), Message: "Owner password changed",
+		Detail: "All of the owner's sessions were signed out."})
 	ok(w, map[string]any{"signedOut": true})
+}
+
+// handleUserPassword changes a user's own password. After a temporary one it
+// keeps this browser signed in, since choosing a password is the first thing
+// a new user does; otherwise it signs all of theirs out, as for the owner.
+func (a *App) handleUserPassword(w http.ResponseWriter, r *http.Request, me principal, current, next string) {
+	u, found := a.users.get(me.UserID)
+	if !found {
+		httpError(w, http.StatusUnauthorized, "your account has been disabled or removed")
+		return
+	}
+	if !config.VerifyPassword(current, u.PasswordSalt, u.PasswordHash, u.PasswordIter) {
+		httpError(w, http.StatusForbidden, "the current password is incorrect")
+		return
+	}
+	if err := validateCredentials(u.Name, next); err != nil {
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if next == current {
+		httpError(w, http.StatusBadRequest, "choose a password different from the current one")
+		return
+	}
+	first := u.MustChange
+	if _, err := a.users.change(u.ID, func(u *user) error {
+		setUserPassword(u, next)
+		u.MustChange = false
+		return nil
+	}); err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	token, _ := r.Context().Value(ctxSessionToken{}).(string)
+	if first {
+		a.sess.revokeUser(u.ID, token)
+		a.event(store.Event{Kind: "auth.password", Severity: store.SevInfo, Source: "ui",
+			Actor: actor(r), Message: u.Name + " chose their password"})
+		ok(w, map[string]any{"signedOut": false})
+		return
+	}
+	a.sess.revokeUser(u.ID)
+	clearSessionCookies(w, r)
+	a.event(store.Event{Kind: "auth.password", Severity: store.SevWarn, Source: "ui",
+		Actor: actor(r), Message: u.Name + " changed their password",
+		Detail: "All of their sessions were signed out."})
+	ok(w, map[string]any{"signedOut": true})
+}
+
+// handleMe says who is signed in and what they may do, so the page can hide
+// what they cannot use. The server checks every request regardless.
+func (a *App) handleMe(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, map[string]any{"me": principalFrom(r)})
 }
 
 func (a *App) handleSessions(w http.ResponseWriter, r *http.Request) {
@@ -265,12 +346,90 @@ func (a *App) handleRevokeSessions(w http.ResponseWriter, r *http.Request) {
 // --- state ------------------------------------------------------------------
 
 func (a *App) handleState(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, a.snapshot())
+	writeJSON(w, a.snapshot(principalFrom(r)))
 }
 
-func (a *App) snapshot() map[string]any {
+// visibleStatus is allStatus cut down to the servers p may see.
+func (a *App) visibleStatus(p principal) []Status {
+	all := a.allStatus()
+	if p.allServers() {
+		return all
+	}
+	out := make([]Status, 0, len(all))
+	for _, st := range all {
+		if p.allows(st.ServerID) {
+			out = append(out, st)
+		}
+	}
+	return out
+}
+
+// visibleEvents returns up to limit recent events p may see.
+func (a *App) visibleEvents(p principal, serverID, kind string, limit int) []store.Event {
+	if p.Owner {
+		return a.store.Events(serverID, kind, limit)
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+	// Ask for everything that is kept and filter, so a user whose servers are
+	// quiet still gets a full page.
+	all := a.store.Events(serverID, kind, store.MaxRecentEvents)
+	out := make([]store.Event, 0, limit)
+	for _, e := range all {
+		if len(out) == limit {
+			break
+		}
+		if p.seesEvent(e) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func (a *App) visiblePlayers(p principal, serverID string) []store.Player {
+	all := a.store.Players(serverID)
+	if p.allServers() {
+		return all
+	}
+	out := make([]store.Player, 0, len(all))
+	for _, pl := range all {
+		if p.allows(pl.ServerID) {
+			out = append(out, pl)
+		}
+	}
+	return out
+}
+
+// userConfig is the part of the configuration a user other than the owner is
+// shown: their servers and those servers' jobs, and none of PZAdmin's own
+// settings (webhooks, Discord, metrics), which only the owner can change.
+func userConfig(c config.Config, p principal) config.Config {
+	out := config.Config{Version: c.Version, SetupComplete: c.SetupComplete, Timezone: c.Timezone,
+		Interface: c.Interface, PZRoot: c.PZRoot, StacksRoot: c.StacksRoot,
+		Notify: config.Notify{Webhooks: []config.Webhook{}}}
+	out.Servers = []config.Server{}
+	for _, s := range c.Servers {
+		if p.allows(s.ID) {
+			out.Servers = append(out.Servers, s)
+		}
+	}
+	out.Schedules = []config.Task{}
+	for _, t := range c.Schedules {
+		if p.allows(t.ServerID) {
+			out.Schedules = append(out.Schedules, t)
+		}
+	}
+	return out
+}
+
+func (a *App) snapshot(p principal) map[string]any {
 	cfg := a.cfg.Get()
 	redacted := config.Redact(cfg)
+	if !p.Owner {
+		redacted = userConfig(redacted, p)
+		cfg = userConfig(cfg, p)
+	}
 
 	tasks := make([]map[string]any, 0, len(cfg.Schedules))
 	loc := a.cfg.Location()
@@ -290,10 +449,11 @@ func (a *App) snapshot() map[string]any {
 	return map[string]any{
 		"config":    redacted,
 		"servers":   config.SortServers(redacted.Servers),
-		"status":    a.allStatus(),
+		"status":    a.visibleStatus(p),
 		"schedules": tasks,
-		"events":    a.store.Events("", "", 60),
-		"players":   a.store.Players(""),
+		"events":    a.visibleEvents(p, "", "", 60),
+		"players":   a.visiblePlayers(p, ""),
+		"me":        p,
 		// "docker" is kept for the current interface; "arcane" carries the detail.
 		"docker":     map[string]any{"available": arc["available"], "message": arc["message"], "detail": arc["detail"]},
 		"arcane":     arc,
@@ -346,7 +506,8 @@ func (a *App) handleStream(w http.ResponseWriter, r *http.Request) {
 	if !send("hello", map[string]any{"version": Version, "build": a.assetBuild}) {
 		return
 	}
-	if !send("status", a.allStatus()) {
+	me := principalFrom(r)
+	if !send("status", a.visibleStatus(me)) {
 		return
 	}
 
@@ -366,11 +527,27 @@ func (a *App) handleStream(w http.ResponseWriter, r *http.Request) {
 			if !open {
 				return
 			}
+			if !me.seesEvent(e) {
+				continue
+			}
 			if !send("event", e) {
 				return
 			}
 		case <-statusTick.C:
-			all := a.allStatus()
+			// A user's access is read again, so a stream stops when they are
+			// signed out, disabled or removed, and follows a change to their
+			// servers without reconnecting.
+			if !me.Owner {
+				token, _ := r.Context().Value(ctxSessionToken{}).(string)
+				sess, live := a.sess.lookup(token)
+				if !live {
+					return
+				}
+				if me, live = a.principalFor(sess); !live {
+					return
+				}
+			}
+			all := a.visibleStatus(me)
 			b, _ := json.Marshal(all)
 			// Only push when something actually changed, so an idle dashboard
 			// costs nothing.
@@ -397,7 +574,7 @@ func (a *App) handleCommands(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleEvents(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	writeJSON(w, map[string]any{
-		"events": a.store.Events(r.URL.Query().Get("serverId"), r.URL.Query().Get("kind"), limit),
+		"events": a.visibleEvents(principalFrom(r), r.URL.Query().Get("serverId"), r.URL.Query().Get("kind"), limit),
 	})
 }
 
@@ -408,13 +585,13 @@ func (a *App) handleHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	points, _ := strconv.Atoi(r.URL.Query().Get("points"))
 	writeJSON(w, map[string]any{
-		"samples": a.store.History(r.URL.Query().Get("serverId"), time.Duration(hours)*time.Hour, points),
+		"samples": a.store.HistoryWhere(principalFrom(r).allows, r.URL.Query().Get("serverId"), time.Duration(hours)*time.Hour, points),
 		"hours":   hours,
 	})
 }
 
 func (a *App) handlePlayers(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]any{"players": a.store.Players(r.URL.Query().Get("serverId"))})
+	writeJSON(w, map[string]any{"players": a.visiblePlayers(principalFrom(r), r.URL.Query().Get("serverId"))})
 }
 
 func (a *App) handlePlayerNote(w http.ResponseWriter, r *http.Request) {

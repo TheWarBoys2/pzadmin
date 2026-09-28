@@ -126,6 +126,7 @@ type App struct {
 	lastScan stacks.Result
 	sess     *sessionStore
 	keys     *apiKeyStore
+	users    *userStore
 	// modRequests are mods asked for through the API, waiting for approval.
 	modRequests *modRequestStore
 	limiter     *loginLimiter
@@ -254,6 +255,7 @@ func New(opts Options) (*App, error) {
 		custom:       loadCustomCatalogue(filepath.Join(opts.DataDir, "catalogue.json")),
 		sess:         newSessionStore(filepath.Join(opts.DataDir, "sessions.json")),
 		keys:         newAPIKeyStore(filepath.Join(opts.DataDir, "apikeys.json")),
+		users:        newUserStore(filepath.Join(opts.DataDir, "users.json")),
 		modRequests:  newModRequestStore(filepath.Join(opts.DataDir, "modrequests.json")),
 		apiLimit:     newRateLimiter(),
 		apiFail:      newLoginLimiter(),
@@ -337,7 +339,7 @@ func (a *App) Start() {
 	})
 	// A state file that could not be parsed was moved aside at load. Say so
 	// where the operator will see it, not only in the container log.
-	for _, err := range []error{a.keys.loadErr, a.sess.loadErr, a.modRequests.loadErr, a.store.LoadError(), a.custom.loadErr} {
+	for _, err := range []error{a.keys.loadErr, a.users.loadErr, a.sess.loadErr, a.modRequests.loadErr, a.store.LoadError(), a.custom.loadErr} {
 		a.reportLoadError(err)
 	}
 	a.prepareBackupDir()
@@ -635,80 +637,103 @@ func (a *App) Handler() http.Handler {
 	})
 	mux.HandleFunc("/metrics", a.handleMetrics)
 
-	// Authenticated endpoints.
-	get := func(path string, h http.HandlerFunc) { mux.Handle(path, a.auth(h, false)) }
-	post := func(path string, h http.HandlerFunc) { mux.Handle(path, a.auth(h, true)) }
+	// Authenticated endpoints. Each names the permission it needs and where
+	// its server comes from; see access.go. Anything marked ownerOnly is the
+	// owner's alone, and so is anything registered without a rule.
+	get := func(path string, rule access, h http.HandlerFunc) { mux.Handle(path, a.auth(h, false, rule)) }
+	post := func(path string, rule access, h http.HandlerFunc) { mux.Handle(path, a.auth(h, true, rule)) }
+	view := func(from serverFrom) access { return needs(permView, from) }
 
-	get("/api/state", a.handleState)
-	get("/api/stream", a.handleStream)
-	get("/api/commands", a.handleCommands)
-	get("/api/server/capabilities", a.handleCapabilities)
-	get("/api/events", a.handleEvents)
-	get("/api/history", a.handleHistory)
-	get("/api/players", a.handlePlayers)
-	get("/api/browse", a.handleBrowse)
-	get("/api/containers", a.handleContainers)
-	get("/api/server/detail", a.handleServerDetail)
-	get("/api/server/config", a.handleConfigFiles)
-	get("/api/server/logs", a.handleLogs)
-	get("/api/server/mods", a.handleMods)
-	get("/api/catalogue", a.handleCatalogue)
-	get("/api/mods/manage", a.handleModManager)
-	get("/api/server/config/fields", a.handleConfigFields)
-	get("/api/backups", a.handleBackupList)
-	get("/api/backups/download", a.handleBackupDownload)
-	get("/api/export", a.handleExport)
-	get("/api/sessions", a.handleSessions)
-	get("/api/stack", a.handleStack)
-	post("/api/stack/rescan", a.handleStackRescan)
-	get("/api/stack/new", a.handleStackNew)
-	get("/api/stack/wizard/fields", a.handleStackWizardFields)
-	post("/api/stack/plan", a.handleStackPlan)
-	post("/api/stack/create", a.handleStackCreate)
-	post("/api/stack/deploy", a.handleStackDeploy)
-	get("/api/stack/env", a.handleStackEnv)
-	post("/api/stack/env/save", a.handleStackEnvSave)
+	// Reading. The handlers without a server filter what they return to the
+	// user's servers themselves.
+	get("/api/me", view(fromNone), a.handleMe)
+	get("/api/state", view(fromNone), a.handleState)
+	get("/api/stream", view(fromNone), a.handleStream)
+	get("/api/commands", view(fromNone), a.handleCommands)
+	get("/api/events", view(fromQueryServerIDOptional), a.handleEvents)
+	get("/api/history", view(fromQueryServerIDOptional), a.handleHistory)
+	get("/api/players", view(fromQueryServerIDOptional), a.handlePlayers)
+	get("/api/server/capabilities", view(fromQueryID), a.handleCapabilities)
+	get("/api/server/detail", view(fromQueryID), a.handleServerDetail)
+	get("/api/server/config", view(fromQueryID), a.handleConfigFiles)
+	get("/api/server/config/fields", view(fromQueryID), a.handleConfigFields)
+	get("/api/server/logs", view(fromQueryID), a.handleLogs)
+	get("/api/server/mods", view(fromQueryID), a.handleMods)
+	get("/api/catalogue", view(fromQueryID), a.handleCatalogue)
+	get("/api/mods/manage", view(fromQueryID), a.handleModManager)
+	get("/api/mods/requests", view(fromQueryID), a.handleModRequests)
+	get("/api/backups", view(fromQueryServerID), a.handleBackupList)
+	// A backup can hold the server's config folder, passwords included.
+	get("/api/backups/download", needs(permConfig, fromQueryServerID), a.handleBackupDownload)
+	get("/api/stack/env", needs(permConfig, fromQueryID), a.handleStackEnv)
 
-	post("/api/settings", a.handleSettings)
-	post("/api/metrics/token", a.handleMetricsToken)
-	post("/api/password", a.handlePassword)
-	post("/api/server/save", a.handleServerSave)
-	post("/api/server/delete", a.handleServerDelete)
-	post("/api/server/destroy", a.handleServerDestroy)
-	post("/api/server/test", a.handleTestConnection)
-	post("/api/server/config/save", a.handleConfigSave)
-	post("/api/server/config/apply", a.handleConfigApply)
-	post("/api/mods/resolve", a.handleModResolve)
-	post("/api/mods/sort", a.handleModSort)
-	post("/api/mods/apply", a.handleModApply)
-	post("/api/mods/preflight", a.handleModPreflight)
-	get("/api/mods/requests", a.handleModRequests)
-	post("/api/mods/requests/approve", a.handleModRequestApprove)
-	post("/api/mods/requests/reject", a.handleModRequestReject)
-	post("/api/catalogue/add", a.handleCatalogueAdd)
-	post("/api/catalogue/remove", a.handleCatalogueRemove)
-	post("/api/action", a.handleAction)
-	post("/api/console", a.handleConsole)
-	post("/api/lifecycle", a.handleLifecycle)
-	post("/api/server/capabilities/check", a.handleCapabilitiesCheck)
-	post("/api/schedules", a.handleSchedules)
-	post("/api/schedules/run", a.handleScheduleRun)
-	post("/api/backups/create", a.handleBackupCreate)
-	post("/api/backups/verify", a.handleBackupVerify)
-	post("/api/backups/restore", a.handleBackupRestore)
-	post("/api/backups/delete", a.handleBackupDelete)
-	post("/api/player/note", a.handlePlayerNote)
-	post("/api/player/forget", a.handlePlayerForget)
-	post("/api/notify/test", a.handleNotifyTest)
-	post("/api/discord/bot", a.handleBotConnect)
-	post("/api/discord/bot/remove", a.handleBotRemove)
-	get("/api/discord/channels", a.handleBotChannels)
-	post("/api/import", a.handleImport)
-	post("/api/sessions/revoke", a.handleRevokeSessions)
-	get("/api/keys", a.handleAPIKeys)
-	post("/api/keys/create", a.handleAPIKeyCreate)
-	post("/api/keys/revoke", a.handleAPIKeyRevoke)
-	post("/api/keys/revoke-all", a.handleAPIKeyRevokeAll)
+	// The account's own password.
+	post("/api/password", view(fromNone), a.handlePassword)
+
+	// Control: the dashboard buttons.
+	post("/api/action", needs(permControl, fromBodyServerID), a.handleAction)
+	post("/api/lifecycle", needs(permControl, fromBodyServerID), a.handleLifecycle)
+	post("/api/server/capabilities/check", needs(permControl, fromBodyServerID), a.handleCapabilitiesCheck)
+	post("/api/schedules/run", needs(permControl, fromBodySchedule), a.handleScheduleRun)
+	post("/api/backups/create", needs(permControl, fromBodyServerID), a.handleBackupCreate)
+	post("/api/backups/verify", needs(permControl, fromBodyServerID), a.handleBackupVerify)
+	post("/api/player/note", needs(permControl, fromBodyServerID), a.handlePlayerNote)
+	// The catalogue of spawnable items is shared by every server.
+	post("/api/catalogue/add", needs(permControl, fromNone), a.handleCatalogueAdd)
+	post("/api/catalogue/remove", needs(permControl, fromNone), a.handleCatalogueRemove)
+
+	post("/api/console", needs(permConsole, fromBodyServerID), a.handleConsole)
+
+	post("/api/mods/resolve", needs(permMods, fromBodyServerID), a.handleModResolve)
+	post("/api/mods/sort", needs(permMods, fromBodyServerID), a.handleModSort)
+	post("/api/mods/apply", needs(permMods, fromBodyServerID), a.handleModApply)
+	post("/api/mods/preflight", needs(permMods, fromBodyServerID), a.handleModPreflight)
+	post("/api/mods/requests/approve", needs(permMods, fromBodyModRequest), a.handleModRequestApprove)
+	post("/api/mods/requests/reject", needs(permMods, fromBodyModRequest), a.handleModRequestReject)
+
+	post("/api/server/config/save", needs(permConfig, fromBodyServerID), a.handleConfigSave)
+	post("/api/server/config/apply", needs(permConfig, fromBodyServerID), a.handleConfigApply)
+	post("/api/stack/env/save", needs(permConfig, fromBodyServerID), a.handleStackEnvSave)
+	post("/api/stack/deploy", needs(permConfig, fromBodyServerID), a.handleStackDeploy)
+	post("/api/backups/restore", needs(permConfig, fromBodyServerID), a.handleBackupRestore)
+	post("/api/backups/delete", needs(permConfig, fromBodyServerID), a.handleBackupDelete)
+	post("/api/player/forget", needs(permConfig, fromBodyServerID), a.handlePlayerForget)
+
+	// The owner's alone: PZAdmin itself, servers coming and going, jobs,
+	// accounts, keys and sessions.
+	get("/api/browse", ownerOnly, a.handleBrowse)
+	get("/api/containers", ownerOnly, a.handleContainers)
+	get("/api/export", ownerOnly, a.handleExport)
+	get("/api/sessions", ownerOnly, a.handleSessions)
+	get("/api/stack", ownerOnly, a.handleStack)
+	post("/api/stack/rescan", ownerOnly, a.handleStackRescan)
+	get("/api/stack/new", ownerOnly, a.handleStackNew)
+	get("/api/stack/wizard/fields", ownerOnly, a.handleStackWizardFields)
+	post("/api/stack/plan", ownerOnly, a.handleStackPlan)
+	post("/api/stack/create", ownerOnly, a.handleStackCreate)
+	post("/api/settings", ownerOnly, a.handleSettings)
+	post("/api/metrics/token", ownerOnly, a.handleMetricsToken)
+	post("/api/server/save", ownerOnly, a.handleServerSave)
+	post("/api/server/delete", ownerOnly, a.handleServerDelete)
+	post("/api/server/destroy", ownerOnly, a.handleServerDestroy)
+	post("/api/server/test", ownerOnly, a.handleTestConnection)
+	post("/api/schedules", ownerOnly, a.handleSchedules)
+	post("/api/notify/test", ownerOnly, a.handleNotifyTest)
+	post("/api/discord/bot", ownerOnly, a.handleBotConnect)
+	post("/api/discord/bot/remove", ownerOnly, a.handleBotRemove)
+	get("/api/discord/channels", ownerOnly, a.handleBotChannels)
+	post("/api/import", ownerOnly, a.handleImport)
+	post("/api/sessions/revoke", ownerOnly, a.handleRevokeSessions)
+	get("/api/keys", ownerOnly, a.handleAPIKeys)
+	post("/api/keys/create", ownerOnly, a.handleAPIKeyCreate)
+	post("/api/keys/revoke", ownerOnly, a.handleAPIKeyRevoke)
+	post("/api/keys/revoke-all", ownerOnly, a.handleAPIKeyRevokeAll)
+	get("/api/users", ownerOnly, a.handleUsers)
+	post("/api/users/create", ownerOnly, a.handleUserCreate)
+	post("/api/users/update", ownerOnly, a.handleUserUpdate)
+	post("/api/users/disable", ownerOnly, a.handleUserDisable)
+	post("/api/users/reset", ownerOnly, a.handleUserReset)
+	post("/api/users/remove", ownerOnly, a.handleUserRemove)
 
 	// The external API. It takes an API key only, never a session cookie,
 	// and the routes above take a session only, never a key: a key cannot
@@ -719,8 +744,8 @@ func (a *App) Handler() http.Handler {
 	return securityHeaders(a.withClient(a.logRequests(mux)))
 }
 
-// auth wraps a handler with session and CSRF checks.
-func (a *App) auth(next http.HandlerFunc, mutating bool) http.Handler {
+// auth wraps a handler with session, CSRF and permission checks.
+func (a *App) auth(next http.HandlerFunc, mutating bool, rule access) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if mutating && r.Method != http.MethodPost {
 			httpError(w, http.StatusMethodNotAllowed, "use POST for this endpoint")
@@ -754,12 +779,33 @@ func (a *App) auth(next http.HandlerFunc, mutating bool) http.Handler {
 				return
 			}
 		}
-		r = r.WithContext(context.WithValue(r.Context(), ctxUser{}, sess.Username))
-		next(w, r)
+		p, found := a.principalFor(sess)
+		if !found {
+			a.sess.revoke(cookie.Value)
+			clearSessionCookies(w, r)
+			httpError(w, http.StatusUnauthorized, "your account has been disabled or removed")
+			return
+		}
+		// A temporary password is only good for choosing a real one.
+		if p.MustChange && r.URL.Path != "/api/password" && r.URL.Path != "/api/me" {
+			writeStatusJSON(w, http.StatusForbidden, map[string]any{
+				"error": "choose your own password first", "mustChangePassword": true})
+			return
+		}
+		if code, msg := a.permit(p, rule, r); code != 0 {
+			httpError(w, code, msg)
+			return
+		}
+		ctx := context.WithValue(r.Context(), ctxUser{}, sess.Username)
+		ctx = context.WithValue(ctx, ctxPrincipal{}, p)
+		ctx = context.WithValue(ctx, ctxSessionToken{}, cookie.Value)
+		next(w, r.WithContext(ctx))
 	})
 }
 
 type ctxUser struct{}
+
+type ctxSessionToken struct{}
 
 type ctxSource struct{}
 
