@@ -210,6 +210,18 @@ Most of this update needs nothing from you. These do:
   servers already made from it. They live in `/data/templates.json` and are
   not part of a config export. See `docs/templates.md`.
 
+### Duplicating a server
+- **Duplicate** on the Stack page makes a full copy of a stopped server: its
+  settings, mods, and its world with characters, safehouses and accounts, on
+  new folders, ports and RCON password. The copy keeps the world's IDs and
+  seed so characters carry over, and renames the world and accounts files if
+  its `SERVER_NAME` differs. Logs and the game's own start-up backups are left
+  out, and the game and mods download again on its first start.
+- The original stays held (no start, deploy, backup, restore or reset from
+  PZAdmin) until the copy finishes. The copy checks for free space first,
+  shows its progress, and removes whatever it made if it fails. See
+  `docs/duplicate.md`.
+
 ### API
 - An HTTP API at `/api/v1` for bots and scripts: server status (with the
   public description and join address), players, the event log, a live event

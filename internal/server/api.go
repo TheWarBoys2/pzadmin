@@ -984,6 +984,12 @@ func (a *App) handleLifecycle(w http.ResponseWriter, r *http.Request) {
 	if note != "" {
 		reason += ": " + note
 	}
+	if p.Action == "start" || p.Action == "restart" {
+		if msg := a.dupRefusal(srv.ID, srv.Name); msg != "" {
+			httpError(w, http.StatusConflict, msg)
+			return
+		}
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Minute)
 	defer cancel()
 

@@ -44,6 +44,7 @@ something wrong, especially anything security related, please report it (see
 - Start, stop, restart and deploy, plus a watchdog that can recover a frozen server
 - A wizard that creates new servers with ports, paths and admin account set up for you
 - Server templates: save a server's settings, sandbox and mods once, then make similar servers from them ([docs/templates.md](docs/templates.md))
+- Duplicate a server with its world, characters and accounts onto new ports and folders ([docs/duplicate.md](docs/duplicate.md))
 - Finds your existing servers on its own by reading the stack folders
 
 **Mods**
@@ -444,6 +445,14 @@ settings, sandbox, mods, spawn points, max players and memory, but no world and
 no RCON password. **New server** on a template opens the wizard with it filled
 in, and you change what's different before anything is written. See
 [docs/templates.md](docs/templates.md).
+
+## Duplicating a server
+
+**Duplicate** on the Stack page copies a stopped server, world, characters and
+accounts included, into a new server with its own folders and ports. The
+original stays stopped until the copy finishes, and the game and mods are
+downloaded again on the copy's first start. See
+[docs/duplicate.md](docs/duplicate.md).
 
 ## Other admins
 

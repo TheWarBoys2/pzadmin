@@ -18,8 +18,8 @@ make, edit, use or delete them, because only the owner can create servers.
 
 It does **not** hold:
 
-- a world or any save. For a copy of a server's world, see *Copying a server*
-  below.
+- a world or any save. For a copy of a server with its world, use
+  **Duplicate** ([docs/duplicate.md](duplicate.md)).
 - the RCON password, which is blanked when the template is saved. Every new
   server gets a fresh one.
 - the per-server IDs (`ResetID`, `ServerPlayerID`) and the world seed. Every
