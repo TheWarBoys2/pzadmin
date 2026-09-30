@@ -137,7 +137,9 @@ type App struct {
 	// modRequests are mods asked for through the API, waiting for approval.
 	modRequests *modRequestStore
 	templates   *templateStore
-	limiter     *loginLimiter
+	// dups are server duplications, running or recently finished.
+	dups    *dupJobs
+	limiter *loginLimiter
 	// accountLimit slows sign-in guesses from all addresses together.
 	accountLimit *loginLimiter
 	// known holds addresses the administrator has signed in from.
@@ -269,6 +271,7 @@ func New(opts Options) (*App, error) {
 		users:        newUserStore(filepath.Join(opts.DataDir, "users.json")),
 		modRequests:  newModRequestStore(filepath.Join(opts.DataDir, "modrequests.json")),
 		templates:    newTemplateStore(filepath.Join(opts.DataDir, "templates.json")),
+		dups:         newDupJobs(),
 		apiLimit:     newRateLimiter(),
 		apiFail:      newLoginLimiter(),
 		limiter:      newLoginLimiter(),
@@ -726,6 +729,9 @@ func (a *App) Handler() http.Handler {
 	get("/api/stack/wizard/fields", ownerOnly, a.handleStackWizardFields)
 	post("/api/stack/plan", ownerOnly, a.handleStackPlan)
 	post("/api/stack/create", ownerOnly, a.handleStackCreate)
+	get("/api/stack/duplicate/check", ownerOnly, a.handleDuplicateCheck)
+	post("/api/stack/duplicate", ownerOnly, a.handleDuplicate)
+	get("/api/stack/duplicate/status", ownerOnly, a.handleDuplicateStatus)
 	get("/api/templates", ownerOnly, a.handleTemplates)
 	post("/api/templates/create", ownerOnly, a.handleTemplateCreate)
 	post("/api/templates/update", ownerOnly, a.handleTemplateUpdate)

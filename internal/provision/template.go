@@ -80,12 +80,25 @@ func DefaultStart() (Starting, error) {
 // with it only if asked: a copy that keeps ResetID and ServerPlayerID tells
 // players' clients it is the same server as the original.
 func CloneStart(dir, name string) (Starting, error) {
+	s, err := DuplicateStart(dir, name)
+	if err != nil {
+		return s, err
+	}
+	s.INI = removeINIKeys(s.INI, perServerINIKeys...)
+	return s, nil
+}
+
+// DuplicateStart reads another server's Server/ files exactly, identity
+// included. It is only for a copy that takes the world with it: the world's
+// characters belong to that ResetID and ServerPlayerID, and its map to that
+// seed, so changing them would make every player start again.
+func DuplicateStart(dir, name string) (Starting, error) {
 	var s Starting
 	b, err := os.ReadFile(filepath.Join(dir, name+".ini"))
 	if err != nil {
 		return s, fmt.Errorf("the source server has no %s.ini: %w", name, err)
 	}
-	s.INI = removeINIKeys(string(b), perServerINIKeys...)
+	s.INI = string(b)
 	b, err = os.ReadFile(filepath.Join(dir, name+"_SandboxVars.lua"))
 	if err != nil {
 		return s, fmt.Errorf("the source server has no %s_SandboxVars.lua: %w", name, err)

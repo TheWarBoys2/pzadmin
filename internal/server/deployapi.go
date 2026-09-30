@@ -106,6 +106,10 @@ func (a *App) handleStackDeploy(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "no such server")
 		return
 	}
+	if msg := a.dupRefusal(srv.ID, srv.Name); msg != "" {
+		httpError(w, http.StatusConflict, msg)
+		return
+	}
 	if !a.arcane.Configured() {
 		httpError(w, http.StatusConflict, "Arcane is not configured. Run this on the host instead: "+recreateCommand(srv))
 		return

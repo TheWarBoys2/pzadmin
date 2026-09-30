@@ -46,6 +46,11 @@ func (a *App) provisionEnv() provision.Env {
 // resolveRequest turns the browser's request into a provision.Request.
 func (a *App) resolveRequest(in createRequest) (provision.Request, string) {
 	req := in.Request
+	if req.Start == provision.StartDuplicate {
+		// A duplicate keeps the source's world IDs, which only make sense
+		// with its world, so it is only made by the duplicate endpoint.
+		return req, "to copy a server with its world, use Duplicate on the Stack page"
+	}
 	if req.Start == provision.StartClone {
 		src, found := a.cfg.Server(in.FromServerID)
 		if !found || src.Missing || src.ServerDir == "" {

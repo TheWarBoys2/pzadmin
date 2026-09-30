@@ -51,6 +51,9 @@ const (
 	StartClone = "clone"
 	// StartTemplate begins from a saved template.
 	StartTemplate = "template"
+	// StartDuplicate begins from another server's files with its identity
+	// kept, for a full copy that takes its world along.
+	StartDuplicate = "duplicate"
 )
 
 // Request describes a new server: everything the wizard collected.
@@ -101,6 +104,11 @@ func (r Request) Starting() (Starting, error) {
 			return Starting{}, errors.New("pick a server to copy")
 		}
 		return CloneStart(r.FromDir, r.FromName)
+	case StartDuplicate:
+		if r.FromDir == "" || r.FromName == "" {
+			return Starting{}, errors.New("pick a server to duplicate")
+		}
+		return DuplicateStart(r.FromDir, r.FromName)
 	case StartTemplate:
 		if r.FromTemplate == nil {
 			return Starting{}, errors.New("pick a template")

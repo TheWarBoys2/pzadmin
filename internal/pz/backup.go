@@ -64,6 +64,23 @@ func (b *Backupper) Running(serverID string) bool {
 	return b.running[serverID]
 }
 
+// Hold marks a server busy, as a running backup does, so no backup, restore
+// or world reset starts for it until release is called. It is for work
+// that reads the whole world and must not see it change.
+func (b *Backupper) Hold(serverID string) (release func(), err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.running[serverID] {
+		return nil, ErrBackupRunning
+	}
+	b.running[serverID] = true
+	return func() {
+		b.mu.Lock()
+		delete(b.running, serverID)
+		b.mu.Unlock()
+	}, nil
+}
+
 // Create archives a server's Saves directory, and its config directory when
 // includeConfig is set. Old archives beyond keep are removed afterwards.
 func (b *Backupper) Create(ctx context.Context, serverID string, l Layout, includeConfig bool, keep int, note string) (BackupResult, error) {

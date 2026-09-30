@@ -6043,6 +6043,10 @@ function stackRow(s) {
         ? el('button', { class: 'btn small', type: 'button', text: 'Save as template',
           onclick: () => saveTemplateDialog({ start: 'clone', fromServerId: s.serverId }, s.name) })
         : null,
+      StackState.create && StackState.create.imagePinned
+        ? el('button', { class: 'btn small', type: 'button', text: 'Duplicate\u2026',
+          onclick: () => duplicateDialog(s.serverId, s.name) })
+        : null,
       el('button', { class: 'btn small ghost', type: 'button', text: 'Command',
         onclick: () => showCommand('Deploy ' + s.name + ' by hand', 'The same thing Deploy does, for when '
           + 'Arcane is unavailable. Run it on the host.', 'cd ' + s.dir + ' && docker compose up -d') })));
@@ -6363,6 +6367,123 @@ function paintTemplateEditor() {
         el('summary', { text: 'World settings (sandbox)' }),
         settingsEditor(T.fields.sandbox || [], T.sandbox, {}))),
     el('div', { class: 'panel-foot wizard-foot' }, error, el('div', { class: 'row-actions' }, save))));
+}
+
+// ------------------------------------------------------------ duplicating
+
+/* Duplicating makes a full copy of a server: settings, mods, and the world
+ * with its characters and accounts, on new ports and folders. The source has
+ * to be stopped, and stays stopped until the copy is done. The copy keeps the
+ * source's world IDs, because its characters belong to them. */
+
+async function duplicateDialog(serverId, name) {
+  let info;
+  try {
+    info = await api.get('/api/stack/duplicate/check?id=' + encodeURIComponent(serverId));
+  } catch (err) {
+    toast(err.message, 'bad');
+    return;
+  }
+  const short = String(name).replace(/^pz-/, '');
+  const form = { name: 'pz-' + short + '-copy', serverName: '', adminPassword: '' };
+  const error = el('div', { class: 'error' });
+  const go = el('button', { class: 'btn primary', type: 'button', text: 'Duplicate', disabled: !!info.inUse
+    || info.copying });
+  const worlds = (info.worlds || []).filter((w) => !/_player$/.test(w));
+  go.addEventListener('click', async () => {
+    error.textContent = '';
+    if (!/^[a-z0-9][a-z0-9_-]{0,39}$/.test(form.name.trim())) {
+      error.textContent = 'The stack name must be lower case letters, digits, - or _.';
+      return;
+    }
+    go.disabled = true;
+    try {
+      const result = await api.post('/api/stack/duplicate', { serverId: serverId, name: form.name.trim(),
+        serverName: form.serverName.trim(), adminPassword: form.adminPassword });
+      closeModal();
+      duplicateProgress(result.job, name);
+    } catch (err) {
+      error.textContent = err.message;
+      go.disabled = false;
+    }
+  });
+  openModal({
+    title: 'Duplicate ' + name,
+    wide: true,
+    body: el('div', { class: 'form' },
+      info.inUse ? el('div', { class: 'notice bad', text: info.inUse + ' A copy of a running world can be half '
+        + 'old, half new.' }) : null,
+      info.copying ? el('div', { class: 'notice warn', text: name + ' is already being duplicated.' }) : null,
+      el('p', { text: 'A new server that is a full copy of ' + name + ': its settings, mods, and its world with '
+        + 'every character, safehouse and account. It gets its own ports, folders and RCON password, and '
+        + 'nothing about ' + name + ' changes.' }),
+      el('ul', { class: 'issue-list' },
+        el('li', { text: 'Copies about ' + fmtBytes(info.bytes || 0) + (info.truncated ? ' or more' : '') + ' from '
+          + info.configDir + (worlds.length ? ' (world: ' + worlds.join(', ') + ')' : ', which has no world yet')
+          + '. Logs and the game’s own start-up backups are left out.' }),
+        el('li', { text: name + ' must stay stopped until the copy finishes. PZAdmin will not start it, back it up '
+          + 'or restore it meanwhile; don’t start it from Arcane or the host either.' }),
+        el('li', { text: 'The copy keeps ' + name + '’s world IDs and seed, so players keep their characters '
+          + 'on it. The game and mods are downloaded again on its first start.' }),
+        el('li', { class: 'muted', text: 'PZAdmin’s own settings for ' + name + ' (backups, schedules, Discord) '
+          + 'are not copied' + (info.useSlot ? '; it does use a port slot, like ' + name : '') + '.' })),
+      el('div', { class: 'form grid-2' },
+        field('New stack name', bound(form, 'name'), 'Lower case. The folder and the container are named after it.'),
+        field('SERVER_NAME', bound(form, 'serverName', { placeholder: 'the stack name without pz-' }),
+          'The world and account files are renamed to match.'),
+        info.adminPasswordOk ? null : field('Admin password', bound(form, 'adminPassword',
+          { type: 'password', autocomplete: 'new-password' }),
+          name + '’s .env has no usable admin password, so choose one. No spaces, quotes, $, # or backslashes.')),
+      error),
+    actions: [el('button', { class: 'btn', type: 'button', text: 'Cancel', onclick: closeModal }), go],
+  });
+}
+
+// duplicateProgress follows a copy until it finishes.
+function duplicateProgress(job, sourceName) {
+  const bar = el('progress', { max: '100', value: '0', style: { width: '100%' } });
+  const line = el('p', { class: 'muted', text: 'Starting…' });
+  let stopped = false;
+  openModal({
+    title: 'Duplicating ' + sourceName,
+    body: el('div', { class: 'form' }, bar, line,
+      el('p', { class: 'muted', text: 'You can close this; the copy carries on, and Activity says when it is done.' })),
+    actions: [el('button', { class: 'btn', type: 'button', text: 'Close', onclick: closeModal })],
+    onDismiss: () => { stopped = true; },
+  });
+  const poll = async () => {
+    if (stopped) return;
+    let st;
+    try {
+      st = await api.get('/api/stack/duplicate/status?job=' + encodeURIComponent(job));
+    } catch (err) {
+      line.textContent = err.message;
+      return;
+    }
+    if (st.state === 'copying') {
+      const pct = st.total ? Math.min(99, Math.floor(st.copied * 100 / st.total)) : 0;
+      bar.value = pct;
+      line.textContent = 'Copied ' + fmtBytes(st.copied) + ' of about ' + fmtBytes(st.total) + '.';
+      setTimeout(poll, 1000);
+      return;
+    }
+    stopped = true;
+    closeModal();
+    if (st.state === 'failed') {
+      openModal({ title: 'The copy failed', body: el('div', { class: 'form' },
+        el('p', { text: st.error }),
+        el('p', { class: 'muted', text: 'Nothing was left behind, and ' + sourceName + ' is unchanged.' })),
+        actions: [el('button', { class: 'btn primary', type: 'button', text: 'OK', onclick: closeModal })] });
+      loadStack(false);
+      return;
+    }
+    await refreshState();
+    loadStack(false);
+    showCreated({ command: st.command, serverId: st.serverId, plan: { name: st.name } }, '',
+      'Copied ' + fmtBytes(st.copied) + '. The first start downloads the game and mods again, which takes a '
+      + 'while. Everyone, admins included, logs in with the same account as on ' + sourceName + '.');
+  };
+  poll();
 }
 
 const WIZARD_STEPS = ['Basics', 'Starting point', 'Server', 'World', 'Mods', 'Review'];
@@ -6887,7 +7008,9 @@ function paintPlan(host, plan) {
       el('code', { text: plan.command })));
 }
 
-function showCreated(result, adminUsername) {
+// showCreated offers to start a server just written. note replaces the
+// first-boot advice, for a copy whose accounts came with it.
+function showCreated(result, adminUsername, note) {
   const plan = result.plan || {};
   openModal({
     title: plan.name + ' created',
@@ -6896,8 +7019,8 @@ function showCreated(result, adminUsername) {
       el('p', { text: 'The stack is written with every setting in place. Start it now through Arcane, or '
         + 'later from the Stack screen. Without Arcane, run this on the host:' }),
       el('pre', { class: 'command' }, el('code', { text: result.command })),
-      el('p', { class: 'muted', text: 'The first start downloads the game and any mods, which takes a while. '
-        + 'Log in as ' + (adminUsername || plan.adminUsername || 'admin') + ' with the password you chose.' })),
+      el('p', { class: 'muted', text: note || 'The first start downloads the game and any mods, which takes a '
+        + 'while. Log in as ' + (adminUsername || plan.adminUsername || 'admin') + ' with the password you chose.' })),
     actions: [
       el('button', { class: 'btn', type: 'button', text: 'Copy command', onclick: () => copyText(result.command) }),
       el('button', { class: 'btn', type: 'button', text: 'Later', onclick: closeModal }),
