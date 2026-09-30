@@ -5904,7 +5904,7 @@ function confirmModChange(file, issues) {
  * wherever that is the next step, the screen gives the exact command rather
  * than pretending otherwise. */
 
-const StackState = { data: null, create: null, wizard: null, startNew: false };
+const StackState = { data: null, create: null, wizard: null, template: null, startNew: false };
 
 // newServer opens the Stack page with the new-server wizard already started.
 function newServer() {
@@ -5930,6 +5930,7 @@ async function loadStack(rescan) {
   const host = $('#stack-body');
   if (!host) return;
   if (StackState.wizard) { paintWizard(); return; }
+  if (StackState.template) { paintTemplateEditor(); return; }
   clear(host);
   appendAll(host, el('div', { class: 'panel' }, el('div', { class: 'empty' },
     el('p', { text: 'Reading your stacks…' }))));
@@ -5945,6 +5946,7 @@ async function loadStack(rescan) {
     (data.warnings || []).forEach((w) => appendAll(host, el('div', { class: 'notice warn', text: w })));
     appendAll(host, stackServersPanel(data));
     appendAll(host, stackCreatePanel(create));
+    if (create.imagePinned) appendAll(host, stackTemplatesPanel(create));
     if (StackState.startNew) {
       StackState.startNew = false;
       if (create.imagePinned) startWizard(create);
@@ -6037,6 +6039,10 @@ function stackRow(s) {
       el('button', { class: 'btn small', type: 'button', text: 'Deploy', disabled: problems.length > 0,
         title: problems.length ? 'Fix the problems listed first.' : '',
         onclick: () => deployServer(s.serverId, s.name) }),
+      StackState.create && (StackState.create.sources || []).some((x) => x.serverId === s.serverId)
+        ? el('button', { class: 'btn small', type: 'button', text: 'Save as template',
+          onclick: () => saveTemplateDialog({ start: 'clone', fromServerId: s.serverId }, s.name) })
+        : null,
       el('button', { class: 'btn small ghost', type: 'button', text: 'Command',
         onclick: () => showCommand('Deploy ' + s.name + ' by hand', 'The same thing Deploy does, for when '
           + 'Arcane is unavailable. Run it on the host.', 'cd ' + s.dir + ' && docker compose up -d') })));
@@ -6183,6 +6189,182 @@ function stackCreatePanel(create) {
   return panel;
 }
 
+// ---------------------------------------------------------------- templates
+
+/* A template is a saved starting point for the wizard: a server's settings,
+ * sandbox, mods and spawn points, plus max players and memory. It never holds
+ * a world, the RCON password or the per-server IDs. Picking one fills the
+ * wizard in, and anything can still be changed for the server being made. */
+
+function stackTemplatesPanel(create) {
+  const templates = create.templates || [];
+  const body = el('div', { class: 'panel-body' });
+  if (!templates.length) {
+    appendAll(body, el('p', { class: 'muted', text: 'None yet. Save a server as a template with its Save as '
+      + 'template button above, or from the last step of the New server wizard. Servers that are mostly the '
+      + 'same then start from it, and you change only what differs.' }));
+  }
+  templates.forEach((t) => {
+    const tb = t.basics || {};
+    appendAll(body, el('div', { class: 'stack-row' },
+      el('div', { class: 'stack-row-main' },
+        el('div', { class: 'stack-row-title' }, el('strong', { text: t.name })),
+        t.description ? el('div', { class: 'hint', text: t.description }) : null,
+        el('div', { class: 'stack-row-meta' },
+          t.createdFrom ? el('span', { text: 'from ' + t.createdFrom }) : null,
+          el('span', { text: t.mods ? t.mods + ' mod' + (t.mods === 1 ? '' : 's') : 'no mods' }),
+          t.map ? el('span', { text: 'map ' + t.map }) : null,
+          tb.maxPlayers ? el('span', { text: tb.maxPlayers + ' players' }) : null,
+          tb.memoryGb ? el('span', { text: tb.memoryGb + ' GB' }) : null,
+          t.updated ? el('span', { text: 'saved ' + fmtDateTime(t.updated) }) : null)),
+      el('div', { class: 'stack-row-actions' },
+        el('button', { class: 'btn small primary', type: 'button', text: 'New server',
+          onclick: () => startWizard(create, t) }),
+        el('button', { class: 'btn small', type: 'button', text: 'Edit', onclick: () => editTemplate(t) }),
+        el('button', { class: 'btn small danger', type: 'button', text: 'Delete', onclick: async () => {
+          const yes = await confirmDialog({ title: 'Delete the ' + t.name + ' template?',
+            message: 'Servers already made from it are not changed.', confirmLabel: 'Delete', danger: true });
+          if (!yes) return;
+          try {
+            const result = await api.post('/api/templates/delete', { id: t.id });
+            toast(result.message, 'good');
+            loadStack(false);
+          } catch (err) {
+            toast(err.message, 'bad');
+          }
+        } }))));
+  });
+  return el('div', { class: 'panel' },
+    el('div', { class: 'panel-head' },
+      el('h3', { text: 'Templates' }),
+      el('span', { class: 'muted', text: templates.length + ' saved' })),
+    body);
+}
+
+// saveTemplateDialog names and saves a template. request says where its
+// files come from, in the same terms as the wizard.
+function saveTemplateDialog(request, serverName) {
+  const name = el('input', { type: 'text', maxlength: '60', autocomplete: 'off' });
+  const description = el('input', { type: 'text', maxlength: '300', autocomplete: 'off',
+    placeholder: 'optional' });
+  const error = el('div', { class: 'error' });
+  const save = el('button', { class: 'btn primary', type: 'button', text: 'Save template' });
+  save.addEventListener('click', async () => {
+    error.textContent = '';
+    save.disabled = true;
+    try {
+      const result = await api.post('/api/templates/create', Object.assign({}, request,
+        { name: name.value, description: description.value }));
+      closeModal();
+      toast(result.message, 'good');
+      // The wizard keeps its place; the Stack page picks the new one up.
+      if (StackState.wizard) {
+        const create = await api.get('/api/stack/new');
+        StackState.create = create;
+        StackState.wizard.create = create;
+      } else {
+        loadStack(false);
+      }
+    } catch (err) {
+      error.textContent = err.message;
+      save.disabled = false;
+    }
+  });
+  openModal({
+    title: serverName ? 'Save ' + serverName + ' as a template' : 'Save as a template',
+    body: el('div', { class: 'form' },
+      el('p', { class: 'muted', text: serverName
+        ? 'Saves its settings, sandbox, mods and spawn points as they are now. Its world, RCON password and '
+          + 'server IDs are not saved; every server made from the template gets its own.'
+        : 'Saves the settings, sandbox and mods chosen in this wizard, and its max players and memory. The '
+          + 'server name, ports, folders and admin account are not saved.' }),
+      field('Name', name, 'For example: Vanilla+ weekly, or Friends, PVP off.'),
+      field('Description', description),
+      error),
+    actions: [el('button', { class: 'btn', type: 'button', text: 'Cancel', onclick: closeModal }), save],
+  });
+}
+
+// editTemplate opens a template's settings for editing, in place of the
+// Stack page.
+async function editTemplate(t) {
+  try {
+    const fields = await api.get(wizardFieldsQuery('template', '', t.id));
+    const tb = t.basics || {};
+    StackState.template = {
+      id: t.id,
+      name: t.name,
+      description: t.description || '',
+      basics: { maxPlayers: tb.maxPlayers ? String(tb.maxPlayers) : '',
+        memoryGb: tb.memoryGb ? String(tb.memoryGb) : '',
+        updateOnStart: tb.updateOnStart === undefined || tb.updateOnStart === null ? true : tb.updateOnStart },
+      fields: fields,
+      ini: {},
+      sandbox: {},
+    };
+    paintTemplateEditor();
+  } catch (err) {
+    toast(err.message, 'bad');
+  }
+}
+
+function closeTemplateEditor() {
+  StackState.template = null;
+  loadStack(false);
+}
+
+function paintTemplateEditor() {
+  const host = $('#stack-body');
+  const T = StackState.template;
+  if (!host || !T) return;
+  clear(host);
+  const b = T.basics;
+  const update = el('input', { type: 'checkbox' });
+  update.checked = b.updateOnStart;
+  update.addEventListener('change', () => { b.updateOnStart = update.checked; });
+  const error = el('div', { class: 'error' });
+  const save = el('button', { class: 'btn primary', type: 'button', text: 'Save template' });
+  save.addEventListener('click', async () => {
+    error.textContent = '';
+    save.disabled = true;
+    try {
+      const result = await api.post('/api/templates/update', {
+        id: T.id, name: T.name, description: T.description, ini: T.ini, sandbox: T.sandbox,
+        basics: { maxPlayers: Number(b.maxPlayers) || 0, memoryGb: Number(b.memoryGb) || 0,
+          updateOnStart: b.updateOnStart },
+      });
+      toast(result.message, 'good');
+      closeTemplateEditor();
+    } catch (err) {
+      error.textContent = err.message;
+      save.disabled = false;
+    }
+  });
+  const iniFields = (T.fields.ini || []).filter((f) => f.key !== 'MaxPlayers');
+  appendAll(host, el('div', { class: 'panel wizard' },
+    el('div', { class: 'panel-head' },
+      el('h3', { text: 'Edit template: ' + T.name }),
+      el('button', { class: 'btn small ghost', type: 'button', text: 'Cancel', onclick: closeTemplateEditor })),
+    el('div', { class: 'panel-body' },
+      el('p', { class: 'muted', text: 'Changes apply to servers made from this template from now on. Servers '
+        + 'already made from it keep their own settings.' }),
+      el('div', { class: 'form grid-2' },
+        field('Name', bound(T, 'name', { maxlength: '60' })),
+        field('Description', bound(T, 'description', { maxlength: '300', placeholder: 'optional' })),
+        field('Max players', bound(b, 'maxPlayers', { type: 'number', min: '1', max: '100', placeholder: '32' })),
+        field('Memory (GB)', bound(b, 'memoryGb', { type: 'number', min: '1', max: '64', placeholder: '8' }))),
+      el('label', { class: 'check' }, update, el('span', null,
+        el('span', { text: 'Update from Steam on every start' }))),
+      el('details', { class: 'stack-file', open: true },
+        el('summary', { text: 'Server settings' }),
+        el('p', { class: 'muted', text: 'Mods are the Mods and WorkshopItems lines here, separated by ;.' }),
+        settingsEditor(iniFields, T.ini, { essentials: WIZARD_ESSENTIALS })),
+      el('details', { class: 'stack-file' },
+        el('summary', { text: 'World settings (sandbox)' }),
+        settingsEditor(T.fields.sandbox || [], T.sandbox, {}))),
+    el('div', { class: 'panel-foot wizard-foot' }, error, el('div', { class: 'row-actions' }, save))));
+}
+
 const WIZARD_STEPS = ['Basics', 'Starting point', 'Server', 'World', 'Mods', 'Review'];
 
 // The settings most people change, shown first on the Server step.
@@ -6202,6 +6384,7 @@ function newWizard(create) {
       adminPassword2: '' },
     start: 'defaults',
     fromServerId: '',
+    templateId: '',
     fieldsKey: '',
     fields: null,
     ini: {},
@@ -6211,9 +6394,34 @@ function newWizard(create) {
   };
 }
 
-function startWizard(create) {
-  StackState.wizard = newWizard(create);
+// startWizard opens the wizard, optionally already on a template, whose
+// basics fill in the first page.
+function startWizard(create, template) {
+  const W = newWizard(create);
+  if (template) {
+    W.start = 'template';
+    W.templateId = template.id;
+    const tb = template.basics || {};
+    if (tb.maxPlayers) W.basics.maxPlayers = String(tb.maxPlayers);
+    if (tb.memoryGb) W.basics.memoryGb = String(tb.memoryGb);
+    if (tb.updateOnStart !== undefined && tb.updateOnStart !== null) W.basics.updateOnStart = tb.updateOnStart;
+  }
+  StackState.wizard = W;
   paintWizard();
+}
+
+// wizardSourceKey names the starting point, so the wizard knows when it has
+// changed and the settings fetched for it are stale.
+function wizardSourceKey(W) {
+  if (W.start === 'clone') return 'clone|' + W.fromServerId;
+  if (W.start === 'template') return 'template|' + W.templateId;
+  return W.start + '|';
+}
+
+function wizardFieldsQuery(start, fromServerId, templateId) {
+  return '/api/stack/wizard/fields?start=' + encodeURIComponent(start)
+    + (start === 'clone' ? '&from=' + encodeURIComponent(fromServerId) : '')
+    + (start === 'template' ? '&template=' + encodeURIComponent(templateId) : '');
 }
 
 function closeWizard() {
@@ -6281,11 +6489,10 @@ async function wizardLeave(W) {
     }
     case 1: {
       if (W.start === 'clone' && !W.fromServerId) throw new Error('Pick a server to copy.');
-      const key = W.start + '|' + (W.start === 'clone' ? W.fromServerId : '');
+      if (W.start === 'template' && !W.templateId) throw new Error('Pick a template.');
+      const key = wizardSourceKey(W);
       if (key !== W.fieldsKey) {
-        const q = '/api/stack/wizard/fields?start=' + encodeURIComponent(W.start)
-          + (W.start === 'clone' ? '&from=' + encodeURIComponent(W.fromServerId) : '');
-        W.fields = await api.get(q);
+        W.fields = await api.get(wizardFieldsQuery(W.start, W.fromServerId, W.templateId));
         W.fieldsKey = key;
         W.ini = {};
         W.sandbox = {};
@@ -6325,6 +6532,7 @@ function wizardRequest(W) {
     updateOnStart: b.updateOnStart,
     adminUsername: b.adminUsername.trim() || 'admin', adminPassword: b.adminPassword,
     start: W.start, fromServerId: W.start === 'clone' ? W.fromServerId : '',
+    templateId: W.start === 'template' ? W.templateId : '',
     ini: W.ini, sandbox: W.sandbox,
   };
 }
@@ -6385,6 +6593,12 @@ function wizardStart(host, W) {
     sources.map((s) => el('option', { value: s.serverId, text: s.name + ' (' + s.serverName + ')' })));
   from.value = W.fromServerId;
   from.addEventListener('change', () => { W.fromServerId = from.value; W.start = 'clone'; paintWizard(); });
+  const templates = W.create.templates || [];
+  const tpl = el('select', null, el('option', { value: '', text: 'Pick a template\u2026' }),
+    templates.map((t) => el('option', { value: t.id, text: t.name })));
+  tpl.value = W.templateId;
+  tpl.addEventListener('change', () => { W.templateId = tpl.value; W.start = 'template'; paintWizard(); });
+  const chosen = templates.find((t) => t.id === W.templateId);
   appendAll(host, 
     radio('defaults', 'Game defaults',
       'Exactly what a new Build 42 server writes on its first boot, with no mods. Change anything you like on '
@@ -6393,7 +6607,15 @@ function wizardStart(host, W) {
       'Its settings, sandbox, mods and spawn points, but not its identity: the new server gets its own world '
       + 'seed and IDs, so players\u2019 clients do not mistake it for the original.'),
     sources.length ? field('Server to copy', from) : el('p', { class: 'muted', text: 'No servers to copy yet.' }),
-    W.fieldsKey && W.fieldsKey !== W.start + '|' + (W.start === 'clone' ? W.fromServerId : '')
+    radio('template', 'A template',
+      'Settings you saved to reuse: sandbox, mods and spawn points, plus max players and memory. Change '
+      + 'anything for this server on the next steps; the template itself stays as it is.'),
+    templates.length
+      ? field('Template', tpl, chosen && chosen.description ? chosen.description : 'Max players and memory '
+        + 'come from the template only when you start the wizard from its New server button.')
+      : el('p', { class: 'muted', text: 'No templates yet. Save one from a server on the Stack page, or '
+        + 'from the last step of this wizard.' }),
+    W.fieldsKey && W.fieldsKey !== wizardSourceKey(W)
       ? el('div', { class: 'notice warn', text: 'Changing the starting point discards the settings changed '
         + 'on the next steps so far.' })
       : null);
@@ -6463,9 +6685,8 @@ function settingsEditor(fields, changes, options) {
 function wizardServer(host, W) {
   const fields = (W.fields.ini || []).filter((f) => !WIZARD_MOD_KEYS.includes(f.key));
   appendAll(host, 
-    el('p', { class: 'muted', text: 'Server settings, starting from ' + (W.fields.from === 'defaults'
-      ? 'the game defaults' : W.fields.from + '\u2019s') + '. Anything left alone stays as it is. Mods are '
-      + 'on the Mods step.' }),
+    el('p', { class: 'muted', text: 'Server settings, starting from ' + startingName(W.fields.from, true)
+      + '. Anything left alone stays as it is. Mods are on the Mods step.' }),
     settingsEditor(fields, W.ini, { essentials: WIZARD_ESSENTIALS }));
 }
 
@@ -6558,7 +6779,7 @@ function wizardMods(host, W) {
       + 'its Workshop page, where most authors list it; check them, because the server only loads what is in '
       + 'Mods=. Order here is load order.' }),
     existingMods.length || existingWorkshop.length
-      ? el('div', { class: 'notice info', text: 'Kept from the server being copied: ' + existingMods.length
+      ? el('div', { class: 'notice info', text: 'Kept from ' + startingName(W.fields.from, false) + ': ' + existingMods.length
         + ' mod ID(s) and ' + existingWorkshop.length + ' Workshop item(s). Mods added here go after them.' })
       : null,
     field('Add mods', input),
@@ -6605,8 +6826,25 @@ function applyWizardMods(W) {
   }
 }
 
+// startingName describes where a new server's files come from: the game
+// defaults, a template (already phrased by the server), or a server by name.
+function startingName(from, possessive) {
+  if (!from || from === 'defaults') return 'the game defaults';
+  if (/^the .* template$/.test(from)) return from;
+  return possessive ? from + '\u2019s' : from;
+}
+
 function wizardReview(host, W) {
   const preview = el('div', { class: 'stack-preview' }, el('p', { class: 'muted', text: 'Working it out\u2026' }));
+  appendAll(host, el('div', { class: 'row-actions' },
+    el('span', { class: 'muted', text: 'Making more servers like this one?' }),
+    el('button', { class: 'btn small', type: 'button', text: 'Save these choices as a template\u2026',
+      onclick: () => saveTemplateDialog({
+        start: W.start, fromServerId: W.start === 'clone' ? W.fromServerId : '',
+        templateId: W.start === 'template' ? W.templateId : '', ini: W.ini, sandbox: W.sandbox,
+        basics: { maxPlayers: Number(W.basics.maxPlayers) || 0, memoryGb: Number(W.basics.memoryGb) || 0,
+          updateOnStart: W.basics.updateOnStart },
+      }, '') })));
   appendAll(host, preview);
   api.post('/api/stack/plan', wizardRequest(W)).then((result) => {
     W.plan = result.plan;
@@ -6624,8 +6862,7 @@ function paintPlan(host, plan) {
     el('div', { class: 'notice info' },
       el('span', { text: plan.name + ' will use game ports ' + plan.gamePort + '/' + plan.udpPort
         + ' and RCON port ' + plan.rconPort + ', in ' + plan.stackDir + '.' })),
-    el('p', { text: 'Starts from ' + (plan.startedFrom === 'defaults' ? 'the game defaults' : plan.startedFrom)
-      + ', with ' + (plan.changedIni || 0) + ' server and ' + (plan.changedSandbox || 0)
+    el('p', { text: 'Starts from ' + startingName(plan.startedFrom, false) + ', with ' + (plan.changedIni || 0) + ' server and ' + (plan.changedSandbox || 0)
       + ' world setting(s) changed.' }),
     (plan.warnings || []).length
       ? el('div', { class: 'issues' }, el('div', { class: 'issue-group' },

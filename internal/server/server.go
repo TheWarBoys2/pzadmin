@@ -136,6 +136,7 @@ type App struct {
 	users    *userStore
 	// modRequests are mods asked for through the API, waiting for approval.
 	modRequests *modRequestStore
+	templates   *templateStore
 	limiter     *loginLimiter
 	// accountLimit slows sign-in guesses from all addresses together.
 	accountLimit *loginLimiter
@@ -267,6 +268,7 @@ func New(opts Options) (*App, error) {
 		keys:         newAPIKeyStore(filepath.Join(opts.DataDir, "apikeys.json")),
 		users:        newUserStore(filepath.Join(opts.DataDir, "users.json")),
 		modRequests:  newModRequestStore(filepath.Join(opts.DataDir, "modrequests.json")),
+		templates:    newTemplateStore(filepath.Join(opts.DataDir, "templates.json")),
 		apiLimit:     newRateLimiter(),
 		apiFail:      newLoginLimiter(),
 		limiter:      newLoginLimiter(),
@@ -349,7 +351,7 @@ func (a *App) Start() {
 	})
 	// A state file that could not be parsed was moved aside at load. Say so
 	// where the operator will see it, not only in the container log.
-	for _, err := range []error{a.keys.loadErr, a.users.loadErr, a.sess.loadErr, a.modRequests.loadErr, a.store.LoadError(), a.custom.loadErr} {
+	for _, err := range []error{a.keys.loadErr, a.users.loadErr, a.sess.loadErr, a.modRequests.loadErr, a.store.LoadError(), a.custom.loadErr, a.templates.loadErr} {
 		a.reportLoadError(err)
 	}
 	a.prepareBackupDir()
@@ -724,6 +726,10 @@ func (a *App) Handler() http.Handler {
 	get("/api/stack/wizard/fields", ownerOnly, a.handleStackWizardFields)
 	post("/api/stack/plan", ownerOnly, a.handleStackPlan)
 	post("/api/stack/create", ownerOnly, a.handleStackCreate)
+	get("/api/templates", ownerOnly, a.handleTemplates)
+	post("/api/templates/create", ownerOnly, a.handleTemplateCreate)
+	post("/api/templates/update", ownerOnly, a.handleTemplateUpdate)
+	post("/api/templates/delete", ownerOnly, a.handleTemplateDelete)
 	post("/api/settings", ownerOnly, a.handleSettings)
 	post("/api/metrics/token", ownerOnly, a.handleMetricsToken)
 	post("/api/server/save", ownerOnly, a.handleServerSave)

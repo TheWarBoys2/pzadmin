@@ -31,12 +31,24 @@ var perServerINIKeys = []string{"ResetID", "ServerPlayerID", "Seed"}
 // Starting is the set of Server/ files a new server begins from, before any
 // change from the wizard.
 type Starting struct {
-	INI          string
-	Sandbox      string
-	SpawnRegions string
-	SpawnPoints  string
-	// From names where they came from, for display.
-	From string
+	INI          string `json:"ini"`
+	Sandbox      string `json:"sandbox"`
+	SpawnRegions string `json:"spawnRegions,omitempty"`
+	SpawnPoints  string `json:"spawnPoints,omitempty"`
+	// From is the SERVER_NAME the files were written for. The spawn regions
+	// file names the spawn points file by it.
+	From string `json:"from"`
+	// Label, when set, is what to call the starting point instead of From,
+	// such as a template's name.
+	Label string `json:"-"`
+}
+
+// Name is what to call the starting point on screen.
+func (s Starting) Name() string {
+	if s.Label != "" {
+		return s.Label
+	}
+	return s.From
 }
 
 // DefaultStart returns the captured defaults, with per-server values removed.
@@ -134,7 +146,7 @@ func FieldsFor(s Starting) (Fields, error) {
 	if err != nil {
 		return Fields{}, err
 	}
-	f := Fields{From: s.From, INI: ini.Fields(), Sandbox: sb.Fields()}
+	f := Fields{From: s.Name(), INI: ini.Fields(), Sandbox: sb.Fields()}
 	locked := LockedINIKeys(map[string]string{"MAX_PLAYERS": "set"})
 	for i := range f.INI {
 		if reason := locked[f.INI[i].Key]; reason != "" {
@@ -149,6 +161,17 @@ func FieldsFor(s Starting) (Fields, error) {
 		return f, errors.New("the sandbox file has no settings")
 	}
 	return f, nil
+}
+
+// WithChanges returns s with the changes applied, validated exactly as the
+// wizard's are. It is how a template is saved from the wizard and edited.
+func WithChanges(s Starting, iniChanges, sandboxChanges map[string]string) (Starting, error) {
+	ini, sb, err := applyChanges(s, iniChanges, sandboxChanges)
+	if err != nil {
+		return s, err
+	}
+	s.INI, s.Sandbox = ensureNewline(ini), ensureNewline(sb)
+	return s, nil
 }
 
 // applyChanges validates every change against the starting files and

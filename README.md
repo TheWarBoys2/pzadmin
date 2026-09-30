@@ -43,6 +43,7 @@ something wrong, especially anything security related, please report it (see
 - Live dashboard: who's online, uptime, RCON latency and problems, updated as they happen
 - Start, stop, restart and deploy, plus a watchdog that can recover a frozen server
 - A wizard that creates new servers with ports, paths and admin account set up for you
+- Server templates: save a server's settings, sandbox and mods once, then make similar servers from them ([docs/templates.md](docs/templates.md))
 - Finds your existing servers on its own by reading the stack folders
 
 **Mods**
@@ -433,6 +434,16 @@ it stops, and a start is refused while every slot is in use. The first time,
 PZAdmin changes the compose file's two game port lines to read `.env`, keeping
 a copy of the old file. See [docs/port-slots.md](docs/port-slots.md),
 including how the join port can change.
+
+## Server templates
+
+If your servers are mostly set up the same way, save one as a template: press
+**Save as template** on it on the Stack page, or **Save these choices as a
+template** on the new-server wizard's last step. A template holds the
+settings, sandbox, mods, spawn points, max players and memory, but no world and
+no RCON password. **New server** on a template opens the wizard with it filled
+in, and you change what's different before anything is written. See
+[docs/templates.md](docs/templates.md).
 
 ## Other admins
 
