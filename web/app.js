@@ -701,6 +701,8 @@ function can(perm) {
 const MOVED_PAGES = { players: 'players', schedules: 'schedules', catalogue: 'mods' };
 
 function movedPageTarget(route) {
+  // The Server setup page was renamed Server setup.
+  if (route.name === 'stack') return '/server-setup';
   const tab = MOVED_PAGES[route.name];
   if (!tab) return '';
   const list = servers();
@@ -726,7 +728,7 @@ function render() {
     case 'server': viewServer(main); break;
     case 'discord': if (isOwner()) viewDiscord(main); else viewDashboard(main); break;
     case 'activity': viewActivity(main); break;
-    case 'stack': if (isOwner()) viewStack(main); else viewDashboard(main); break;
+    case 'server-setup': if (isOwner()) viewStack(main); else viewDashboard(main); break;
     case 'settings': viewSettings(main); break;
     default: viewDashboard(main);
   }
@@ -760,7 +762,7 @@ function buildRail() {
     el('nav', { class: 'nav' },
       navItem('/dashboard', 'Dashboard', null),
       isOwner() ? navItem('/discord', 'Discord', webhooks().filter((h) => h.enabled).length || null) : null,
-      isOwner() ? navItem('/stack', 'Stack', null) : null,
+      isOwner() ? navItem('/server-setup', 'Server setup', null) : null,
       navItem('/settings', 'Settings', null)),
     railServers,
     el('div', { class: 'rail-foot' },
@@ -820,10 +822,10 @@ function viewDashboard(main) {
       el('p', { text: 'Create your first server and PZAdmin writes its files into your stacks folder. You see '
         + 'every file before anything is written.' }),
       el('p', { class: 'muted', text: 'Already have servers? PZAdmin looks for them in the stacks folder: one '
-        + 'subfolder each, with a compose file, a .env and a Server/ folder. The Stack page shows what it found and why.' }),
+        + 'subfolder each, with a compose file, a .env and a Server/ folder. The Server setup page shows what it found and why.' }),
       el('div', { class: 'row-actions' },
         el('button', { class: 'btn primary', type: 'button', text: 'Create your first server', onclick: newServer }),
-        el('button', { class: 'btn', type: 'button', text: 'Open Stack', onclick: () => go('/stack') })))));
+        el('button', { class: 'btn', type: 'button', text: 'Open Server setup', onclick: () => go('/server-setup') })))));
     return;
   }
 
@@ -1250,8 +1252,8 @@ async function tabOverview(host, server, st) {
         : el('div', null,
             el('p', { text: 'PZAdmin could not find this server\u2019s files in the folders its stack mounts.' }),
             el('p', { class: 'muted', text: 'Without them, config editing, mod checks, log viewing and backups are unavailable. '
-              + (isOwner() ? 'The Stack screen shows what was checked and why it failed.' : 'The owner can see why on the Stack screen.') }),
-            isOwner() ? el('button', { class: 'btn', type: 'button', text: 'Open Stack', onclick: () => go('/stack') }) : null)));
+              + (isOwner() ? 'The Server setup page shows what was checked and why it failed.' : 'The owner can see why on the Server setup page.') }),
+            isOwner() ? el('button', { class: 'btn', type: 'button', text: 'Open Server setup', onclick: () => go('/server-setup') }) : null)));
 
   const recovery = server.recovery || {};
   const ops = el('div', { class: 'panel' },
@@ -5544,7 +5546,7 @@ function userPasswordReveal(name, password) {
  * PZAdmin itself owns. Everything read from the files is shown, read only,
  * so it is clear where to change it. */
 function editServer(existing) {
-  if (!existing) { go('/stack'); return; }
+  if (!existing) { go('/server-setup'); return; }
   const s = existing;
 
   const name = el('input', { type: 'text', value: s.name, required: true });
@@ -5895,7 +5897,7 @@ function confirmModChange(file, issues) {
 
 // ---------------------------------------------------------------- stack screen
 
-/* The Stack screen shows what PZAdmin found in the stacks folder and what it
+/* The Server setup page shows what PZAdmin found in the stacks folder and what it
  * thinks of it, and creates new servers.
  *
  * Every server is a folder with a compose file. PZAdmin reads those files; it
@@ -5906,17 +5908,17 @@ function confirmModChange(file, issues) {
 
 const StackState = { data: null, create: null, wizard: null, template: null, startNew: false };
 
-// newServer opens the Stack page with the new-server wizard already started.
+// newServer opens the Server setup page with the new-server wizard already started.
 function newServer() {
   StackState.startNew = true;
-  if (S.route && S.route.name === 'stack') loadStack(false);
-  else go('/stack');
+  if (S.route && S.route.name === 'server-setup') loadStack(false);
+  else go('/server-setup');
 }
 
 function viewStack(main) {
   main.append(el('div', { class: 'page-head' },
     el('div', null,
-      el('h1', { text: 'Stack' }),
+      el('h1', { text: 'Server setup' }),
       el('div', { class: 'sub', text: 'Your server stacks, what PZAdmin checked in each, and new servers.' })),
     el('div', { class: 'page-actions' },
       el('button', { class: 'btn small', type: 'button', text: 'Rescan', onclick: () => loadStack(true) }))));
@@ -5946,7 +5948,7 @@ async function loadStack(rescan) {
     (data.warnings || []).forEach((w) => appendAll(host, el('div', { class: 'notice warn', text: w })));
     appendAll(host, stackServersPanel(data));
     appendAll(host, stackCreatePanel(create));
-    if (create.imagePinned) appendAll(host, stackTemplatesPanel(create));
+    appendAll(host, stackTemplatesPanel(create));
     if (StackState.startNew) {
       StackState.startNew = false;
       if (create.imagePinned) startWizard(create);
@@ -6204,9 +6206,9 @@ function stackTemplatesPanel(create) {
   const templates = create.templates || [];
   const body = el('div', { class: 'panel-body' });
   if (!templates.length) {
-    appendAll(body, el('p', { class: 'muted', text: 'None yet. Save a server as a template with its Save as '
-      + 'template button above, or from the last step of the New server wizard. Servers that are mostly the '
-      + 'same then start from it, and you change only what differs.' }));
+    appendAll(body, el('p', { class: 'muted', text: 'None yet. Make one here with New template, save a server as '
+      + 'one with its Save as template button above, or save the New server wizard\u2019s choices on its last '
+      + 'step. Servers that are mostly the same then start from it, and you change only what differs.' }));
   }
   templates.forEach((t) => {
     const tb = t.basics || {};
@@ -6223,6 +6225,7 @@ function stackTemplatesPanel(create) {
           t.updated ? el('span', { text: 'saved ' + fmtDateTime(t.updated) }) : null)),
       el('div', { class: 'stack-row-actions' },
         el('button', { class: 'btn small primary', type: 'button', text: 'New server',
+          disabled: !create.imagePinned, title: create.imagePinned ? '' : 'Set a pinned game image first.',
           onclick: () => startWizard(create, t) }),
         el('button', { class: 'btn small', type: 'button', text: 'Edit', onclick: () => editTemplate(t) }),
         el('button', { class: 'btn small danger', type: 'button', text: 'Delete', onclick: async () => {
@@ -6241,8 +6244,52 @@ function stackTemplatesPanel(create) {
   return el('div', { class: 'panel' },
     el('div', { class: 'panel-head' },
       el('h3', { text: 'Templates' }),
-      el('span', { class: 'muted', text: templates.length + ' saved' })),
+      el('div', { class: 'row-actions' },
+        el('span', { class: 'muted', text: templates.length + ' saved' }),
+        el('button', { class: 'btn small', type: 'button', text: 'New template\u2026',
+          onclick: () => newTemplateDialog(create) }))),
     body);
+}
+
+// newTemplateDialog makes a template without making a server: it starts
+// from the game defaults or a server's current settings, then opens in the
+// editor so any setting can be changed.
+function newTemplateDialog(create) {
+  const sources = create.sources || [];
+  const name = el('input', { type: 'text', maxlength: '60', autocomplete: 'off' });
+  const description = el('input', { type: 'text', maxlength: '300', autocomplete: 'off', placeholder: 'optional' });
+  const from = el('select', null, el('option', { value: '', text: 'Game defaults (Build 42, no mods)' }),
+    sources.map((s) => el('option', { value: s.serverId, text: 'Settings of ' + s.name })));
+  const error = el('div', { class: 'error' });
+  const next = el('button', { class: 'btn primary', type: 'button', text: 'Create and edit' });
+  next.addEventListener('click', async () => {
+    error.textContent = '';
+    next.disabled = true;
+    try {
+      const result = await api.post('/api/templates/create', {
+        name: name.value, description: description.value,
+        start: from.value ? 'clone' : 'defaults', fromServerId: from.value,
+      });
+      closeModal();
+      await editTemplate(result.template);
+    } catch (err) {
+      error.textContent = err.message;
+      next.disabled = false;
+    }
+  });
+  openModal({
+    title: 'New template',
+    body: el('div', { class: 'form' },
+      el('p', { class: 'muted', text: 'A template is a starting point for new servers: settings, sandbox, mods, '
+        + 'max players and memory. Nothing is created or changed on any server. After this you can change '
+        + 'every setting in it.' }),
+      field('Name', name, 'For example: Vanilla+ weekly, or Friends, PVP off.'),
+      field('Description', description),
+      field('Start from', from, 'Copying a server takes its settings and mods, never its world, RCON password '
+        + 'or world IDs.'),
+      error),
+    actions: [el('button', { class: 'btn', type: 'button', text: 'Cancel', onclick: closeModal }), next],
+  });
 }
 
 // saveTemplateDialog names and saves a template. request says where its
@@ -6261,7 +6308,7 @@ function saveTemplateDialog(request, serverName) {
         { name: name.value, description: description.value }));
       closeModal();
       toast(result.message, 'good');
-      // The wizard keeps its place; the Stack page picks the new one up.
+      // The wizard keeps its place; the Server setup page picks the new one up.
       if (StackState.wizard) {
         const create = await api.get('/api/stack/new');
         StackState.create = create;
@@ -6290,7 +6337,7 @@ function saveTemplateDialog(request, serverName) {
 }
 
 // editTemplate opens a template's settings for editing, in place of the
-// Stack page.
+// Server setup page.
 async function editTemplate(t) {
   try {
     const fields = await api.get(wizardFieldsQuery('template', '', t.id));
@@ -6734,7 +6781,7 @@ function wizardStart(host, W) {
     templates.length
       ? field('Template', tpl, chosen && chosen.description ? chosen.description : 'Max players and memory '
         + 'come from the template only when you start the wizard from its New server button.')
-      : el('p', { class: 'muted', text: 'No templates yet. Save one from a server on the Stack page, or '
+      : el('p', { class: 'muted', text: 'No templates yet. Save one from a server on the Server setup page, or '
         + 'from the last step of this wizard.' }),
     W.fieldsKey && W.fieldsKey !== wizardSourceKey(W)
       ? el('div', { class: 'notice warn', text: 'Changing the starting point discards the settings changed '
@@ -7017,7 +7064,7 @@ function showCreated(result, adminUsername, note) {
     wide: true,
     body: el('div', { class: 'form' },
       el('p', { text: 'The stack is written with every setting in place. Start it now through Arcane, or '
-        + 'later from the Stack screen. Without Arcane, run this on the host:' }),
+        + 'later from the Server setup page. Without Arcane, run this on the host:' }),
       el('pre', { class: 'command' }, el('code', { text: result.command })),
       el('p', { class: 'muted', text: note || 'The first start downloads the game and any mods, which takes a '
         + 'while. Log in as ' + (adminUsername || plan.adminUsername || 'admin') + ' with the password you chose.' })),
