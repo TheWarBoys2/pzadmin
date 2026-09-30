@@ -43,6 +43,7 @@ preset.
 - change PZAdmin's own settings: Discord, webhooks, quiet hours, metrics,
   timezone, import and export
 - add, edit, remove or delete servers, create new ones and open the Stack page
+- make, edit and delete server templates
 - create, edit or delete scheduled jobs
 - see every signed-in browser and sign them all out
 

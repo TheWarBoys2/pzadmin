@@ -49,6 +49,8 @@ const (
 	StartDefaults = "defaults"
 	// StartClone begins from another server's files, minus its identity.
 	StartClone = "clone"
+	// StartTemplate begins from a saved template.
+	StartTemplate = "template"
 )
 
 // Request describes a new server: everything the wizard collected.
@@ -80,6 +82,9 @@ type Request struct {
 	Start    string `json:"start"`
 	FromDir  string `json:"-"`
 	FromName string `json:"-"`
+	// FromTemplate is the template's files, filled in by the caller from
+	// the template the browser names by ID.
+	FromTemplate *Starting `json:"-"`
 
 	// INI and Sandbox are the settings changed in the wizard, by key.
 	INI     map[string]string `json:"ini,omitempty"`
@@ -96,8 +101,15 @@ func (r Request) Starting() (Starting, error) {
 			return Starting{}, errors.New("pick a server to copy")
 		}
 		return CloneStart(r.FromDir, r.FromName)
+	case StartTemplate:
+		if r.FromTemplate == nil {
+			return Starting{}, errors.New("pick a template")
+		}
+		s := *r.FromTemplate
+		s.INI = removeINIKeys(s.INI, perServerINIKeys...)
+		return s, nil
 	}
-	return Starting{}, errors.New(`start must be "defaults" or "clone"`)
+	return Starting{}, errors.New(`start must be "defaults", "clone" or "template"`)
 }
 
 // Env is the host context a plan is made in.
@@ -379,7 +391,7 @@ func (p *Plan) buildServerFiles(req Request, maxPlayers int) error {
 	if err != nil {
 		return err
 	}
-	p.StartedFrom = start.From
+	p.StartedFrom = start.Name()
 	iniText, sbText, err := applyChanges(start, req.INI, req.Sandbox)
 	if err != nil {
 		return err

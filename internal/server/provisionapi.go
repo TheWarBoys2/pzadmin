@@ -19,6 +19,7 @@ import (
 type createRequest struct {
 	provision.Request
 	FromServerID string `json:"fromServerId,omitempty"`
+	TemplateID   string `json:"templateId,omitempty"`
 }
 
 // provisionEnv gathers what a plan needs from the current state.
@@ -52,6 +53,14 @@ func (a *App) resolveRequest(in createRequest) (provision.Request, string) {
 		}
 		req.FromDir, req.FromName = src.ServerDir, src.ServerName
 	}
+	if req.Start == provision.StartTemplate {
+		t, found := a.templates.get(in.TemplateID)
+		if !found {
+			return req, "pick a template"
+		}
+		files := t.starting()
+		req.FromTemplate = &files
+	}
 	return req, ""
 }
 
@@ -59,7 +68,7 @@ func (a *App) resolveRequest(in createRequest) (provision.Request, string) {
 // before its first boot: the captured defaults, or a copy of another
 // server's files.
 func (a *App) handleStackWizardFields(w http.ResponseWriter, r *http.Request) {
-	in := createRequest{FromServerID: r.URL.Query().Get("from")}
+	in := createRequest{FromServerID: r.URL.Query().Get("from"), TemplateID: r.URL.Query().Get("template")}
 	in.Start = r.URL.Query().Get("start")
 	req, problem := a.resolveRequest(in)
 	if problem != "" {
@@ -97,7 +106,12 @@ func (a *App) handleStackNew(w http.ResponseWriter, r *http.Request) {
 		}
 		sources = append(sources, source{ServerID: s.ID, Name: s.Name, ServerName: s.ServerName})
 	}
+	templates := []templateSummary{}
+	for _, t := range a.templates.all() {
+		templates = append(templates, summarizeTemplate(t))
+	}
 	writeJSON(w, map[string]any{
+		"templates":   templates,
 		"image":       a.gameImage,
 		"imagePinned": stacks.ImagePinned(a.gameImage),
 		"stacksRoot":  cfg.StacksRoot,

@@ -198,6 +198,18 @@ Most of this update needs nothing from you. These do:
   with no port to type in. The API's server view has `slot` and `lastSlot`,
   and a start can pick a slot with `"slot": n`.
 
+### Server templates
+- Save a server's settings, sandbox, mods and spawn points as a template from
+  the Stack page, or save the new-server wizard's choices as one from its last
+  step. A template also keeps max players and memory. It never holds a world,
+  the RCON password or the per-server IDs.
+- **New server** on a template opens the wizard with it filled in; change what
+  differs, then create. The wizard's starting point step has **A template**
+  alongside game defaults and copying a server.
+- Templates can be renamed, edited and deleted. Editing one never changes
+  servers already made from it. They live in `/data/templates.json` and are
+  not part of a config export. See `docs/templates.md`.
+
 ### API
 - An HTTP API at `/api/v1` for bots and scripts: server status (with the
   public description and join address), players, the event log, a live event
