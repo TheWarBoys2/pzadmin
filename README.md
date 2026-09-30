@@ -71,8 +71,8 @@ something wrong, especially anything security related, please report it (see
 - An HTTP API with its own keys, for bots and scripts ([docs/api.md](docs/api.md))
 - Accounts for other admins, each with its own permissions and servers ([docs/users.md](docs/users.md))
 
-**Finding your way around.** The sidebar holds the Dashboard, Discord, Stack
-and Settings, and lists your servers. Everything about one server is on its
+**Finding your way around.** The sidebar holds the Dashboard, Discord, Server
+setup and Settings, and lists your servers. Everything about one server is on its
 own page, in tabs: Overview, Players, Commands, Schedules, Configuration, Mods,
 Backups, Activity (PZAdmin's record of what happened, and the game's log
 files) and Console. The item catalogue check is at the foot of the Mods tab.
@@ -274,7 +274,7 @@ to enter by hand. Each game server needs:
 - a pinned image version, not `latest`
 - `PUID`/`PGID` matching PZAdmin's `user`
 
-The **Stack** page checks each server against this list and tells you exactly
+The **Server setup** page checks each server against this list and tells you exactly
 what's wrong. Servers created with the wizard meet all of it from the start.
 They use `indifferentbroccoli/projectzomboid-server-docker:v1.1.9`, the version
 this release was tested with, unless you set `PZADMIN_GAME_IMAGE`.
@@ -438,8 +438,9 @@ including how the join port can change.
 
 ## Server templates
 
-If your servers are mostly set up the same way, save one as a template: press
-**Save as template** on it on the Stack page, or **Save these choices as a
+If your servers are mostly set up the same way, make a template. On the
+**Server setup** page, press **New template** to build one from scratch, press
+**Save as template** on a server, or press **Save these choices as a
 template** on the new-server wizard's last step. A template holds the
 settings, sandbox, mods, spawn points, max players and memory, but no world and
 no RCON password. **New server** on a template opens the wizard with it filled
@@ -448,7 +449,7 @@ in, and you change what's different before anything is written. See
 
 ## Duplicating a server
 
-**Duplicate** on the Stack page copies a stopped server, world, characters and
+**Duplicate** on the Server setup page copies a stopped server, world, characters and
 accounts included, into a new server with its own folders and ports. The
 original stays stopped until the copy finishes, and the game and mods are
 downloaded again on the copy's first start. See

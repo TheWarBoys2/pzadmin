@@ -94,6 +94,8 @@ Most of this update needs nothing from you. These do:
   characters.
 
 ### Interface
+- The Stack page is now called **Server setup**, at `#/server-setup`. Old
+  `#/stack` links and bookmarks go to it.
 - A wrong password or setup code is shown on the form, instead of the page
   reloading.
 - An open tab says when PZAdmin has been updated, and new versions of the
@@ -200,18 +202,20 @@ Most of this update needs nothing from you. These do:
 
 ### Server templates
 - Save a server's settings, sandbox, mods and spawn points as a template from
-  the Stack page, or save the new-server wizard's choices as one from its last
+  the Server setup page, or save the new-server wizard's choices as one from its last
   step. A template also keeps max players and memory. It never holds a world,
   the RCON password or the per-server IDs.
 - **New server** on a template opens the wizard with it filled in; change what
   differs, then create. The wizard's starting point step has **A template**
   alongside game defaults and copying a server.
+- **New template** makes one from scratch, starting from the game defaults
+  or a server's settings, and opens it in the editor. No server is touched.
 - Templates can be renamed, edited and deleted. Editing one never changes
   servers already made from it. They live in `/data/templates.json` and are
   not part of a config export. See `docs/templates.md`.
 
 ### Duplicating a server
-- **Duplicate** on the Stack page makes a full copy of a stopped server: its
+- **Duplicate** on the Server setup page makes a full copy of a stopped server: its
   settings, mods, and its world with characters, safehouses and accounts, on
   new folders, ports and RCON password. The copy keeps the world's IDs and
   seed so characters carry over, and renames the world and accounts files if

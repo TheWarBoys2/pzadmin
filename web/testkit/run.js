@@ -1127,7 +1127,7 @@ function withState(state, fn) {
 test('the sidebar has no pages that now live on each server', () => {
   const links = withState({ servers: [{ id: 'a', name: 'Knights', enabled: true }] },
     () => Array.from(buildRail().querySelectorAll('.nav a')).map((a) => a.textContent));
-  assertList(links, ['Dashboard', 'Discord', 'Stack', 'Settings']);
+  assertList(links, ['Dashboard', 'Discord', 'Server setup', 'Settings']);
 });
 
 test('old page addresses go to the server tab, or the dashboard when it is ambiguous', () => {
@@ -1139,6 +1139,7 @@ test('old page addresses go to the server tab, or the dashboard when it is ambig
     assert.strictEqual(movedPageTarget({ name: 'catalogue' }), '/servers/a/mods');
     assert.strictEqual(movedPageTarget({ name: 'activity' }), '', 'the full activity log stays');
     assert.strictEqual(movedPageTarget({ name: 'settings' }), '');
+    assert.strictEqual(movedPageTarget({ name: 'stack' }), '/server-setup', 'the Stack page was renamed');
   });
   withState({ servers: two }, () => assert.strictEqual(movedPageTarget({ name: 'players' }), '/dashboard'));
 });

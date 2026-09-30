@@ -1,6 +1,6 @@
 # Duplicating a server
 
-**Duplicate** on the Stack page makes a new server that is a full copy of an
+**Duplicate** on the Server setup page makes a new server that is a full copy of an
 existing one: its settings, mods, sandbox, and its world with every character,
 safehouse and account. The copy gets its own stack folder, data and config
 folders, ports and RCON password. Nothing about the original changes.

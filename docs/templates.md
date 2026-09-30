@@ -5,7 +5,7 @@ servers that are mostly the same, with a few differences each time: the
 template holds what they share, and the new-server wizard lets you change the
 rest before anything is written.
 
-Templates are on the **Stack** page, under **Templates**. Only the owner can
+Templates are on the **Server setup** page, under **Templates**. Only the owner can
 make, edit, use or delete them, because only the owner can create servers.
 
 ## What a template holds
@@ -34,7 +34,11 @@ Clear them in the template if you don't want them passed on.
 
 ## Making one
 
-- **From a server:** on the Stack page, press **Save as template** on the
+- **From scratch:** under **Templates**, press **New template**. Give it a
+  name and pick what it starts from: the game defaults (Build 42, no mods) or
+  the current settings of one of your servers. It opens in the editor, where
+  you can change any setting. No server is created or changed.
+- **From a server:** on the Server setup page, press **Save as template** on the
   server. It saves the server's files as they are now.
 - **From the wizard:** on the wizard's last step, press **Save these choices as
   a template**. It saves the starting point with every change you made in the

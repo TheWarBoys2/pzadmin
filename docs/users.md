@@ -42,7 +42,7 @@ preset.
 - make or revoke API keys
 - change PZAdmin's own settings: Discord, webhooks, quiet hours, metrics,
   timezone, import and export
-- add, edit, remove or delete servers, create new ones and open the Stack page
+- add, edit, remove or delete servers, create new ones and open the Server setup page
 - make, edit and delete server templates, and duplicate servers
 - create, edit or delete scheduled jobs
 - see every signed-in browser and sign them all out
